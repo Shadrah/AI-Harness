@@ -17,17 +17,18 @@
 
   <Grid RowDefinitions="44,*,28">
     <Border Grid.Row="0" Classes="hairline" Background="#151A21" PointerPressed="TitleBar_OnPointerPressed">
-      <Grid Margin="14,0,0,0" ColumnDefinitions="Auto,14,Auto,*,Auto,40,40,40">
+      <Grid Margin="14,0,0,0" ColumnDefinitions="Auto,14,Auto,*,Auto,8,Auto,40,40,40">
         <TextBlock Text="WORKING TREE" Classes="micro" Foreground="#D8DEE8" VerticalAlignment="Center" />
         <Border Grid.Column="1" Width="1" Height="18" Background="#29313C" />
         <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
           <TextBlock Text="{Binding Branch}" Classes="mono" FontSize="10" />
           <TextBlock Text="{Binding Status}" Classes="micro" FontSize="8" Foreground="#65C7D0" />
         </StackPanel>
-        <Button Grid.Column="4" Content="REFRESH" Classes="ghost" Click="Refresh_OnClick" />
-        <Button Grid.Column="5" Classes="window-command" Click="Minimize_OnClick"><Border Width="12" Height="1.5" Background="#D8DEE8"/></Button>
-        <Button x:Name="MaximizeButton" Grid.Column="6" Classes="window-command" Click="Maximize_OnClick"><Border Width="11" Height="11" BorderBrush="#D8DEE8" BorderThickness="1.5"/></Button>
-        <Button Grid.Column="7" Classes="window-command window-close" Click="Close_OnClick"><Path Width="14" Height="14" Stretch="Uniform" Stroke="#D8DEE8" StrokeThickness="1.5" Data="M3,3 L13,13 M13,3 L3,13"/></Button>
+        <Button x:Name="RenameBranchButton" Grid.Column="4" Content="RENAME BRANCH" Classes="ghost" Click="RenameBranch_OnClick" />
+        <Button Grid.Column="6" Content="REFRESH" Classes="ghost" Click="Refresh_OnClick" />
+        <Button Grid.Column="7" Classes="window-command" Click="Minimize_OnClick"><Border Width="12" Height="1.5" Background="#D8DEE8"/></Button>
+        <Button x:Name="MaximizeButton" Grid.Column="8" Classes="window-command" Click="Maximize_OnClick"><Border Width="11" Height="11" BorderBrush="#D8DEE8" BorderThickness="1.5"/></Button>
+        <Button Grid.Column="9" Classes="window-command window-close" Click="Close_OnClick"><Path Width="14" Height="14" Stretch="Uniform" Stroke="#D8DEE8" StrokeThickness="1.5" Data="M3,3 L13,13 M13,3 L3,13"/></Button>
       </Grid>
     </Border>
 

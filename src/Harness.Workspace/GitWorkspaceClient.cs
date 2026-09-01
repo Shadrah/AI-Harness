@@ -118,11 +118,107 @@ public sealed class GitWorkspaceClient
         EnsureSuccess(result, $"stage {relativePath}");
     }
 
-    public async Task InitializeRepositoryAsync(string workspacePath, CancellationToken cancellationToken = default)
+    public async Task InitializeRepositoryAsync(
+        string workspacePath,
+        CancellationToken cancellationToken = default,
+        string initialBranch = "main")
     {
         var root = Path.GetFullPath(workspacePath);
-        var result = await RunGitAsync(root, ["init"], cancellationToken);
+        var existing = await RunGitAsync(root, ["rev-parse", "--git-dir"], cancellationToken);
+        var result = existing.ExitCode == 0
+            ? await RunGitAsync(root, ["init"], cancellationToken)
+            : await RunGitAsync(root, ["init", "-b", NormalizeBranchName(initialBranch)], cancellationToken);
         EnsureSuccess(result, "initialize the Git repository");
+    }
+
+    public async Task RenameCurrentBranchAsync(
+        string repositoryRoot,
+        string branchName,
+        CancellationToken cancellationToken = default)
+    {
+        var root = Path.GetFullPath(repositoryRoot);
+        var normalized = NormalizeBranchName(branchName);
+        var validation = await RunGitAsync(root, ["check-ref-format", "--branch", normalized], cancellationToken);
+        EnsureSuccess(validation, $"use branch name {normalized}");
+        var head = await RunGitAsync(root, ["rev-parse", "--verify", "HEAD"], cancellationToken);
+        if (head.ExitCode != 0)
+        {
+            EnsureSuccess(
+                await RunGitAsync(root, ["symbolic-ref", "HEAD", $"refs/heads/{normalized}"], cancellationToken),
+                $"set initial branch {normalized}");
+            return;
+        }
+        var current = await RunGitAsync(root, ["branch", "--show-current"], cancellationToken);
+        if (current.ExitCode == 0
+            && string.Equals(current.StandardOutput.Trim(), normalized, StringComparison.Ordinal)) return;
+        EnsureSuccess(await RunGitAsync(root, ["branch", "-m", normalized], cancellationToken), $"rename the current branch to {normalized}");
+    }
+
+    public async Task<IReadOnlyList<GitExcludedFile>> ExcludeOversizedFilesAsync(
+        string repositoryRoot,
+        long maximumBytes = 100L * 1024 * 1024,
+        CancellationToken cancellationToken = default)
+    {
+        var root = Path.GetFullPath(repositoryRoot);
+        var oversizedCandidates = EnumerateWorkspaceFiles(root, cancellationToken)
+            .Select(path => new FileInfo(path))
+            .Where(file => file.Length > maximumBytes)
+            .OrderByDescending(file => file.Length)
+            .ToArray();
+        var oversized = new List<GitExcludedFile>(oversizedCandidates.Length);
+        foreach (var file in oversizedCandidates)
+        {
+            var relativePath = Path.GetRelativePath(root, file.FullName).Replace('\\', '/');
+            oversized.Add(new GitExcludedFile(
+                relativePath,
+                file.Length,
+                await IsTrackedAsync(root, relativePath, cancellationToken)));
+        }
+        if (oversized.Count == 0) return oversized;
+
+        var gitDirectoryResult = await RunGitAsync(root, ["rev-parse", "--git-dir"], cancellationToken);
+        EnsureSuccess(gitDirectoryResult, "locate repository metadata");
+        var gitDirectory = gitDirectoryResult.StandardOutput.Trim();
+        if (!Path.IsPathRooted(gitDirectory)) gitDirectory = Path.GetFullPath(Path.Combine(root, gitDirectory));
+        var infoDirectory = Path.Combine(gitDirectory, "info");
+        Directory.CreateDirectory(infoDirectory);
+        var excludePath = Path.Combine(infoDirectory, "exclude");
+        var existing = File.Exists(excludePath)
+            ? new HashSet<string>(await File.ReadAllLinesAsync(excludePath, cancellationToken), StringComparer.Ordinal)
+            : new HashSet<string>(StringComparer.Ordinal);
+        var additions = oversized
+            .Select(file => "/" + EscapeExcludePattern(file.RelativePath))
+            .Where(pattern => existing.Add(pattern))
+            .ToArray();
+        if (additions.Length > 0)
+        {
+            await File.AppendAllLinesAsync(excludePath, additions, cancellationToken);
+        }
+        foreach (var file in oversized)
+        {
+            EnsureSuccess(
+                await RunGitAsync(root, ["rm", "--cached", "--ignore-unmatch", "--", file.RelativePath], cancellationToken),
+                $"exclude oversized file {file.RelativePath}");
+        }
+        return oversized;
+    }
+
+    public async Task<bool> IsTrackedAsync(
+        string repositoryRoot,
+        string relativePath,
+        CancellationToken cancellationToken = default)
+    {
+        var root = Path.GetFullPath(repositoryRoot);
+        ValidateRelativePath(root, relativePath);
+        return (await RunGitAsync(root, ["ls-files", "--error-unmatch", "--", relativePath], cancellationToken)).ExitCode == 0;
+    }
+
+    public async Task<int> GetCommitCountAsync(
+        string repositoryRoot,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await RunGitAsync(Path.GetFullPath(repositoryRoot), ["rev-list", "--count", "HEAD"], cancellationToken);
+        return result.ExitCode == 0 && int.TryParse(result.StandardOutput.Trim(), out var count) ? count : 0;
     }
 
     public async Task<string?> GetRemoteUrlAsync(string repositoryRoot, CancellationToken cancellationToken = default)
@@ -191,6 +287,7 @@ public sealed class GitWorkspaceClient
     public async Task<bool> PrepareForInitialPushAsync(
         string repositoryRoot,
         string commitMessage,
+        bool amendSingleInitialCommit = false,
         CancellationToken cancellationToken = default)
     {
         var root = Path.GetFullPath(repositoryRoot);
@@ -201,6 +298,17 @@ public sealed class GitWorkspaceClient
         if (staged.ExitCode is not (0 or 1))
             EnsureSuccess(staged, "inspect staged workspace files");
         if (hasHead && !hasStagedChanges) return false;
+        if (hasHead && hasStagedChanges && amendSingleInitialCommit)
+        {
+            var count = await RunGitAsync(root, ["rev-list", "--count", "HEAD"], cancellationToken);
+            if (count.ExitCode == 0 && count.StandardOutput.Trim() == "1")
+            {
+                EnsureSuccess(
+                    await RunGitAsync(root, ["commit", "--amend", "--no-edit"], cancellationToken),
+                    "repair the unpublished initial commit");
+                return true;
+            }
+        }
         var arguments = hasStagedChanges
             ? new[] { "commit", "-m", commitMessage }
             : new[] { "commit", "--allow-empty", "-m", commitMessage };
@@ -434,9 +542,40 @@ public sealed class GitWorkspaceClient
             : result.StandardError.Trim();
 
     private sealed record GitResult(int ExitCode, string StandardOutput, string StandardError);
+
+    private static string NormalizeBranchName(string branchName) =>
+        string.IsNullOrWhiteSpace(branchName) ? "main" : branchName.Trim();
+
+    private static string EscapeExcludePattern(string path) => path
+        .Replace("\\", "\\\\", StringComparison.Ordinal)
+        .Replace("#", "\\#", StringComparison.Ordinal)
+        .Replace("!", "\\!", StringComparison.Ordinal)
+        .Replace("[", "\\[", StringComparison.Ordinal);
+
+    private static IEnumerable<string> EnumerateWorkspaceFiles(string root, CancellationToken cancellationToken)
+    {
+        var pending = new Stack<string>();
+        pending.Push(root);
+        while (pending.Count > 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var directory = pending.Pop();
+            foreach (var file in Directory.EnumerateFiles(directory)) yield return file;
+            foreach (var child in Directory.EnumerateDirectories(directory))
+            {
+                if (string.Equals(Path.GetFileName(child), ".git", StringComparison.OrdinalIgnoreCase)) continue;
+                if ((File.GetAttributes(child) & FileAttributes.ReparsePoint) != 0) continue;
+                pending.Push(child);
+            }
+        }
+    }
 }
 
 public sealed record GitIdentity(string Name, string Email)
 {
     public bool IsComplete => !string.IsNullOrWhiteSpace(Name) && !string.IsNullOrWhiteSpace(Email);
+}
+public sealed record GitExcludedFile(string RelativePath, long ByteLength, bool WasTracked)
+{
+    public string SizeText => $"{ByteLength / 1024d / 1024d:F1} MB";
 }

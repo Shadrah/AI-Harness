@@ -314,12 +314,25 @@ public sealed partial class SettingsWindow : Window
         var connection = await _github.GetConnectionStatusAsync(_lifetime.Token);
         if (!connection.IsAuthenticated)
             throw new InvalidOperationException("Sign in to GitHub before creating a repository.");
-        await _git.InitializeRepositoryAsync(ViewModel.WorkspacePath, _lifetime.Token);
+        await _git.InitializeRepositoryAsync(
+            ViewModel.WorkspacePath,
+            _lifetime.Token,
+            ViewModel.DefaultGitBranch);
+        await _git.RenameCurrentBranchAsync(
+            ViewModel.WorkspacePath,
+            ViewModel.DefaultGitBranch,
+            _lifetime.Token);
         await EnsureCommitIdentityAsync();
+        var excluded = await _git.ExcludeOversizedFilesAsync(ViewModel.WorkspacePath, cancellationToken: _lifetime.Token);
+        var trackedOversized = excluded.Any(file => file.WasTracked);
+        if (trackedOversized
+            && await _git.GetCommitCountAsync(ViewModel.WorkspacePath, _lifetime.Token) > 1)
+            throw new InvalidOperationException("An oversized file exists in multi-commit history. Use Git LFS or git filter-repo before publishing.");
         await _git.PrepareForInitialPushAsync(
             ViewModel.WorkspacePath,
             "Initial commit",
-            _lifetime.Token);
+            amendSingleInitialCommit: trackedOversized,
+            cancellationToken: _lifetime.Token);
         var remote = await _git.GetRemoteUrlAsync(ViewModel.WorkspacePath, _lifetime.Token);
         if (string.IsNullOrWhiteSpace(remote))
         {
@@ -336,6 +349,10 @@ public sealed partial class SettingsWindow : Window
             await _git.SetOriginAsync(ViewModel.WorkspacePath, existing, _lifetime.Token);
         }
         await _git.PushAsync(ViewModel.WorkspacePath, _lifetime.Token);
+        if (excluded.Count > 0)
+        {
+            ViewModel.GitHubStatus += $" · Excluded {excluded.Count} file(s) over GitHub's 100 MB limit";
+        }
     }
 
     private async Task RefreshRepositoryAsync()

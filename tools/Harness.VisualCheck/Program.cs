@@ -322,13 +322,15 @@ try
             PersonalInstructions: "Be concise.",
             LastWorkspacePath: storageProbeWorkspace,
             GitAuthorName: "Harness Publisher",
-            GitAuthorEmail: "publisher@users.noreply.github.com");
+            GitAuthorEmail: "publisher@users.noreply.github.com",
+            DefaultGitBranch: "release-main");
         await reopened.SaveApplicationSettingsAsync(settings);
         var loadedSettings = await reopened.LoadApplicationSettingsAsync();
         if (loadedSettings.ShowActivityTrace
             || loadedSettings.PersonalInstructions != "Be concise."
             || loadedSettings.GitAuthorName != "Harness Publisher"
-            || loadedSettings.GitAuthorEmail != "publisher@users.noreply.github.com")
+            || loadedSettings.GitAuthorEmail != "publisher@users.noreply.github.com"
+            || loadedSettings.DefaultGitBranch != "release-main")
         {
             throw new InvalidOperationException("Application settings did not round-trip through SQLite.");
         }
@@ -434,18 +436,37 @@ try
         "Harness Publisher",
         "publisher@users.noreply.github.com");
     await File.WriteAllTextAsync(Path.Combine(publishProbeRepository, "published.txt"), "publish me\n");
+    var oversizedProbePath = Path.Combine(publishProbeRepository, "release", "oversized.exe");
+    Directory.CreateDirectory(Path.GetDirectoryName(oversizedProbePath)!);
+    await using (var oversized = new FileStream(oversizedProbePath, FileMode.CreateNew, FileAccess.Write))
+    {
+        oversized.SetLength(101L * 1024 * 1024);
+    }
     var createdInitialCommit = await gitProbe.PrepareForInitialPushAsync(
         publishProbeRepository,
         "Initial commit");
+    var excludedOversized = await gitProbe.ExcludeOversizedFilesAsync(publishProbeRepository);
+    var repairedInitialCommit = await gitProbe.PrepareForInitialPushAsync(
+        publishProbeRepository,
+        "Initial commit",
+        amendSingleInitialCommit: true);
     var publishIdentity = await gitProbe.ReadIdentityAsync(publishProbeRepository);
     var publishStatus = await gitProbe.ReadStatusAsync(publishProbeRepository);
+    var publishCommitCount = await gitProbe.GetCommitCountAsync(publishProbeRepository);
     if (!createdInitialCommit
+        || !repairedInitialCommit
+        || excludedOversized.Count != 1
+        || excludedOversized[0].RelativePath != "release/oversized.exe"
+        || !excludedOversized[0].WasTracked
+        || !File.Exists(oversizedProbePath)
+        || await gitProbe.IsTrackedAsync(publishProbeRepository, "release/oversized.exe")
         || publishIdentity.Name != "Harness Publisher"
         || publishIdentity.Email != "publisher@users.noreply.github.com"
-        || publishStatus.Branch is "NO COMMITS" or null
+        || publishStatus.Branch != "main"
+        || publishCommitCount != 1
         || publishStatus.Files.Count != 0)
     {
-        throw new InvalidOperationException("Initial repository publishing did not configure identity and commit the workspace.");
+        throw new InvalidOperationException("Initial publishing did not repair an oversized unpublished commit.");
     }
 }
 finally
@@ -479,6 +500,12 @@ if (!productionProbe.CanUseRemoteActions
     || productionProbe.RepositoryDockLabel.Contains("SIGN IN", StringComparison.Ordinal))
 {
     throw new InvalidOperationException("Authenticated GitHub state was not projected into repository actions.");
+}
+productionProbe.SetRepositoryOperationStatus("Current branch pushed");
+if (productionProbe.RepositoryOperationStatus != "Current branch pushed"
+    || productionProbe.RepositoryOperationColor != "#65C7D0")
+{
+    throw new InvalidOperationException("Primary repository actions did not expose visible success feedback.");
 }
 
 var sessionNamingProbe = new MainWindowViewModel();
@@ -725,6 +752,8 @@ var workingTreeWindow = new WorkingTreeWindow
     DataContext = workingTreeViewModel
 };
 workingTreeWindow.Show();
+_ = workingTreeWindow.FindControl<Button>("RenameBranchButton")
+    ?? throw new InvalidOperationException("Working Tree did not expose branch renaming.");
 var workingTreePath = Path.Combine(
     Path.GetDirectoryName(Path.GetFullPath(outputPath))!,
     $"{Path.GetFileNameWithoutExtension(outputPath)}-working-tree{Path.GetExtension(outputPath)}");

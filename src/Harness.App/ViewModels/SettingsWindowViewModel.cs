@@ -18,6 +18,7 @@ public sealed class SettingsWindowViewModel : ObservableObject
     private bool _privateRepository = true;
     private string _gitAuthorName;
     private string _gitAuthorEmail;
+    private string _defaultGitBranch;
 
     public SettingsWindowViewModel(HarnessApplicationSettings settings, string workspacePath)
     {
@@ -29,6 +30,7 @@ public sealed class SettingsWindowViewModel : ObservableObject
         _personalInstructions = settings.PersonalInstructions;
         _gitAuthorName = settings.GitAuthorName;
         _gitAuthorEmail = settings.GitAuthorEmail;
+        _defaultGitBranch = string.IsNullOrWhiteSpace(settings.DefaultGitBranch) ? "main" : settings.DefaultGitBranch;
         WorkspacePath = workspacePath;
     }
 
@@ -47,6 +49,7 @@ public sealed class SettingsWindowViewModel : ObservableObject
     public bool PrivateRepository { get => _privateRepository; set => SetProperty(ref _privateRepository, value); }
     public string GitAuthorName { get => _gitAuthorName; set => SetProperty(ref _gitAuthorName, value); }
     public string GitAuthorEmail { get => _gitAuthorEmail; set => SetProperty(ref _gitAuthorEmail, value); }
+    public string DefaultGitBranch { get => _defaultGitBranch; set => SetProperty(ref _defaultGitBranch, value); }
 
     public HarnessApplicationSettings ToSettings() => new(
         RestoreLastWorkspace,
@@ -57,5 +60,6 @@ public sealed class SettingsWindowViewModel : ObservableObject
         PersonalInstructions?.Trim() ?? "",
         WorkspacePath,
         GitAuthorName?.Trim() ?? "",
-        GitAuthorEmail?.Trim() ?? "");
+        GitAuthorEmail?.Trim() ?? "",
+        string.IsNullOrWhiteSpace(DefaultGitBranch) ? "main" : DefaultGitBranch.Trim());
 }

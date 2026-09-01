@@ -38,7 +38,8 @@ public sealed partial class MainWindow : Window
     private bool _importContextApplied;
     private const string ImportContextAppliedEvent = "harness/importContextBriefV2Applied";
     private long _compactionAttempt;
-    private bool _isSwitchingWorkspace;
+    private CancellationTokenSource? _workspaceSwitch;
+    private long _workspaceSwitchVersion;
     private readonly object _deltaLock = new();
     private readonly Dictionary<string, PendingUiDelta> _pendingUiDeltas = [];
     private readonly DispatcherTimer _deltaFlushTimer;
@@ -155,6 +156,9 @@ public sealed partial class MainWindow : Window
         _workingTreeWindow?.Close();
         _workingTreeWindow = null;
         _lifetime.Cancel();
+        _workspaceSwitch?.Cancel();
+        _workspaceSwitch?.Dispose();
+        _workspaceSwitch = null;
         _deltaFlushTimer.Stop();
         await StopCodexAsync();
         await FlushPersistenceAsync();
@@ -300,8 +304,7 @@ public sealed partial class MainWindow : Window
 
     private async void WorkspaceSelection_OnChanged(object? sender, SelectionChangedEventArgs e)
     {
-        if (_isSwitchingWorkspace
-            || ViewModel.SelectedWorkspace is not { } selected
+        if (ViewModel.SelectedWorkspace is not { } selected
             || string.Equals(selected.Path, ViewModel.WorkspacePath, StringComparison.OrdinalIgnoreCase)) return;
         var previous = ViewModel.Workspaces.FirstOrDefault(workspace =>
             string.Equals(workspace.Path, ViewModel.WorkspacePath, StringComparison.OrdinalIgnoreCase));
@@ -318,14 +321,21 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        _isSwitchingWorkspace = true;
+        _workspaceSwitch?.Cancel();
+        _workspaceSwitch?.Dispose();
+        _workspaceSwitch = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        var switchCts = _workspaceSwitch;
+        var version = Interlocked.Increment(ref _workspaceSwitchVersion);
         try
         {
-            if (!await LoadWorkspaceAsync(selected.Path)) ViewModel.SelectedWorkspace = previous;
+            if (!await LoadWorkspaceAsync(selected.Path, version, switchCts.Token)
+                && version == Interlocked.Read(ref _workspaceSwitchVersion))
+            {
+                ViewModel.SelectedWorkspace = previous;
+            }
         }
-        finally
+        catch (OperationCanceledException) when (switchCts.IsCancellationRequested)
         {
-            _isSwitchingWorkspace = false;
         }
     }
 
@@ -522,7 +532,10 @@ public sealed partial class MainWindow : Window
         await LoadWorkspaceAsync(path);
     }
 
-    private async Task<bool> LoadWorkspaceAsync(string path)
+    private async Task<bool> LoadWorkspaceAsync(
+        string path,
+        long? switchVersion = null,
+        CancellationToken cancellationToken = default)
     {
         if (_store is null)
         {
@@ -533,21 +546,27 @@ public sealed partial class MainWindow : Window
         {
             _workingTreeWindow?.Close();
             _workingTreeWindow = null;
-            var snapshot = await _store.OpenWorkspaceAsync(path, _lifetime.Token);
+            var token = cancellationToken.CanBeCanceled ? cancellationToken : _lifetime.Token;
+            var snapshot = await _store.OpenWorkspaceAsync(path, token);
+            if (switchVersion is { } requested
+                && requested != Interlocked.Read(ref _workspaceSwitchVersion)) return false;
             _activeProject = snapshot.Project;
             _activeSession = snapshot.ActiveSession;
             _threadId = null;
             ViewModel.ApplyWorkspaceSnapshot(snapshot);
             await RefreshWorkspaceCatalogAsync(snapshot.Project.Id);
+            if (switchVersion is { } catalogVersion
+                && catalogVersion != Interlocked.Read(ref _workspaceSwitchVersion)) return false;
             ViewModel.ApplySessionModelSettings(snapshot.ActiveSession);
             await LoadImportStateAsync(snapshot.ActiveSession.Id);
+            if (switchVersion is { } importVersion
+                && importVersion != Interlocked.Read(ref _workspaceSwitchVersion)) return false;
             _applicationSettings = _applicationSettings with { LastWorkspacePath = path };
-            await _store.SaveApplicationSettingsAsync(_applicationSettings, _lifetime.Token);
-            await RefreshWorkingTreeAsync();
-            await ResumeActiveThreadAsync();
+            await _store.SaveApplicationSettingsAsync(_applicationSettings, token);
+            _ = CompleteWorkspaceActivationAsync(switchVersion);
             return true;
         }
-        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested || cancellationToken.IsCancellationRequested)
         {
             return false;
         }
@@ -555,6 +574,26 @@ public sealed partial class MainWindow : Window
         {
             ViewModel.AddActivity("STORAGE", CleanError(exception), "#E2A84A");
             return false;
+        }
+    }
+
+    private async Task CompleteWorkspaceActivationAsync(long? switchVersion)
+    {
+        try
+        {
+            if (switchVersion is { } requested
+                && requested != Interlocked.Read(ref _workspaceSwitchVersion)) return;
+            await RefreshWorkingTreeAsync();
+            if (switchVersion is { } current
+                && current != Interlocked.Read(ref _workspaceSwitchVersion)) return;
+            await ResumeActiveThreadAsync();
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            ViewModel.AddActivity("WORKSPACE", CleanError(exception), "#E2A84A");
         }
     }
 
@@ -973,7 +1012,7 @@ public sealed partial class MainWindow : Window
         await RunRepositoryActionAsync(
             "COMMIT",
             "Creating commit…",
-            "Changes committed",
+            () => "Changes committed",
             async () =>
             {
                 await _git.ConfigureIdentityAsync(root, request.Identity.Name, request.Identity.Email, _lifetime.Token);
@@ -986,36 +1025,61 @@ public sealed partial class MainWindow : Window
     {
         if (ViewModel.RepositoryRoot is not { } root) return;
         await RunRepositoryActionAsync(
-            "PULL", "Pulling from origin…", "Workspace is up to date",
+            "PULL", "Pulling from origin…", () => "Workspace is up to date",
             () => _git.PullAsync(root, _lifetime.Token));
     }
 
     private async void RepositoryPush_OnClick(object? sender, RoutedEventArgs e)
     {
         if (ViewModel.RepositoryRoot is not { } root) return;
+        IReadOnlyList<GitExcludedFile> excluded = [];
         await RunRepositoryActionAsync(
-            "PUSH", "Pushing current branch…", "Current branch pushed",
-            () => _git.PushAsync(root, _lifetime.Token));
+            "PUSH",
+            "Checking and pushing current branch…",
+            () => excluded.Count == 0
+                ? "Current branch pushed"
+                : $"Current branch pushed · {excluded.Count} oversized file(s) excluded",
+            async () =>
+            {
+                excluded = await _git.ExcludeOversizedFilesAsync(root, cancellationToken: _lifetime.Token);
+                var trackedOversized = excluded.Any(file => file.WasTracked);
+                if (trackedOversized && await _git.GetCommitCountAsync(root, _lifetime.Token) > 1)
+                    throw new InvalidOperationException("An oversized file exists in multi-commit history. Use Git LFS or git filter-repo before pushing.");
+                if (trackedOversized)
+                {
+                    await _git.PrepareForInitialPushAsync(
+                        root,
+                        "Initial commit",
+                        amendSingleInitialCommit: true,
+                        cancellationToken: _lifetime.Token);
+                }
+                await _git.PushAsync(root, _lifetime.Token);
+            });
     }
 
     private async Task RunRepositoryActionAsync(
         string kind,
         string pending,
-        string success,
+        Func<string> success,
         Func<Task> action)
     {
         try
         {
+            ViewModel.SetRepositoryOperationStatus(pending, isPending: true);
             ViewModel.AddActivity(kind, pending, "#E2A84A", true);
             await action();
-            ViewModel.AddActivity(kind, success, "#65C7D0");
+            var completed = success();
+            ViewModel.SetRepositoryOperationStatus(completed);
+            ViewModel.AddActivity(kind, completed, "#65C7D0");
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
         {
         }
         catch (Exception exception)
         {
-            ViewModel.AddActivity(kind, CleanError(exception), "#E2A84A");
+            var error = CleanError(exception);
+            ViewModel.SetRepositoryOperationStatus(error, isError: true);
+            ViewModel.AddActivity(kind, error, "#E2A84A");
         }
         finally
         {
@@ -1073,6 +1137,13 @@ public sealed partial class MainWindow : Window
     {
         var remoteUrl = new TextBox { Watermark = "https://github.com/owner/repository.git", MinWidth = 460 };
         var repositoryName = new TextBox { Text = ViewModel.WorkspaceName, Watermark = "repository-name" };
+        var branchName = new TextBox
+        {
+            Text = string.IsNullOrWhiteSpace(_applicationSettings.DefaultGitBranch)
+                ? "main"
+                : _applicationSettings.DefaultGitBranch,
+            Watermark = "main"
+        };
         var privateRepository = new CheckBox { Content = "Private repository", IsChecked = true };
         var githubConnection = await _github.GetConnectionStatusAsync(_lifetime.Token);
         var identity = await ResolveGitIdentityAsync(ViewModel.WorkspacePath);
@@ -1103,7 +1174,7 @@ public sealed partial class MainWindow : Window
                     new TextBlock { Text = "Connect this workspace", FontSize = 19, FontWeight = FontWeight.SemiBold },
                     new TextBlock
                     {
-                        Text = "Initialize Git locally, attach an existing origin, or create a GitHub repository.",
+                        Text = "Initialize Git locally, attach an existing origin, or create a GitHub repository. Repository name controls the GitHub project; initial branch controls main/master.",
                         Classes = { "muted" },
                         TextWrapping = TextWrapping.Wrap
                     },
@@ -1119,7 +1190,32 @@ public sealed partial class MainWindow : Window
                     new Border { Height = 1, Background = Brush.Parse("#29313C") },
                     new TextBlock { Text = "NEW GITHUB REPOSITORY", Classes = { "micro" } },
                     new TextBlock { Text = "Harness will commit the current workspace and push it immediately.", Classes = { "muted" } },
-                    repositoryName,
+                    new Grid
+                    {
+                        ColumnDefinitions = new ColumnDefinitions("*,10,150"),
+                        Children =
+                        {
+                            new StackPanel
+                            {
+                                Spacing = 4,
+                                Children =
+                                {
+                                    new TextBlock { Text = "REPOSITORY NAME", Classes = { "micro" }, FontSize = 8 },
+                                    repositoryName
+                                }
+                            },
+                            new StackPanel
+                            {
+                                [Grid.ColumnProperty] = 2,
+                                Spacing = 4,
+                                Children =
+                                {
+                                    new TextBlock { Text = "INITIAL BRANCH", Classes = { "micro" }, FontSize = 8 },
+                                    branchName
+                                }
+                            }
+                        }
+                    },
                     privateRepository,
                     new TextBlock { Text = "COMMIT IDENTITY", Classes = { "micro" } },
                     setupIdentityGrid,
@@ -1138,43 +1234,54 @@ public sealed partial class MainWindow : Window
                 }
             });
 
-        async Task RunSetupAsync(string pending, Func<Task> action)
+        async Task RunSetupAsync(string pending, Func<string> success, Func<Task> action)
         {
             try
             {
                 status.Text = pending;
                 await action();
                 await RefreshWorkingTreeAsync();
+                ViewModel.SetRepositoryOperationStatus(success());
                 dialog.Close(true);
             }
             catch (Exception exception)
             {
-                status.Text = CleanError(exception);
+                var error = CleanError(exception);
+                status.Text = error;
                 status.Foreground = Brush.Parse("#E2A84A");
+                ViewModel.SetRepositoryOperationStatus(error, isError: true);
             }
         }
 
         initialize.Click += async (_, _) => await RunSetupAsync(
             "Initializing local repository…",
+            () => "Local Git repository initialized",
             () => _git.InitializeRepositoryAsync(ViewModel.WorkspacePath, _lifetime.Token));
         attach.Click += async (_, _) => await RunSetupAsync(
             "Attaching origin…",
+            () => "Origin remote attached",
             async () =>
             {
                 await _git.InitializeRepositoryAsync(ViewModel.WorkspacePath, _lifetime.Token);
                 await _git.SetOriginAsync(ViewModel.WorkspacePath, remoteUrl.Text ?? string.Empty, _lifetime.Token);
             });
+        var publishResult = "Repository published to GitHub";
         create.Click += async (_, _) => await RunSetupAsync(
             "Committing workspace and publishing to GitHub…",
+            () => publishResult,
             async () =>
             {
                 var commitIdentity = new GitIdentity(
                     authorName.Text?.Trim() ?? string.Empty,
                     authorEmail.Text?.Trim() ?? string.Empty);
-                await PublishRepositoryAsync(
+                var excluded = await PublishRepositoryAsync(
                     repositoryName.Text ?? string.Empty,
                     privateRepository.IsChecked == true,
+                    branchName.Text ?? "main",
                     commitIdentity);
+                publishResult = excluded.Count == 0
+                    ? "Repository committed and pushed"
+                    : $"Repository pushed · {excluded.Count} oversized file(s) excluded";
             });
         signIn.Click += async (_, _) =>
         {
@@ -1236,30 +1343,49 @@ public sealed partial class MainWindow : Window
         return new GitIdentity(name, email);
     }
 
-    private async Task SaveGitIdentityDefaultsAsync(GitIdentity identity)
+    private async Task SaveGitIdentityDefaultsAsync(GitIdentity identity, string? defaultBranch = null)
     {
         if (_store is null) return;
         _applicationSettings = _applicationSettings with
         {
             GitAuthorName = identity.Name.Trim(),
-            GitAuthorEmail = identity.Email.Trim()
+            GitAuthorEmail = identity.Email.Trim(),
+            DefaultGitBranch = string.IsNullOrWhiteSpace(defaultBranch)
+                ? _applicationSettings.DefaultGitBranch
+                : defaultBranch.Trim()
         };
         await _store.SaveApplicationSettingsAsync(_applicationSettings, _lifetime.Token);
     }
 
-    private async Task PublishRepositoryAsync(string repositoryName, bool isPrivate, GitIdentity identity)
+    private async Task<IReadOnlyList<GitExcludedFile>> PublishRepositoryAsync(
+        string repositoryName,
+        bool isPrivate,
+        string branchName,
+        GitIdentity identity)
     {
         var connection = await _github.GetConnectionStatusAsync(_lifetime.Token);
         if (!connection.IsAuthenticated)
             throw new InvalidOperationException("Sign in to GitHub before creating a repository.");
-        await _git.InitializeRepositoryAsync(ViewModel.WorkspacePath, _lifetime.Token);
+        await _git.InitializeRepositoryAsync(ViewModel.WorkspacePath, _lifetime.Token, branchName);
+        await _git.RenameCurrentBranchAsync(ViewModel.WorkspacePath, branchName, _lifetime.Token);
         await _git.ConfigureIdentityAsync(
             ViewModel.WorkspacePath,
             identity.Name,
             identity.Email,
             _lifetime.Token);
-        await SaveGitIdentityDefaultsAsync(identity);
-        await _git.PrepareForInitialPushAsync(ViewModel.WorkspacePath, "Initial commit", _lifetime.Token);
+        await SaveGitIdentityDefaultsAsync(identity, branchName);
+        var excluded = await _git.ExcludeOversizedFilesAsync(
+            ViewModel.WorkspacePath,
+            cancellationToken: _lifetime.Token);
+        var trackedOversized = excluded.Any(file => file.WasTracked);
+        if (trackedOversized
+            && await _git.GetCommitCountAsync(ViewModel.WorkspacePath, _lifetime.Token) > 1)
+            throw new InvalidOperationException("An oversized file exists in multi-commit history. Use Git LFS or git filter-repo before publishing.");
+        await _git.PrepareForInitialPushAsync(
+            ViewModel.WorkspacePath,
+            "Initial commit",
+            amendSingleInitialCommit: trackedOversized,
+            cancellationToken: _lifetime.Token);
         var remote = await _git.GetRemoteUrlAsync(ViewModel.WorkspacePath, _lifetime.Token);
         if (string.IsNullOrWhiteSpace(remote))
         {
@@ -1271,11 +1397,12 @@ public sealed partial class MainWindow : Window
                     repositoryName,
                     isPrivate,
                     _lifetime.Token);
-                return;
+                return excluded;
             }
             await _git.SetOriginAsync(ViewModel.WorkspacePath, existing, _lifetime.Token);
         }
         await _git.PushAsync(ViewModel.WorkspacePath, _lifetime.Token);
+        return excluded;
     }
 
     private sealed record CommitRequest(string Message, GitIdentity Identity);

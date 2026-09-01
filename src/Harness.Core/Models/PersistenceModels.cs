@@ -59,7 +59,8 @@ public sealed record HarnessApplicationSettings(
     string PersonalInstructions = "",
     string? LastWorkspacePath = null,
     string GitAuthorName = "",
-    string GitAuthorEmail = "");
+    string GitAuthorEmail = "",
+    string DefaultGitBranch = "main");
 
 public sealed record ImportMessage(
     string Role,

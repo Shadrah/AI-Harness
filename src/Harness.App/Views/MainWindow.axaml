@@ -348,6 +348,7 @@
       <Grid Margin="11,0" ColumnDefinitions="Auto,16,Auto,*,Auto,16,Auto">
         <TextBlock Text="{Binding ConnectionStatus}" Classes="micro" Foreground="#65C7D0" FontSize="8" VerticalAlignment="Center" />
         <TextBlock Grid.Column="2" Text="{Binding RunStatus}" Classes="micro" FontSize="8" VerticalAlignment="Center" />
+        <TextBlock Grid.Column="3" Text="{Binding RepositoryOperationStatus}" Foreground="{Binding RepositoryOperationColor}" Classes="micro" FontSize="8" VerticalAlignment="Center" HorizontalAlignment="Center" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding RepositoryOperationStatus}" />
         <TextBlock Grid.Column="4" Text="{Binding TokenStatus}" Classes="muted mono" FontSize="9" VerticalAlignment="Center" />
         <TextBlock Grid.Column="6" Text="{Binding BranchStatus}" Classes="muted mono" FontSize="9" VerticalAlignment="Center" />
       </Grid>

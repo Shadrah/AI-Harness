@@ -33,10 +33,12 @@ public sealed class MainWindowViewModel : ObservableObject
     private TaskItem? _selectedTask;
     private string? _repositoryRoot;
     private string _workingTreeStatus = "CHECKING";
-    private string _branchStatus = "GIT —";
+    private string _branchStatus = "BRANCH —";
     private bool _isRepository;
     private bool _hasRepositoryRemote;
     private bool _isGitHubConnected;
+    private string _repositoryOperationStatus = "GIT READY";
+    private string _repositoryOperationColor = "#8993A3";
     private bool _showActivityTrace = true;
     private bool _showUsageInspector = true;
     private bool _showContextInspector = true;
@@ -166,6 +168,21 @@ public sealed class MainWindowViewModel : ObservableObject
                 RaisePropertyChanged(nameof(CanUseRemoteActions));
             }
         }
+    }
+    public string RepositoryOperationStatus
+    {
+        get => _repositoryOperationStatus;
+        private set => SetProperty(ref _repositoryOperationStatus, value);
+    }
+    public string RepositoryOperationColor
+    {
+        get => _repositoryOperationColor;
+        private set => SetProperty(ref _repositoryOperationColor, value);
+    }
+    public void SetRepositoryOperationStatus(string status, bool isError = false, bool isPending = false)
+    {
+        RepositoryOperationStatus = status;
+        RepositoryOperationColor = isError ? "#E2A84A" : isPending ? "#D8DEE8" : "#65C7D0";
     }
     public bool ShowActivityTrace { get => _showActivityTrace; private set => SetProperty(ref _showActivityTrace, value); }
     public bool ShowUsageInspector { get => _showUsageInspector; private set => SetProperty(ref _showUsageInspector, value); }
@@ -943,7 +960,7 @@ public sealed class MainWindowViewModel : ObservableObject
             IsRepository = false;
             HasRepositoryRemote = false;
             WorkingTreeStatus = "NOT A REPOSITORY";
-            BranchStatus = "GIT —";
+            BranchStatus = "BRANCH —";
             return;
         }
 
@@ -956,7 +973,7 @@ public sealed class MainWindowViewModel : ObservableObject
         WorkingTreeStatus = snapshot.Files.Count == 0
             ? "CLEAN"
             : $"{snapshot.Files.Count} CHANGED";
-        BranchStatus = $"GIT  {snapshot.Branch ?? "UNKNOWN"}";
+        BranchStatus = $"BRANCH · {snapshot.Branch ?? "UNKNOWN"}";
         RaisePropertyChanged(nameof(RepositoryDockLabel));
         RaisePropertyChanged(nameof(CanUseRepositoryActions));
     }

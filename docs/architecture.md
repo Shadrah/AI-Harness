@@ -203,7 +203,12 @@ working-tree entry point remain workspace concerns and can be selectively hidden
 
 Repository support uses argument-list `git` and `gh` processes. Harness can
 initialize a repository, attach or update `origin`, create a GitHub repository,
-commit staged changes, fetch, fast-forward pull, and push the current branch.
+configure a repository-local commit identity, choose the initial branch, commit,
+fetch, fast-forward pull, and push the current branch. Repository creation is a
+single publish transaction: preflight, stage, initial commit, remote creation,
+and upstream push. Files above GitHub's 100 MiB regular-Git limit are preserved
+locally and added to `.git/info/exclude`; a sole unpublished initial commit can
+be amended automatically to recover from a rejected first push.
 Every remote mutation requires a direct user action. GitHub credentials remain
 in the system credential store managed by GitHub CLI and are never copied into
 the Harness database.

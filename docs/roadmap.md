@@ -28,7 +28,8 @@ driver without keeping that driver installed?
 - Installed-history detection for Codex and Claude Code, including selectable
   conversation previews, workspace hints, source IDs, and explicit loss reports.
 - Direct Git/GitHub workflow for init, origin attach, repository creation,
-  commit, fetch, fast-forward pull, and push.
+  identity and initial-branch configuration, oversized-file preflight, commit,
+  fetch, fast-forward pull, and push with visible workspace feedback.
 
 ## P1 — Replacement and migration
 

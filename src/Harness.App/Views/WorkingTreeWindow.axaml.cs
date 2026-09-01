@@ -43,6 +43,52 @@ public sealed partial class WorkingTreeWindow : Window
     private async void Refresh_OnClick(object? sender, RoutedEventArgs e) =>
         await RefreshAsync(loadSelectedDiff: true);
 
+    private async void RenameBranch_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (_git is null || ViewModel.RepositoryRoot is not { } root) return;
+        var input = new TextBox
+        {
+            Text = ViewModel.Branch is "NO COMMITS" or "UNKNOWN" ? "main" : ViewModel.Branch,
+            MinWidth = 340,
+            Watermark = "main"
+        };
+        var rename = new Button { Content = "RENAME BRANCH", Classes = { "primary" } };
+        var cancel = new Button { Content = "CANCEL", Classes = { "ghost" } };
+        var dialog = new Window
+        {
+            Title = "Rename current branch",
+            Width = 440,
+            SizeToContent = SizeToContent.Height,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new StackPanel
+            {
+                Margin = new Thickness(18),
+                Spacing = 11,
+                Children =
+                {
+                    new TextBlock { Text = "Current branch name", FontSize = 18, FontWeight = FontWeight.SemiBold },
+                    new TextBlock { Text = "This changes the local branch name. The next push updates its upstream branch on the remote.", Classes = { "muted" }, TextWrapping = TextWrapping.Wrap },
+                    input,
+                    new StackPanel
+                    {
+                        Orientation = Avalonia.Layout.Orientation.Horizontal,
+                        HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+                        Spacing = 7,
+                        Children = { cancel, rename }
+                    }
+                }
+            }
+        };
+        rename.Click += (_, _) => dialog.Close(input.Text?.Trim());
+        cancel.Click += (_, _) => dialog.Close(null);
+        var branch = await dialog.ShowDialog<string?>(this);
+        if (string.IsNullOrWhiteSpace(branch)) return;
+        await RunActionAsync(
+            repository => _git.RenameCurrentBranchAsync(repository, branch, _lifetime.Token),
+            $"Renamed current branch to {branch}");
+    }
+
     private async Task RefreshAsync(bool loadSelectedDiff)
     {
         if (_git is null || _workspacePath is null)
