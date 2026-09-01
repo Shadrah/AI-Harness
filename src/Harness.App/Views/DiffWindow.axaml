@@ -1,0 +1,48 @@
+<Window
+    x:Class="Harness.App.Views.DiffWindow"
+    x:DataType="vm:DiffWindowViewModel"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:Harness.App.ViewModels"
+    Title="Harness — Turn Diff"
+    Width="1040" Height="720" MinWidth="680" MinHeight="440"
+    CanResize="True"
+    ExtendClientAreaToDecorationsHint="True"
+    ExtendClientAreaChromeHints="NoChrome"
+    ExtendClientAreaTitleBarHeightHint="44"
+    WindowStartupLocation="CenterOwner">
+  <Grid RowDefinitions="44,*,28" Background="#11151B">
+    <Border Classes="hairline" Background="#151A21" PointerPressed="TitleBar_OnPointerPressed">
+      <Grid Margin="14,0,0,0" ColumnDefinitions="Auto,12,*,Auto,14,40,40,40">
+        <TextBlock Text="TURN DIFF" Classes="micro" VerticalAlignment="Center"/>
+        <Border Grid.Column="1" Width="1" Height="18" Background="#29313C"/>
+        <TextBlock Grid.Column="2" Text="{Binding Title}" Classes="muted mono" FontSize="9" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+        <TextBlock Grid.Column="3" Text="{Binding Summary}" Classes="mono" FontSize="10" Foreground="#65C7D0" VerticalAlignment="Center"/>
+        <Button Grid.Column="5" Classes="window-command" Click="Minimize_OnClick"><Border Width="12" Height="1.5" Background="#D8DEE8"/></Button>
+        <Button Grid.Column="6" Classes="window-command" Click="Maximize_OnClick"><Border Width="11" Height="11" BorderBrush="#D8DEE8" BorderThickness="1.5"/></Button>
+        <Button Grid.Column="7" Classes="window-command window-close" Click="Close_OnClick"><Path Width="14" Height="14" Stretch="Uniform" Stroke="#D8DEE8" StrokeThickness="1.5" Data="M3,3 L13,13 M13,3 L3,13"/></Button>
+      </Grid>
+    </Border>
+    <Border Grid.Row="1" Margin="12" BorderBrush="#29313C" BorderThickness="1" CornerRadius="4" Background="#0F1318">
+      <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+        <ItemsControl ItemsSource="{Binding Lines}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate x:DataType="vm:DiffLineItem">
+              <Border Background="{Binding Background}" MinHeight="20">
+                <Grid ColumnDefinitions="44,44,22,*">
+                  <TextBlock Text="{Binding OldLine}" Classes="muted mono" FontSize="9" TextAlignment="Right" Padding="0,2,8,2" Background="#151A21"/>
+                  <TextBlock Grid.Column="1" Text="{Binding NewLine}" Classes="muted mono" FontSize="9" TextAlignment="Right" Padding="0,2,8,2" Background="#151A21"/>
+                  <TextBlock Grid.Column="2" Text="{Binding Marker}" Classes="mono" FontSize="10" FontWeight="SemiBold" Foreground="{Binding Foreground}" TextAlignment="Center" Padding="0,2"/>
+                  <TextBlock Grid.Column="3" Text="{Binding Text}" Classes="mono" FontSize="10" Foreground="{Binding Foreground}" Padding="4,2,12,2" TextWrapping="NoWrap"/>
+                </Grid>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </ScrollViewer>
+    </Border>
+    <Border Grid.Row="2" BorderBrush="#29313C" BorderThickness="0,1,0,0" Background="#0D1116">
+      <TextBlock Text="Green lines were added; red lines were removed. Line numbers show old and new positions." Classes="muted" FontSize="9" Margin="11,0" VerticalAlignment="Center"/>
+    </Border>
+  </Grid>
+</Window>

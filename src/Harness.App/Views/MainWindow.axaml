@@ -1,0 +1,356 @@
+<Window
+    x:Class="Harness.App.Views.MainWindow"
+    x:DataType="vm:MainWindowViewModel"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:Harness.App.Controls"
+    xmlns:vm="using:Harness.App.ViewModels"
+    Title="Harness — AI workbench"
+    Width="1440"
+    Height="900"
+    MinWidth="1040"
+    MinHeight="680"
+    CanResize="True"
+    ExtendClientAreaToDecorationsHint="True"
+    ExtendClientAreaChromeHints="NoChrome"
+    ExtendClientAreaTitleBarHeightHint="52"
+    WindowStartupLocation="CenterScreen">
+
+  <Grid RowDefinitions="52,*,30">
+    <!-- Command strip -->
+    <Border Grid.Row="0" Classes="hairline" Background="#151A21" Padding="0,4,0,0">
+      <Grid Margin="14,0,0,0" ColumnDefinitions="Auto,18,Auto,*,Auto,8,Auto,12,40,40,40">
+        <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Spacing="9">
+          <Border Width="22" Height="22" CornerRadius="3" BorderBrush="#65C7D0" BorderThickness="1">
+            <TextBlock Text="H" HorizontalAlignment="Center" VerticalAlignment="Center" FontWeight="Bold" Foreground="#65C7D0" />
+          </Border>
+          <TextBlock Text="HARNESS" Classes="micro" Foreground="#D8DEE8" VerticalAlignment="Center" />
+        </StackPanel>
+        <Border Grid.Column="1" Width="1" Height="20" Background="#29313C" HorizontalAlignment="Center" />
+        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Spacing="7">
+          <TextBlock Text="{Binding WorkspaceName}" FontWeight="SemiBold" />
+          <TextBlock Text="/" Classes="muted" />
+          <TextBlock Text="{Binding CurrentSessionTitle}" Classes="muted" />
+        </StackPanel>
+        <Border Grid.Column="3"
+                Background="Transparent"
+                PointerPressed="TitleBar_OnPointerPressed"
+                ToolTip.Tip="Drag to move · double-click to maximize" />
+        <Button Grid.Column="4" Content="{Binding RunButtonLabel}" Classes="primary" VerticalAlignment="Center" Click="RunOrStop_OnClick" />
+        <StackPanel Grid.Column="6" Orientation="Horizontal" Spacing="4">
+          <Button Classes="icon-button" Click="OpenExecution_OnClick" ToolTip.Tip="Activity" AutomationProperties.Name="Open activity">
+            <Path Width="16" Height="16" Stretch="Uniform" Stroke="#D8DEE8" StrokeThickness="1.6" Data="M1,9 L4.5,9 L7,3 L10.5,15 L13,9 L17,9" />
+          </Button>
+          <Button Classes="icon-button" Click="OpenSettings_OnClick" ToolTip.Tip="Settings" AutomationProperties.Name="Open settings">
+            <Path Width="16" Height="16" Stretch="Uniform" Fill="#D8DEE8" Data="M12,8.6 A3.4,3.4 0 1 1 5.2,8.6 A3.4,3.4 0 1 1 12,8.6 M8.6,0.5 L10,1 L10.6,2.6 L12.2,3.3 L13.8,2.6 L15,3.8 L14.3,5.4 L15,7 L16.6,7.6 L16.6,9.4 L15,10 L14.3,11.6 L15,13.2 L13.8,14.4 L12.2,13.7 L10.6,14.4 L10,16 L8.2,16 L7.6,14.4 L6,13.7 L4.4,14.4 L3.2,13.2 L3.9,11.6 L3.2,10 L1.6,9.4 L1.6,7.6 L3.2,7 L3.9,5.4 L3.2,3.8 L4.4,2.6 L6,3.3 L7.6,2.6 L8.2,1 Z" />
+          </Button>
+        </StackPanel>
+        <Border Grid.Column="7" Width="1" Height="20" Background="#29313C" HorizontalAlignment="Center" VerticalAlignment="Center" />
+        <Button Grid.Column="8"
+                Classes="window-command"
+                Click="MinimizeWindow_OnClick"
+                ToolTip.Tip="Minimize"
+                AutomationProperties.Name="Minimize window"><Border Width="12" Height="1.5" Background="#D8DEE8" /></Button>
+        <Button x:Name="MaximizeButton"
+                Grid.Column="9"
+                Classes="window-command"
+                Click="MaximizeWindow_OnClick"
+                ToolTip.Tip="Maximize"
+                AutomationProperties.Name="Maximize window"><Border Width="11" Height="11" BorderBrush="#D8DEE8" BorderThickness="1.5" /></Button>
+        <Button Grid.Column="10"
+                Classes="window-command window-close"
+                Click="CloseWindow_OnClick"
+                ToolTip.Tip="Close"
+                AutomationProperties.Name="Close window"><Path Width="14" Height="14" Stretch="Uniform" Stroke="#D8DEE8" StrokeThickness="1.5" Data="M3,3 L13,13 M13,3 L3,13" /></Button>
+      </Grid>
+    </Border>
+
+    <!-- Workspace -->
+    <Grid Grid.Row="1" ColumnDefinitions="226,*,278">
+      <!-- Project/task navigator -->
+      <Border Grid.Column="0" BorderBrush="#29313C" BorderThickness="0,0,1,0" Background="#151A21">
+        <Grid RowDefinitions="Auto,Auto,*,Auto">
+          <Grid Grid.Row="0" Margin="14,13,10,8" ColumnDefinitions="*,Auto">
+            <TextBlock Text="WORKSPACES" Classes="micro" VerticalAlignment="Center" />
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
+              <TextBlock Text="{Binding Workspaces.Count}" Classes="muted mono" FontSize="10" VerticalAlignment="Center" />
+              <Button Content="＋" Classes="ghost" Padding="4,0" Click="OpenWorkspace_OnClick" ToolTip.Tip="Open workspace" />
+            </StackPanel>
+          </Grid>
+          <ListBox Grid.Row="1"
+                   Classes="workspace-rail"
+                   ItemsSource="{Binding Workspaces}"
+                   SelectedItem="{Binding SelectedWorkspace, Mode=TwoWay}"
+                   SelectionChanged="WorkspaceSelection_OnChanged"
+                   Background="Transparent"
+                   BorderThickness="0"
+                   SelectionMode="Single">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="vm:WorkspaceItem">
+                <Border Margin="7,1" Padding="8,7" CornerRadius="3" Background="{Binding Background}">
+                  <Grid ColumnDefinitions="9,*">
+                    <Border Width="5" Height="5" CornerRadius="3" Background="{Binding DotColor}" VerticalAlignment="Center" />
+                    <StackPanel Grid.Column="1" Spacing="1">
+                      <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+                      <TextBlock Text="{Binding Path}" Classes="muted mono" FontSize="9" TextTrimming="CharacterEllipsis" />
+                    </StackPanel>
+                  </Grid>
+                </Border>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+          <Grid Grid.Row="2" RowDefinitions="Auto,*" Margin="0,10,0,0">
+            <Grid Grid.Row="0" Margin="14,8,10,8" ColumnDefinitions="*,Auto">
+              <TextBlock Text="TASKS" Classes="micro" />
+              <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
+                <TextBlock Text="{Binding Tasks.Count}" Classes="muted mono" FontSize="10" VerticalAlignment="Center" />
+                <Button Content="＋" Classes="ghost" Padding="4,0" Click="NewSession_OnClick" ToolTip.Tip="New durable session" />
+              </StackPanel>
+            </Grid>
+            <ListBox Grid.Row="1"
+                     ItemsSource="{Binding Tasks}"
+                     SelectedItem="{Binding SelectedTask, Mode=TwoWay}"
+                     SelectionChanged="TaskSelection_OnChanged"
+                     Background="Transparent"
+                     BorderThickness="0"
+                     SelectionMode="Single">
+              <ListBox.ItemTemplate>
+                <DataTemplate x:DataType="vm:TaskItem">
+                  <Grid Margin="3,4" ColumnDefinitions="26,*,Auto,4,Auto,2,Auto">
+                    <TextBlock Text="{Binding Index}" Classes="muted mono" FontSize="10" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" Text="{Binding Title}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="2" Text="{Binding State}" Classes="micro" FontSize="8" Foreground="#65C7D0" VerticalAlignment="Center" />
+                    <Button Grid.Column="4" Content="✎" Tag="{Binding SessionId}" Classes="ghost" Padding="3,0" Click="RenameSession_OnClick" ToolTip.Tip="Rename session" />
+                    <Button Grid.Column="6" Content="×" Tag="{Binding SessionId}" Classes="ghost" Padding="3,0" Click="DeleteSession_OnClick" ToolTip.Tip="Delete session" />
+                  </Grid>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+          </Grid>
+          <Border Grid.Row="3" BorderBrush="#29313C" BorderThickness="0,1,0,0" Padding="10">
+            <Button HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Content="⌘  Command palette" Classes="ghost" />
+          </Border>
+        </Grid>
+      </Border>
+
+      <!-- Conversation + activity trace -->
+      <Grid Grid.Column="1" Background="#11151B">
+        <Grid RowDefinitions="*,Auto">
+          <ScrollViewer Grid.Row="0">
+            <StackPanel Margin="34,30,38,24" Spacing="24" MaxWidth="850">
+              <StackPanel Spacing="4">
+                <TextBlock Text="CURRENT WORKSPACE" Classes="micro" Foreground="#65C7D0" />
+                <TextBlock Text="{Binding WorkspaceName}" FontSize="26" FontWeight="SemiBold" LetterSpacing="-0.3" />
+                <TextBlock Text="{Binding WorkspaceSummary}" Classes="muted mono" FontSize="10" />
+              </StackPanel>
+
+              <ItemsControl ItemsSource="{Binding Messages}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="vm:ChatMessageItem">
+                    <Grid ColumnDefinitions="20,*" Margin="0,0,0,14">
+                      <Border Width="2" Background="{Binding Color}" HorizontalAlignment="Left" />
+                      <Border Grid.Column="1" Background="{Binding Background}" BorderBrush="#29313C" BorderThickness="0" CornerRadius="4" Padding="10,8">
+                        <StackPanel Spacing="8">
+                          <Grid ColumnDefinitions="Auto,10,*,Auto,10,Auto">
+                            <TextBlock Text="{Binding Role}" Classes="micro" Foreground="{Binding Color}" />
+                            <TextBlock Grid.Column="2" Text="{Binding Title}" Classes="muted" FontSize="10" />
+                            <TextBlock Grid.Column="3" Text="{Binding Status}" Classes="micro" FontSize="8" Foreground="{Binding Color}" />
+                            <TextBlock Grid.Column="5" Text="{Binding Time}" Classes="muted mono" FontSize="9" />
+                          </Grid>
+                          <TextBlock Text="{Binding Text}" TextWrapping="Wrap" FontSize="13" LineHeight="20" FontFamily="{Binding FontFamily}" />
+                        </StackPanel>
+                      </Border>
+                    </Grid>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+          </ScrollViewer>
+
+          <!-- Multimodal composer -->
+          <Border Grid.Row="1" Margin="22,0,22,18" Classes="panel" Padding="10">
+            <Grid RowDefinitions="Auto,40,30" ColumnDefinitions="Auto,6,Auto,6,Auto,12,Auto,*,Auto,8,Auto">
+              <TextBox x:Name="PromptBox" Grid.Row="0" Grid.ColumnSpan="11" MinHeight="72" AcceptsReturn="True" TextWrapping="Wrap" Watermark="Ask, edit, or direct the task…" BorderThickness="0" Background="#11151B" Text="{Binding PromptText, Mode=TwoWay}" />
+              <ComboBox x:Name="ModelPicker" Grid.Row="1"
+                        Grid.Column="0"
+                        Width="260"
+                        VerticalAlignment="Bottom"
+                        ItemsSource="{Binding Models}"
+                        SelectedItem="{Binding SelectedModel, Mode=TwoWay}"
+                        ToolTip.Tip="Model supplied by the connected runtime">
+                <ComboBox.ItemTemplate>
+                  <DataTemplate x:DataType="vm:ModelOption">
+                    <TextBlock Text="{Binding DisplayName}" />
+                  </DataTemplate>
+                </ComboBox.ItemTemplate>
+              </ComboBox>
+              <ComboBox x:Name="ReasoningPicker" Grid.Row="1"
+                        Grid.Column="2"
+                        Width="102"
+                        VerticalAlignment="Bottom"
+                        ItemsSource="{Binding ReasoningLevels}"
+                        SelectedItem="{Binding SelectedReasoningLevel, Mode=TwoWay}"
+                        ToolTip.Tip="Reasoning levels advertised by this model">
+                <ComboBox.ItemTemplate>
+                  <DataTemplate x:DataType="vm:ReasoningLevelOption">
+                    <TextBlock Text="{Binding DisplayName}" />
+                  </DataTemplate>
+                </ComboBox.ItemTemplate>
+              </ComboBox>
+              <ComboBox x:Name="ServiceTierPicker" Grid.Row="1"
+                        Grid.Column="4"
+                        Width="104"
+                        VerticalAlignment="Bottom"
+                        IsVisible="{Binding HasServiceTiers}"
+                        ItemsSource="{Binding ServiceTiers}"
+                        SelectedItem="{Binding SelectedServiceTier, Mode=TwoWay}"
+                        ToolTip.Tip="Service tiers advertised by this model">
+                <ComboBox.ItemTemplate>
+                  <DataTemplate x:DataType="vm:ServiceTierOption">
+                    <TextBlock Text="{Binding DisplayName}" />
+                  </DataTemplate>
+                </ComboBox.ItemTemplate>
+              </ComboBox>
+              <Button Grid.Row="1" Grid.Column="6" Content="IMAGE" Classes="ghost" VerticalAlignment="Bottom" IsEnabled="{Binding SupportsVision}" Click="AttachImage_OnClick" ToolTip.Tip="Attach or replace a local image" />
+              <TextBlock Grid.Row="1" Grid.Column="8" Text="{Binding VisionStatus}" Classes="micro" Foreground="#65C7D0" VerticalAlignment="Center" />
+              <Button Grid.Row="1" Grid.Column="10" Content="SEND  ↵" Classes="primary" VerticalAlignment="Bottom" IsEnabled="{Binding CanSend}" Click="SendPrompt_OnClick" />
+
+              <Border Grid.Row="2" Grid.ColumnSpan="11" BorderBrush="#29313C" BorderThickness="0,1,0,0" Margin="0,5,0,0" Padding="0,5,0,0">
+                <Grid ColumnDefinitions="Auto,*,Auto,6,Auto,6,Auto">
+                  <Button x:Name="RepositoryDockButton" Content="{Binding RepositoryDockLabel}" Classes="ghost" Click="RepositoryDock_OnClick" ToolTip.Tip="Open the working tree or connect this workspace to Git" />
+                  <TextBlock Grid.Column="1" Text="{Binding WorkingTreeStatus}" Classes="muted mono" FontSize="8" VerticalAlignment="Center" Margin="8,0" />
+                  <Button x:Name="RepositoryCommitButton" Grid.Column="2" Content="COMMIT" Classes="ghost" IsEnabled="{Binding CanUseRepositoryActions}" Click="RepositoryCommit_OnClick" />
+                  <Button x:Name="RepositoryPullButton" Grid.Column="4" Content="PULL" Classes="ghost" IsEnabled="{Binding CanUseRemoteActions}" Click="RepositoryPull_OnClick" />
+                  <Button x:Name="RepositoryPushButton" Grid.Column="6" Content="PUSH" Classes="ghost" IsEnabled="{Binding CanUseRemoteActions}" Click="RepositoryPush_OnClick" />
+                </Grid>
+              </Border>
+            </Grid>
+          </Border>
+        </Grid>
+      </Grid>
+
+      <!-- Model/context inspector -->
+      <Border Grid.Column="2" BorderBrush="#29313C" BorderThickness="1,0,0,0" Background="#151A21">
+        <ScrollViewer>
+          <StackPanel>
+            <Border Classes="hairline" Padding="14,13">
+              <Grid ColumnDefinitions="*,Auto">
+                <TextBlock Text="MODEL SURFACE" Classes="micro" />
+                <TextBlock Grid.Column="1" Text="⌥I" Classes="muted mono" FontSize="9" />
+              </Grid>
+            </Border>
+            <StackPanel Margin="14" Spacing="16">
+              <StackPanel Spacing="4">
+                <TextBlock Text="{Binding ActiveModelName}" FontSize="17" FontWeight="SemiBold" />
+                <TextBlock Text="{Binding ActiveProviderLabel}" Classes="micro" Foreground="#65C7D0" />
+                <TextBlock Text="{Binding ModelSettingsStatus}" Classes="muted" FontSize="9" TextWrapping="Wrap" Margin="0,3,0,0" />
+                <Button Content="{Binding RuntimeActionLabel}" Margin="0,7,0,0" HorizontalAlignment="Stretch" IsVisible="{Binding ShowRuntimeSetup}" Click="InstallRuntime_OnClick" />
+              </StackPanel>
+
+              <StackPanel Spacing="7">
+                <TextBlock Text="CAPABILITIES" Classes="micro" />
+                <ItemsControl ItemsSource="{Binding Capabilities}">
+                  <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
+                  </ItemsControl.ItemsPanel>
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:CapabilityItem">
+                      <Border Margin="0,0,5,5" Padding="7,4" CornerRadius="3" BorderBrush="#35404D" BorderThickness="1" Opacity="{Binding Opacity}">
+                        <TextBlock Text="{Binding Name}" Classes="micro" FontSize="8" Foreground="#D8DEE8" Opacity="{Binding Opacity}" />
+                      </Border>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+
+              <Border Height="1" Background="#29313C" />
+
+              <StackPanel Spacing="9">
+                <Grid ColumnDefinitions="*,Auto">
+                  <TextBlock Text="WORKING TREE" Classes="micro" />
+                  <TextBlock Grid.Column="1" Text="{Binding WorkingTreeStatus}" Classes="muted mono" FontSize="8" />
+                </Grid>
+                <TextBlock Text="{Binding BranchStatus}" Classes="muted mono" FontSize="9" />
+                <Button x:Name="OpenWorkingTreeButton" Content="OPEN WORKING TREE" HorizontalAlignment="Stretch" Click="OpenWorkingTreeModule_OnClick" />
+              </StackPanel>
+
+              <Border Height="1" Background="#29313C" />
+
+              <StackPanel Spacing="9" IsVisible="{Binding ShowUsageInspector}">
+                <Grid ColumnDefinitions="*,Auto">
+                  <TextBlock Text="USAGE" Classes="micro" />
+                  <TextBlock Grid.Column="1" Text="{Binding UsageStatus}" Classes="micro" FontSize="8" Foreground="#65C7D0" />
+                </Grid>
+                <ItemsControl ItemsSource="{Binding UsageWindows}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:UsageWindowItem">
+                      <StackPanel Spacing="5" Margin="0,2,0,9">
+                        <Grid ColumnDefinitions="*,Auto">
+                          <TextBlock Text="{Binding Label}" Classes="micro" FontSize="8" />
+                          <TextBlock Grid.Column="1" Text="{Binding RemainingText}" Classes="mono" FontSize="9" Foreground="#D8DEE8" />
+                        </Grid>
+                        <ProgressBar Minimum="0" Maximum="100" Value="{Binding RemainingPercent}" Height="4" Foreground="#65C7D0" Background="#29313C" />
+                        <TextBlock Text="{Binding ResetText}" Classes="muted mono" FontSize="9" />
+                      </StackPanel>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+                <TextBlock Text="{Binding UsageDetail}" Classes="muted" FontSize="9" TextWrapping="Wrap" />
+                <Button Content="SIGN IN TO OPENAI" HorizontalAlignment="Stretch" IsVisible="{Binding ShowAuthenticationAction}" Click="ConnectOpenAi_OnClick" />
+              </StackPanel>
+
+              <Border Height="1" Background="#29313C" />
+
+              <StackPanel Spacing="9" IsVisible="{Binding ShowContextInspector}">
+                <Grid ColumnDefinitions="*,Auto">
+                  <TextBlock Text="SESSION CONTEXT" Classes="micro" />
+                  <TextBlock Grid.Column="1" Text="{Binding ContextStatus}" Classes="muted mono" FontSize="9" />
+                </Grid>
+                <ProgressBar Minimum="0" Maximum="100" Value="{Binding ContextUsagePercent}" Height="4" Foreground="#65C7D0" Background="#29313C" />
+                <TextBlock Text="{Binding ContextWindowStatus}" Classes="muted" FontSize="9" TextWrapping="Wrap" />
+                <TextBlock Text="ATTACHED FILES" Classes="micro" FontSize="8" Margin="0,5,0,0" />
+                <TextBlock Text="No context files are attached to this session."
+                           IsVisible="{Binding !HasContextFiles}"
+                           Classes="muted"
+                           FontSize="10"
+                           TextWrapping="Wrap" />
+                <ItemsControl ItemsSource="{Binding ContextFiles}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:ContextFileItem">
+                      <Grid ColumnDefinitions="*,Auto,4,Auto" Margin="0,2">
+                        <TextBlock Text="{Binding DisplayName}" Classes="mono" FontSize="9" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="1" Text="{Binding SizeText}" Classes="muted mono" FontSize="8" VerticalAlignment="Center" />
+                        <Button Grid.Column="3" Content="×" Tag="{Binding Id}" Classes="ghost" Padding="3,0" Click="RemoveContext_OnClick" ToolTip.Tip="Detach context file; the original is not deleted" />
+                      </Grid>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+                <Button Content="ADD CONTEXT FILES" HorizontalAlignment="Stretch" Click="ManageContext_OnClick" />
+              </StackPanel>
+
+              <Border Height="1" Background="#29313C" />
+
+              <StackPanel Spacing="9" IsVisible="{Binding ShowTurnDiffInspector}">
+                <Grid ColumnDefinitions="*,Auto">
+                  <TextBlock Text="TURN DIFF" Classes="micro" />
+                  <TextBlock Grid.Column="1" Text="{Binding ChangedFiles.Count}" Classes="muted mono" FontSize="9" />
+                </Grid>
+                <Button Content="OPEN TURN DIFF" HorizontalAlignment="Stretch" IsEnabled="{Binding HasTurnDiff}" Click="OpenDiff_OnClick" />
+              </StackPanel>
+            </StackPanel>
+          </StackPanel>
+        </ScrollViewer>
+      </Border>
+    </Grid>
+
+    <!-- Status line -->
+    <Border Grid.Row="2" BorderBrush="#29313C" BorderThickness="0,1,0,0" Background="#0D1116">
+      <Grid Margin="11,0" ColumnDefinitions="Auto,16,Auto,*,Auto,16,Auto">
+        <TextBlock Text="{Binding ConnectionStatus}" Classes="micro" Foreground="#65C7D0" FontSize="8" VerticalAlignment="Center" />
+        <TextBlock Grid.Column="2" Text="{Binding RunStatus}" Classes="micro" FontSize="8" VerticalAlignment="Center" />
+        <TextBlock Grid.Column="4" Text="{Binding TokenStatus}" Classes="muted mono" FontSize="9" VerticalAlignment="Center" />
+        <TextBlock Grid.Column="6" Text="{Binding BranchStatus}" Classes="muted mono" FontSize="9" VerticalAlignment="Center" />
+      </Grid>
+    </Border>
+  </Grid>
+</Window>

@@ -1,0 +1,168 @@
+<Application
+    x:Class="Harness.App.App"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    RequestedThemeVariant="Dark">
+  <Application.Styles>
+    <FluentTheme DensityStyle="Compact" />
+
+    <Style Selector="Window">
+      <Setter Property="Background" Value="#11151B" />
+      <Setter Property="FontFamily" Value="Inter" />
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="Foreground" Value="#D8DEE8" />
+    </Style>
+
+    <Style Selector="TextBlock">
+      <Setter Property="Foreground" Value="#D8DEE8" />
+    </Style>
+
+    <Style Selector="TextBlock.muted">
+      <Setter Property="Foreground" Value="#8993A3" />
+    </Style>
+    <Style Selector="TextBlock.micro">
+      <Setter Property="FontSize" Value="10" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="LetterSpacing" Value="1.1" />
+      <Setter Property="Foreground" Value="#8993A3" />
+    </Style>
+    <Style Selector="TextBlock.mono">
+      <Setter Property="FontFamily" Value="Cascadia Mono, JetBrains Mono, Consolas" />
+    </Style>
+    <Style Selector="Border.panel">
+      <Setter Property="Background" Value="#181E26" />
+      <Setter Property="BorderBrush" Value="#29313C" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="5" />
+    </Style>
+    <Style Selector="Border.hairline">
+      <Setter Property="BorderBrush" Value="#29313C" />
+      <Setter Property="BorderThickness" Value="0,0,0,1" />
+    </Style>
+    <Style Selector="Button">
+      <Setter Property="CornerRadius" Value="4" />
+      <Setter Property="Padding" Value="11,0" />
+      <Setter Property="MinHeight" Value="30" />
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="HorizontalContentAlignment" Value="Center" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+      <Setter Property="Background" Value="#202731" />
+      <Setter Property="BorderBrush" Value="#35404D" />
+      <Setter Property="Foreground" Value="#D8DEE8" />
+    </Style>
+    <Style Selector="Button:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="#29313C" />
+    </Style>
+    <Style Selector="Button:disabled /template/ ContentPresenter">
+      <Setter Property="Background" Value="#181E26" />
+      <Setter Property="BorderBrush" Value="#29313C" />
+      <Setter Property="TextElement.Foreground" Value="#8993A3" />
+      <Setter Property="Opacity" Value="0.62" />
+    </Style>
+    <Style Selector="Button.primary">
+      <Setter Property="Background" Value="#65C7D0" />
+      <Setter Property="BorderBrush" Value="#65C7D0" />
+      <Setter Property="Foreground" Value="#0E171B" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+    <Style Selector="Button.ghost">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+    </Style>
+    <Style Selector="Button.icon-button">
+      <Setter Property="Width" Value="34" />
+      <Setter Property="Height" Value="30" />
+      <Setter Property="MinHeight" Value="30" />
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+    </Style>
+    <Style Selector="Button.window-command">
+      <Setter Property="Width" Value="40" />
+      <Setter Property="Height" Value="32" />
+      <Setter Property="MinHeight" Value="0" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+      <Setter Property="Margin" Value="0" />
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="CornerRadius" Value="0" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="FontFamily" Value="Inter" />
+      <Setter Property="FontSize" Value="16" />
+    </Style>
+    <Style Selector="Button.window-command:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="#29313C" />
+    </Style>
+    <Style Selector="Button.window-close:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="#E2A84A" />
+      <Setter Property="TextElement.Foreground" Value="#11151B" />
+    </Style>
+    <Style Selector="TextBox">
+      <Setter Property="CornerRadius" Value="4" />
+      <Setter Property="Background" Value="#11151B" />
+      <Setter Property="BorderBrush" Value="#35404D" />
+      <Setter Property="Foreground" Value="#D8DEE8" />
+      <Setter Property="SelectionBrush" Value="#65C7D0" />
+    </Style>
+    <Style Selector="TextBox:pointerover">
+      <Setter Property="Background" Value="#11151B" />
+      <Setter Property="BorderBrush" Value="#536071" />
+    </Style>
+    <Style Selector="TextBox:focus">
+      <Setter Property="Background" Value="#11151B" />
+      <Setter Property="BorderBrush" Value="#65C7D0" />
+    </Style>
+    <Style Selector="ComboBox">
+      <Setter Property="CornerRadius" Value="4" />
+      <Setter Property="Background" Value="#202731" />
+      <Setter Property="BorderBrush" Value="#35404D" />
+      <Setter Property="MinHeight" Value="30" />
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+    <Style Selector="ComboBox:pointerover">
+      <Setter Property="Background" Value="#202731" />
+      <Setter Property="BorderBrush" Value="#536071" />
+    </Style>
+    <Style Selector="ComboBox:focus">
+      <Setter Property="Background" Value="#202731" />
+      <Setter Property="BorderBrush" Value="#65C7D0" />
+    </Style>
+    <Style Selector="ComboBoxItem">
+      <Setter Property="Background" Value="#181E26" />
+      <Setter Property="Foreground" Value="#D8DEE8" />
+      <Setter Property="MinHeight" Value="32" />
+      <Setter Property="Padding" Value="10,0" />
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+    <Style Selector="ComboBoxItem:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="#29313C" />
+      <Setter Property="TextElement.Foreground" Value="#D8DEE8" />
+    </Style>
+    <Style Selector="ComboBoxItem:selected /template/ ContentPresenter">
+      <Setter Property="Background" Value="#202731" />
+      <Setter Property="TextElement.Foreground" Value="#65C7D0" />
+    </Style>
+    <Style Selector="FlyoutPresenter">
+      <Setter Property="Background" Value="#181E26" />
+      <Setter Property="BorderBrush" Value="#35404D" />
+      <Setter Property="Foreground" Value="#D8DEE8" />
+    </Style>
+    <Style Selector="ScrollBar">
+      <Setter Property="Background" Value="Transparent" />
+    </Style>
+    <Style Selector="ListBoxItem">
+      <Setter Property="Background" Value="Transparent" />
+    </Style>
+    <Style Selector="ListBoxItem:selected /template/ ContentPresenter">
+      <Setter Property="Background" Value="#202731" />
+      <Setter Property="TextElement.Foreground" Value="#D8DEE8" />
+    </Style>
+    <Style Selector="ListBox.workspace-rail ListBoxItem:selected /template/ ContentPresenter">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="TextElement.Foreground" Value="#D8DEE8" />
+    </Style>
+  </Application.Styles>
+</Application>

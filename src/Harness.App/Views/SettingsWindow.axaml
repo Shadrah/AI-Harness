@@ -1,0 +1,93 @@
+<Window
+    x:Class="Harness.App.Views.SettingsWindow"
+    x:DataType="vm:SettingsWindowViewModel"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:Harness.App.ViewModels"
+    Title="Harness — Settings"
+    Width="940" Height="680" MinWidth="820" MinHeight="600"
+    WindowStartupLocation="CenterOwner">
+  <Grid RowDefinitions="64,*,42" Background="#11151B">
+    <Border Classes="hairline" Background="#151A21" Padding="20,0">
+      <StackPanel VerticalAlignment="Center" Spacing="3">
+        <TextBlock Text="HARNESS SETTINGS" Classes="micro" Foreground="#65C7D0" />
+        <TextBlock Text="Keep the workspace focused. Configure the machinery here." Classes="muted" FontSize="11" />
+      </StackPanel>
+    </Border>
+
+    <TabControl x:Name="SettingsTabs" Grid.Row="1" TabStripPlacement="Left" Margin="14">
+      <TabItem Header="WORKSPACE">
+        <ScrollViewer><StackPanel Margin="24,8" Spacing="18" MaxWidth="620">
+          <StackPanel Spacing="4"><TextBlock Text="Workspace surface" FontSize="22" FontWeight="SemiBold"/><TextBlock Text="Choose which live development signals stay visible while you work." Classes="muted"/></StackPanel>
+          <CheckBox Content="Show live usage" IsChecked="{Binding ShowUsageInspector}"/>
+          <CheckBox Content="Show attached context" IsChecked="{Binding ShowContextInspector}"/>
+          <CheckBox Content="Show turn diff shortcut" IsChecked="{Binding ShowTurnDiffInspector}"/>
+          <TextBlock Text="Working tree remains available as a separate module because it is active development state." Classes="muted" TextWrapping="Wrap"/>
+        </StackPanel></ScrollViewer>
+      </TabItem>
+      <TabItem Header="IMPORTS">
+        <StackPanel Margin="24,8" Spacing="18" MaxWidth="640">
+          <StackPanel Spacing="4"><TextBlock Text="Bring projects into Harness" FontSize="22" FontWeight="SemiBold"/><TextBlock Text="Migrate a project, its detected chat history, and recognized instruction files without keeping the original harness installed." Classes="muted" TextWrapping="Wrap"/></StackPanel>
+          <Border Classes="panel" Padding="16"><StackPanel Spacing="10">
+            <TextBlock Text="INSTALLED HARNESS HISTORY" Classes="micro" Foreground="#65C7D0"/>
+            <TextBlock Text="Groups Codex and Claude Code history by source project. Internal subagents and Harness-created provider threads are excluded. Importing opens the latest root continuation and copies recognized context files into Harness-owned storage." TextWrapping="Wrap"/>
+            <Button Content="SCAN INSTALLED HARNESSES" HorizontalAlignment="Left" Click="ScanHarnesses_OnClick"/>
+          </StackPanel></Border>
+          <Border Classes="panel" Padding="16"><StackPanel Spacing="10">
+            <TextBlock Text="CONVERSATION EXPORT" Classes="micro" Foreground="#65C7D0"/>
+            <TextBlock Text="Reads Markdown, text, JSON, and JSONL exports. Harness previews the detected messages and loss boundary before writing anything." TextWrapping="Wrap"/>
+            <Button Content="CHOOSE EXPORT…" HorizontalAlignment="Left" Click="ImportConversation_OnClick"/>
+          </StackPanel></Border>
+          <Border Classes="panel" Padding="16"><StackPanel Spacing="10">
+            <TextBlock Text="PROJECT FOLDER" Classes="micro" Foreground="#65C7D0"/>
+            <TextBlock Text="Register another project folder and continue there. Conversation import is available after the project opens." TextWrapping="Wrap"/>
+            <Button Content="OPEN PROJECT FOLDER…" HorizontalAlignment="Left" Click="OpenProject_OnClick"/>
+          </StackPanel></Border>
+        </StackPanel>
+      </TabItem>
+      <TabItem Header="PERSONALIZATION">
+        <StackPanel Margin="24,8" Spacing="14" MaxWidth="640">
+          <TextBlock Text="Personalization" FontSize="22" FontWeight="SemiBold"/>
+          <TextBlock Text="Instructions stored by Harness for use with every provider. Provider delivery is being added per adapter; the text is never uploaded merely by saving it." Classes="muted" TextWrapping="Wrap"/>
+          <TextBox Text="{Binding PersonalInstructions}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="220" Watermark="Coding conventions, response preferences, and standing project habits…"/>
+        </StackPanel>
+      </TabItem>
+      <TabItem Header="STARTUP">
+        <StackPanel Margin="24,8" Spacing="16" MaxWidth="620">
+          <TextBlock Text="Startup" FontSize="22" FontWeight="SemiBold"/>
+          <CheckBox Content="Restore the last workspace and session" IsChecked="{Binding RestoreLastWorkspace}"/>
+          <TextBlock Text="Provider connections and model catalogs refresh in the background. Sign-in is shown only when a connection expires or is missing." Classes="muted" TextWrapping="Wrap"/>
+        </StackPanel>
+      </TabItem>
+      <TabItem Header="PROVIDERS">
+        <StackPanel Margin="24,8" Spacing="16" MaxWidth="620">
+          <TextBlock Text="Providers" FontSize="22" FontWeight="SemiBold"/>
+          <TextBlock Text="OpenAI Codex is connected through the Harness-managed runtime. Model versions, reasoning levels, service tiers, and capabilities come from the provider catalog—not from this screen." TextWrapping="Wrap"/>
+          <TextBlock Text="Additional provider adapters will appear here when installed." Classes="muted"/>
+        </StackPanel>
+      </TabItem>
+      <TabItem Header="GITHUB">
+        <ScrollViewer><StackPanel Margin="24,8" Spacing="16" MaxWidth="650">
+          <TextBlock Text="Git &amp; GitHub" FontSize="22" FontWeight="SemiBold"/>
+          <TextBlock Text="{Binding WorkspacePath}" Classes="muted mono" FontSize="10" TextWrapping="Wrap"/>
+          <Border Classes="panel" Padding="14"><StackPanel Spacing="10">
+            <TextBlock Text="{Binding GitHubStatus}"/>
+            <StackPanel Orientation="Horizontal" Spacing="8"><Button Content="SIGN IN TO GITHUB" Click="GitHubSignIn_OnClick"/><Button Content="REFRESH" Click="RefreshRepository_OnClick"/></StackPanel>
+          </StackPanel></Border>
+          <StackPanel Spacing="7"><TextBlock Text="COMMIT IDENTITY" Classes="micro"/><TextBlock Text="Stored as Harness defaults and applied to this repository only when Harness creates a commit." Classes="muted" TextWrapping="Wrap"/><Grid ColumnDefinitions="*,10,*"><TextBox x:Name="GitAuthorNameBox" Text="{Binding GitAuthorName}" Watermark="Commit author name"/><TextBox x:Name="GitAuthorEmailBox" Grid.Column="2" Text="{Binding GitAuthorEmail}" Watermark="name@example.com"/></Grid></StackPanel>
+          <StackPanel Spacing="7"><TextBlock Text="ORIGIN REMOTE" Classes="micro"/><TextBox Text="{Binding RemoteUrl}" Watermark="https://github.com/owner/repository.git"/><StackPanel Orientation="Horizontal" Spacing="8"><Button Content="INITIALIZE GIT" Click="InitializeGit_OnClick"/><Button Content="ATTACH / UPDATE ORIGIN" Click="AttachOrigin_OnClick"/></StackPanel></StackPanel>
+          <StackPanel Spacing="7"><TextBlock Text="CREATE GITHUB REPOSITORY" Classes="micro"/><TextBlock Text="Creates an initial commit from the current workspace and pushes it to the new repository." Classes="muted"/><TextBox Text="{Binding RepositoryName}" Watermark="repository-name"/><CheckBox Content="Private repository" IsChecked="{Binding PrivateRepository}"/><Button Content="CREATE, COMMIT, AND PUSH" HorizontalAlignment="Left" Click="CreateGitHubRepository_OnClick"/></StackPanel>
+          <StackPanel Spacing="7"><TextBlock Text="COMMIT" Classes="micro"/><TextBox Text="{Binding CommitMessage}" Watermark="Describe the staged changes"/><Button Content="COMMIT STAGED CHANGES" HorizontalAlignment="Left" Click="Commit_OnClick"/></StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="8"><Button Content="FETCH" Click="Fetch_OnClick"/><Button Content="PULL (FAST-FORWARD)" Click="Pull_OnClick"/><Button Content="PUSH" Click="Push_OnClick"/></StackPanel>
+        </StackPanel></ScrollViewer>
+      </TabItem>
+      <TabItem Header="ADVANCED">
+        <StackPanel Margin="24,8" Spacing="14" MaxWidth="620"><TextBlock Text="Advanced" FontSize="22" FontWeight="SemiBold"/><TextBlock Text="Database, runtime, logging, approval, and sandbox controls belong here as those subsystems become user-configurable." Classes="muted" TextWrapping="Wrap"/></StackPanel>
+      </TabItem>
+    </TabControl>
+
+    <Border Grid.Row="2" BorderBrush="#29313C" BorderThickness="0,1,0,0" Background="#151A21">
+      <Grid Margin="16,0" ColumnDefinitions="*,Auto,8,Auto"><TextBlock Text="{Binding Status}" Classes="muted" VerticalAlignment="Center"/><Button Grid.Column="1" Content="CLOSE" Click="Close_OnClick"/><Button Grid.Column="3" Content="SAVE CHANGES" Classes="primary" Click="Save_OnClick"/></Grid>
+    </Border>
+  </Grid>
+</Window>

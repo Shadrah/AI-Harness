@@ -1,0 +1,55 @@
+
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Harness.Core", "src\Harness.Core\Harness.Core.csproj", "{A8284F40-76CA-4710-AB3D-EDB487AA9E32}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Harness.App", "src\Harness.App\Harness.App.csproj", "{D75FBA21-A424-48E2-93FC-D3C045B9BDFB}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Harness.VisualCheck", "tools\Harness.VisualCheck\Harness.VisualCheck.csproj", "{D07ED7C8-939D-4A91-B14A-D59048413395}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Harness.Providers.Codex", "src\Harness.Providers.Codex\Harness.Providers.Codex.csproj", "{32CFFCDD-AE09-43E9-B667-65A90A6874B3}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Harness.CodexProbe", "tools\Harness.CodexProbe\Harness.CodexProbe.csproj", "{AB224E81-EBC0-4D09-8574-B75C65802782}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Harness.Storage", "src\Harness.Storage\Harness.Storage.csproj", "{9BAFA2AB-2235-48DE-A3AE-A0FC37224521}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Harness.Workspace", "src\Harness.Workspace\Harness.Workspace.csproj", "{E56836E5-BA12-467A-9595-EF86F1D68505}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{A8284F40-76CA-4710-AB3D-EDB487AA9E32}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A8284F40-76CA-4710-AB3D-EDB487AA9E32}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A8284F40-76CA-4710-AB3D-EDB487AA9E32}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A8284F40-76CA-4710-AB3D-EDB487AA9E32}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D75FBA21-A424-48E2-93FC-D3C045B9BDFB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D75FBA21-A424-48E2-93FC-D3C045B9BDFB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D75FBA21-A424-48E2-93FC-D3C045B9BDFB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D75FBA21-A424-48E2-93FC-D3C045B9BDFB}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D07ED7C8-939D-4A91-B14A-D59048413395}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D07ED7C8-939D-4A91-B14A-D59048413395}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D07ED7C8-939D-4A91-B14A-D59048413395}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D07ED7C8-939D-4A91-B14A-D59048413395}.Release|Any CPU.Build.0 = Release|Any CPU
+		{32CFFCDD-AE09-43E9-B667-65A90A6874B3}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{32CFFCDD-AE09-43E9-B667-65A90A6874B3}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{32CFFCDD-AE09-43E9-B667-65A90A6874B3}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{32CFFCDD-AE09-43E9-B667-65A90A6874B3}.Release|Any CPU.Build.0 = Release|Any CPU
+		{AB224E81-EBC0-4D09-8574-B75C65802782}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{AB224E81-EBC0-4D09-8574-B75C65802782}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{AB224E81-EBC0-4D09-8574-B75C65802782}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{AB224E81-EBC0-4D09-8574-B75C65802782}.Release|Any CPU.Build.0 = Release|Any CPU
+		{9BAFA2AB-2235-48DE-A3AE-A0FC37224521}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{9BAFA2AB-2235-48DE-A3AE-A0FC37224521}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{9BAFA2AB-2235-48DE-A3AE-A0FC37224521}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{9BAFA2AB-2235-48DE-A3AE-A0FC37224521}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E56836E5-BA12-467A-9595-EF86F1D68505}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E56836E5-BA12-467A-9595-EF86F1D68505}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E56836E5-BA12-467A-9595-EF86F1D68505}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E56836E5-BA12-467A-9595-EF86F1D68505}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

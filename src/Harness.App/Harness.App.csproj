@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Harness.Core\Harness.Core.csproj" />
+    <ProjectReference Include="..\Harness.Providers.Codex\Harness.Providers.Codex.csproj" />
+    <ProjectReference Include="..\Harness.Storage\Harness.Storage.csproj" />
+    <ProjectReference Include="..\Harness.Workspace\Harness.Workspace.csproj" />
+    <PackageReference Include="Avalonia" Version="11.3.9" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.9" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.9" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.9" />
+  </ItemGroup>
+</Project>

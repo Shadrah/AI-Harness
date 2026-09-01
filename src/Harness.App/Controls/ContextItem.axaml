@@ -1,0 +1,11 @@
+<UserControl
+    x:Class="Harness.App.Controls.ContextItem"
+    x:Name="Root"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Grid ColumnDefinitions="8,*,Auto" Margin="0,3">
+    <Border Width="4" Height="4" CornerRadius="2" Background="#65C7D0" VerticalAlignment="Center" />
+    <TextBlock Grid.Column="1" Text="{Binding Title, ElementName=Root}" Margin="4,0" />
+    <TextBlock Grid.Column="2" Text="{Binding Detail, ElementName=Root}" Classes="muted mono" FontSize="9" />
+  </Grid>
+</UserControl>

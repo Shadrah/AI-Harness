@@ -1,0 +1,57 @@
+<Window
+    x:Class="Harness.App.Views.ExecutionWindow"
+    x:DataType="vm:MainWindowViewModel"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:Harness.App.ViewModels"
+    Title="Harness — Activity"
+    Width="1060" Height="700" MinWidth="760" MinHeight="480"
+    CanResize="True"
+    ExtendClientAreaToDecorationsHint="True"
+    ExtendClientAreaChromeHints="NoChrome"
+    ExtendClientAreaTitleBarHeightHint="44"
+    WindowStartupLocation="CenterOwner">
+  <Grid RowDefinitions="44,*,28" Background="#11151B">
+    <Border Classes="hairline" Background="#151A21" PointerPressed="TitleBar_OnPointerPressed">
+      <Grid Margin="14,0,0,0" ColumnDefinitions="Auto,12,Auto,*,40,40,40">
+        <TextBlock Text="RUN ACTIVITY" Classes="micro" VerticalAlignment="Center"/>
+        <Border Grid.Column="1" Width="1" Height="18" Background="#29313C"/>
+        <TextBlock Grid.Column="2" Text="{Binding ExecutionStatus}" Classes="micro" FontSize="8" Foreground="#65C7D0" VerticalAlignment="Center"/>
+        <Button Grid.Column="4" Classes="window-command" Click="Minimize_OnClick"><Border Width="12" Height="1.5" Background="#D8DEE8"/></Button>
+        <Button Grid.Column="5" Classes="window-command" Click="Maximize_OnClick"><Border Width="11" Height="11" BorderBrush="#D8DEE8" BorderThickness="1.5"/></Button>
+        <Button Grid.Column="6" Classes="window-command window-close" Click="Close_OnClick"><Path Width="14" Height="14" Stretch="Uniform" Stroke="#D8DEE8" StrokeThickness="1.5" Data="M3,3 L13,13 M13,3 L3,13"/></Button>
+      </Grid>
+    </Border>
+    <Grid Grid.Row="1" ColumnDefinitions="330,*">
+      <Border BorderBrush="#29313C" BorderThickness="0,0,1,0" Background="#151A21">
+        <ListBox ItemsSource="{Binding ExecutionItems}" SelectedItem="{Binding SelectedExecutionItem, Mode=TwoWay}" Background="Transparent" BorderThickness="0">
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="vm:ExecutionItem">
+              <Grid Margin="10,7" ColumnDefinitions="4,10,*,Auto">
+                <Border Background="{Binding Color}" CornerRadius="2"/>
+                <StackPanel Grid.Column="2" Spacing="3">
+                  <TextBlock Text="{Binding Kind}" Classes="micro" FontSize="8" Foreground="{Binding Color}"/>
+                  <TextBlock Text="{Binding Title}" TextTrimming="CharacterEllipsis"/>
+                  <TextBlock Text="{Binding Time}" Classes="muted mono" FontSize="8"/>
+                </StackPanel>
+                <TextBlock Grid.Column="3" Text="{Binding Status}" Classes="micro" FontSize="8" VerticalAlignment="Center"/>
+              </Grid>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+      </Border>
+      <Grid Grid.Column="1" RowDefinitions="42,*">
+        <Grid Margin="14,0" ColumnDefinitions="*,Auto" VerticalAlignment="Center">
+          <TextBlock Text="{Binding SelectedExecutionItem.Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+          <TextBlock Grid.Column="1" Text="{Binding SelectedExecutionItem.Status}" Classes="micro" Foreground="#65C7D0"/>
+        </Grid>
+        <Border Grid.Row="1" Margin="12" Classes="panel">
+          <TextBox Text="{Binding SelectedExecutionItem.Detail}" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap" BorderThickness="0" FontFamily="{Binding SelectedExecutionItem.FontFamily}" FontSize="11"/>
+        </Border>
+      </Grid>
+    </Grid>
+    <Border Grid.Row="2" BorderBrush="#29313C" BorderThickness="0,1,0,0" Background="#0D1116">
+      <TextBlock Text="Output is bounded per event; complete provider records remain available in durable session storage." Classes="muted" FontSize="9" Margin="11,0" VerticalAlignment="Center"/>
+    </Border>
+  </Grid>
+</Window>

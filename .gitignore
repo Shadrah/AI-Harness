@@ -1,0 +1,8 @@
+/bin/
+/.generated/
+*.exe
+**/bin/
+**/obj/
+.vs/
+.idea/
+/.artifacts/
