@@ -1326,13 +1326,17 @@ public sealed partial class MainWindow : Window
                 await _git.RenameCurrentBranchAsync(workspacePath, branchName.Text ?? "main", _lifetime.Token);
                 await SaveDefaultGitBranchAsync(branchName.Text);
             });
+        var branchResult = $"Current branch set to {branchName.Text?.Trim()}";
         setBranch.Click += async (_, _) => await RunSetupAsync(
             $"Setting branch to {branchName.Text?.Trim()}…",
-            () => $"Current branch set to {branchName.Text?.Trim()}",
+            () => branchResult,
             async () =>
             {
                 await _git.InitializeRepositoryAsync(workspacePath, _lifetime.Token, branchName.Text ?? "main");
-                await _git.RenameCurrentBranchAsync(workspacePath, branchName.Text ?? "main", _lifetime.Token);
+                branchResult = await RenameWorkspaceBranchAsync(
+                    workspacePath,
+                    branchName.Text ?? "main",
+                    _lifetime.Token);
                 await SaveDefaultGitBranchAsync(branchName.Text);
             });
         attach.Click += async (_, _) => await RunSetupAsync(
@@ -1450,6 +1454,67 @@ public sealed partial class MainWindow : Window
         await _store.SaveApplicationSettingsAsync(_applicationSettings, _lifetime.Token);
     }
 
+    private async Task<string> RenameWorkspaceBranchAsync(
+        string repositoryRoot,
+        string branchName,
+        CancellationToken cancellationToken,
+        bool makeDefault = true)
+    {
+        var snapshot = await _git.ReadStatusAsync(repositoryRoot, cancellationToken);
+        if (!snapshot.IsRepository || snapshot.RepositoryRoot is null)
+            throw new InvalidOperationException("Initialize Git before renaming the branch.");
+
+        var normalized = branchName.Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+            throw new InvalidOperationException("A branch name is required.");
+        var oldBranch = snapshot.Branch;
+        var remote = await _git.GetRemoteUrlAsync(snapshot.RepositoryRoot, cancellationToken);
+        var isGitHubRemote = !string.IsNullOrWhiteSpace(remote)
+            && remote.Contains("github.com", StringComparison.OrdinalIgnoreCase);
+        string? oldRemoteDefault = null;
+        if (isGitHubRemote)
+        {
+            var connection = await _github.GetConnectionStatusAsync(cancellationToken);
+            if (!connection.IsAuthenticated)
+                throw new InvalidOperationException("Connect GitHub before renaming a published branch.");
+            oldRemoteDefault = await _github.GetDefaultBranchAsync(snapshot.RepositoryRoot, cancellationToken);
+        }
+
+        if (!string.Equals(oldBranch, normalized, StringComparison.Ordinal))
+            await _git.RenameCurrentBranchAsync(snapshot.RepositoryRoot, normalized, cancellationToken);
+
+        if (await _git.GetCommitCountAsync(snapshot.RepositoryRoot, cancellationToken) == 0)
+            return $"Initial branch set to {normalized}; it will be published with the first commit";
+        if (string.IsNullOrWhiteSpace(remote))
+            return $"Local branch renamed to {normalized}";
+
+        await _git.PushAsync(snapshot.RepositoryRoot, cancellationToken);
+        if (!isGitHubRemote)
+            return $"Branch {normalized} pushed; update the remote default branch in your hosting provider";
+
+        var shouldChangeDefault = makeDefault
+            || string.Equals(oldRemoteDefault, oldBranch, StringComparison.Ordinal);
+        if (shouldChangeDefault)
+            await _github.SetDefaultBranchAsync(snapshot.RepositoryRoot, normalized, cancellationToken);
+        var branchToRemove = !string.IsNullOrWhiteSpace(oldBranch)
+            && !string.Equals(oldBranch, normalized, StringComparison.Ordinal)
+                ? oldBranch
+                : makeDefault
+                  && !string.IsNullOrWhiteSpace(oldRemoteDefault)
+                  && !string.Equals(oldRemoteDefault, normalized, StringComparison.Ordinal)
+                    ? oldRemoteDefault
+                    : null;
+        var removedOldBranch = branchToRemove is not null
+            && await _git.RemoteBranchExistsAsync(snapshot.RepositoryRoot, branchToRemove, cancellationToken);
+        if (removedOldBranch)
+            await _git.DeleteRemoteBranchAsync(snapshot.RepositoryRoot, branchToRemove!, cancellationToken);
+        return removedOldBranch
+            ? $"Renamed {branchToRemove} to {normalized} locally and on GitHub"
+            : shouldChangeDefault
+                ? $"Branch {normalized} is published and set as the GitHub default"
+                : $"Renamed the published branch to {normalized}";
+    }
+
     private async Task<IReadOnlyList<GitExcludedFile>> PublishRepositoryAsync(
         string repositoryName,
         bool isPrivate,
@@ -1529,7 +1594,10 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        var module = new WorkingTreeWindow(_git, ViewModel.WorkspacePath);
+        var module = new WorkingTreeWindow(
+            _git,
+            ViewModel.WorkspacePath,
+            (root, branch, token) => RenameWorkspaceBranchAsync(root, branch, token, makeDefault: false));
         module.WorkingTreeChanged += async (_, _) => await RefreshWorkingTreeAsync();
         module.Closed += async (_, _) =>
         {

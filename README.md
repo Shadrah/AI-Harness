@@ -118,7 +118,9 @@ Read [the architecture](docs/architecture.md), [the interface direction](docs/in
 [the portable import format](docs/portable-format.md), and the
 [production data-integrity rules](docs/data-integrity.md). The ordered replacement
 plan is tracked in [the product roadmap](docs/roadmap.md), with local persistence
-documented in [storage](docs/storage.md).
+documented in [storage](docs/storage.md). The complete product contract is defined
+in [product completeness](docs/product-completeness.md), including the searchable,
+provider-aware [Skills Library](docs/skills-library.md).
 
 ## License
 

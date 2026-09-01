@@ -55,6 +55,8 @@ driver without keeping that driver installed?
 
 ## P3 — Skills Library
 
+- Implement the complete discovery, compatibility, trust, installation, provider
+  delivery, update, and removal contract in [Skills Library](skills-library.md).
 - Search public catalogs and configured GitHub sources by category, capability,
   provider, language, license, and compatibility.
 - Inspect a skill's source, manifest, requested tools, permissions, and version

@@ -121,6 +121,32 @@ public sealed class GitHubCliClient
             : null;
     }
 
+    public async Task SetDefaultBranchAsync(
+        string sourceDirectory,
+        string branchName,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(branchName))
+            throw new InvalidOperationException("A branch name is required.");
+        var result = await RunAsync(
+            Path.GetFullPath(sourceDirectory),
+            ["repo", "edit", "--default-branch", branchName.Trim()],
+            cancellationToken);
+        EnsureSuccess(result, $"set the GitHub default branch to {branchName.Trim()}");
+    }
+
+    public async Task<string?> GetDefaultBranchAsync(
+        string sourceDirectory,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await RunAsync(
+            Path.GetFullPath(sourceDirectory),
+            ["repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"],
+            cancellationToken);
+        EnsureSuccess(result, "read the GitHub default branch");
+        return string.IsNullOrWhiteSpace(result.Output) ? null : result.Output.Trim();
+    }
+
     private static async Task<CliResult> RunAsync(string workingDirectory, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
     {
         var start = CreateStartInfo(workingDirectory, arguments);

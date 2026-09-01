@@ -154,6 +154,39 @@ public sealed class GitWorkspaceClient
         EnsureSuccess(await RunGitAsync(root, ["branch", "-m", normalized], cancellationToken), $"rename the current branch to {normalized}");
     }
 
+    public async Task<bool> RemoteBranchExistsAsync(
+        string repositoryRoot,
+        string branchName,
+        CancellationToken cancellationToken = default)
+    {
+        var root = Path.GetFullPath(repositoryRoot);
+        var normalized = NormalizeBranchName(branchName);
+        var validation = await RunGitAsync(root, ["check-ref-format", "--branch", normalized], cancellationToken);
+        EnsureSuccess(validation, $"use branch name {normalized}");
+        var result = await RunGitAsync(
+            root,
+            ["ls-remote", "--exit-code", "--heads", "origin", $"refs/heads/{normalized}"],
+            cancellationToken);
+        if (result.ExitCode == 0) return true;
+        if (result.ExitCode == 2) return false;
+        EnsureSuccess(result, $"inspect origin branch {normalized}");
+        return false;
+    }
+
+    public async Task DeleteRemoteBranchAsync(
+        string repositoryRoot,
+        string branchName,
+        CancellationToken cancellationToken = default)
+    {
+        var root = Path.GetFullPath(repositoryRoot);
+        var normalized = NormalizeBranchName(branchName);
+        var validation = await RunGitAsync(root, ["check-ref-format", "--branch", normalized], cancellationToken);
+        EnsureSuccess(validation, $"use branch name {normalized}");
+        EnsureSuccess(
+            await RunGitAsync(root, ["push", "origin", "--delete", normalized], cancellationToken),
+            $"delete origin branch {normalized}");
+    }
+
     public async Task<IReadOnlyList<GitExcludedFile>> ExcludeOversizedFilesAsync(
         string repositoryRoot,
         long maximumBytes = 100L * 1024 * 1024,

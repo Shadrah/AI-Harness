@@ -13,6 +13,7 @@ public sealed partial class WorkingTreeWindow : Window
     private readonly CancellationTokenSource _lifetime = new();
     private readonly GitWorkspaceClient? _git;
     private readonly string? _workspacePath;
+    private readonly Func<string, string, CancellationToken, Task<string>>? _renameBranch;
 
     public WorkingTreeWindow()
     {
@@ -25,10 +26,14 @@ public sealed partial class WorkingTreeWindow : Window
         };
     }
 
-    public WorkingTreeWindow(GitWorkspaceClient git, string workspacePath) : this()
+    public WorkingTreeWindow(
+        GitWorkspaceClient git,
+        string workspacePath,
+        Func<string, string, CancellationToken, Task<string>>? renameBranch = null) : this()
     {
         _git = git;
         _workspacePath = Path.GetFullPath(workspacePath);
+        _renameBranch = renameBranch;
         Opened += WorkingTreeWindow_OnOpened;
     }
 
@@ -68,7 +73,7 @@ public sealed partial class WorkingTreeWindow : Window
                 Children =
                 {
                     new TextBlock { Text = "Current branch name", FontSize = 18, FontWeight = FontWeight.SemiBold },
-                    new TextBlock { Text = "This changes the local branch name. The next push updates its upstream branch on the remote.", Classes = { "muted" }, TextWrapping = TextWrapping.Wrap },
+                    new TextBlock { Text = "Harness publishes a renamed branch. If it was GitHub's default, Harness moves the default and then removes the old remote branch.", Classes = { "muted" }, TextWrapping = TextWrapping.Wrap },
                     input,
                     new StackPanel
                     {
@@ -84,9 +89,21 @@ public sealed partial class WorkingTreeWindow : Window
         cancel.Click += (_, _) => dialog.Close(null);
         var branch = await dialog.ShowDialog<string?>(this);
         if (string.IsNullOrWhiteSpace(branch)) return;
+        var result = $"Renamed local branch to {branch}";
         await RunActionAsync(
-            repository => _git.RenameCurrentBranchAsync(repository, branch, _lifetime.Token),
-            $"Renamed current branch to {branch}");
+            async repository =>
+            {
+                result = _renameBranch is null
+                    ? await RenameLocalBranchAsync(repository, branch)
+                    : await _renameBranch(repository, branch, _lifetime.Token);
+            },
+            () => result);
+    }
+
+    private async Task<string> RenameLocalBranchAsync(string repository, string branch)
+    {
+        await _git!.RenameCurrentBranchAsync(repository, branch, _lifetime.Token);
+        return $"Renamed local branch to {branch}";
     }
 
     private async Task RefreshAsync(bool loadSelectedDiff)
@@ -188,7 +205,10 @@ public sealed partial class WorkingTreeWindow : Window
         }
     }
 
-    private async Task RunActionAsync(Func<string, Task> action, string success)
+    private Task RunActionAsync(Func<string, Task> action, string success) =>
+        RunActionAsync(action, () => success);
+
+    private async Task RunActionAsync(Func<string, Task> action, Func<string> success)
     {
         if (_git is null || ViewModel.RepositoryRoot is not { } root)
         {
@@ -197,7 +217,7 @@ public sealed partial class WorkingTreeWindow : Window
         try
         {
             await action(root);
-            ViewModel.Activity = success;
+            ViewModel.Activity = success();
             WorkingTreeChanged?.Invoke(this, EventArgs.Empty);
             await RefreshAsync(loadSelectedDiff: true);
         }

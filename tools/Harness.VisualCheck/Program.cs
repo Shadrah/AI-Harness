@@ -428,6 +428,27 @@ try
         throw new InvalidOperationException("Repository dock commit did not stage and commit all workspace changes.");
     }
 
+    var bareRemote = Path.Combine(gitProbeRoot, "remote.git");
+    Directory.CreateDirectory(bareRemote);
+    await RunGitProbeCommandAsync(bareRemote, "init", "--bare", "--quiet");
+    await RunGitProbeCommandAsync(gitProbeRepository, "remote", "add", "origin", bareRemote);
+    var originalBranch = status.Branch ?? throw new InvalidOperationException("Git probe did not report its branch.");
+    await gitProbe.PushAsync(gitProbeRepository);
+    await gitProbe.RenameCurrentBranchAsync(gitProbeRepository, "published-main");
+    await gitProbe.PushAsync(gitProbeRepository);
+    if (!await gitProbe.RemoteBranchExistsAsync(gitProbeRepository, originalBranch)
+        || !await gitProbe.RemoteBranchExistsAsync(gitProbeRepository, "published-main"))
+    {
+        throw new InvalidOperationException("Published branch rename did not push the new remote branch.");
+    }
+    await RunGitProbeCommandAsync(bareRemote, "symbolic-ref", "HEAD", "refs/heads/published-main");
+    await gitProbe.DeleteRemoteBranchAsync(gitProbeRepository, originalBranch);
+    if (await gitProbe.RemoteBranchExistsAsync(gitProbeRepository, originalBranch)
+        || !await gitProbe.RemoteBranchExistsAsync(gitProbeRepository, "published-main"))
+    {
+        throw new InvalidOperationException("Published branch rename did not remove the old remote branch.");
+    }
+
     var publishProbeRepository = Path.Combine(gitProbeRoot, "publish-repository");
     Directory.CreateDirectory(publishProbeRepository);
     await gitProbe.InitializeRepositoryAsync(publishProbeRepository);
