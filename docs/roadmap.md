@@ -22,7 +22,8 @@ driver without keeping that driver installed?
 ## Implemented foundation
 
 - Persistent Settings module for workspace visibility, personalization, startup,
-  providers, imports, GitHub, and advanced controls.
+  providers, imports, GitHub account connection, and advanced controls. All
+  repository and branch operations live in the primary workspace Git surface.
 - Loss-aware transcript import for Markdown, text, JSON, and JSONL with preview,
   normalized durable messages, provenance, and a retained source copy.
 - Installed-history detection for Codex and Claude Code, including selectable

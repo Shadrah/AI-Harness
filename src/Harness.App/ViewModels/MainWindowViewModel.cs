@@ -184,6 +184,18 @@ public sealed class MainWindowViewModel : ObservableObject
         RepositoryOperationStatus = status;
         RepositoryOperationColor = isError ? "#E2A84A" : isPending ? "#D8DEE8" : "#65C7D0";
     }
+
+    public void BeginRepositoryRefresh(string workspaceName)
+    {
+        WorkingTreeFiles.Clear();
+        _repositoryRoot = null;
+        RaisePropertyChanged(nameof(RepositoryRoot));
+        IsRepository = false;
+        HasRepositoryRemote = false;
+        WorkingTreeStatus = "CHECKING";
+        BranchStatus = "BRANCH · LOADING";
+        SetRepositoryOperationStatus($"Loading {workspaceName} repository…", isPending: true);
+    }
     public bool ShowActivityTrace { get => _showActivityTrace; private set => SetProperty(ref _showActivityTrace, value); }
     public bool ShowUsageInspector { get => _showUsageInspector; private set => SetProperty(ref _showUsageInspector, value); }
     public bool ShowContextInspector { get => _showContextInspector; private set => SetProperty(ref _showContextInspector, value); }

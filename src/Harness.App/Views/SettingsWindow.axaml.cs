@@ -14,14 +14,12 @@ public sealed partial class SettingsWindow : Window
     private readonly Func<HarnessImportProject, Task> _importProject;
     private readonly Func<Task> _openProject;
     private readonly Func<Task> _repositoryChanged;
-    private readonly GitWorkspaceClient _git;
     private readonly GitHubCliClient _github = new();
     private readonly CancellationTokenSource _lifetime = new();
 
     public SettingsWindow() : this(
         new HarnessApplicationSettings(),
         Environment.CurrentDirectory,
-        new GitWorkspaceClient(),
         _ => Task.CompletedTask,
         _ => Task.CompletedTask,
         _ => Task.CompletedTask,
@@ -33,7 +31,6 @@ public sealed partial class SettingsWindow : Window
     public SettingsWindow(
         HarnessApplicationSettings settings,
         string workspacePath,
-        GitWorkspaceClient git,
         Func<HarnessApplicationSettings, Task> save,
         Func<ConversationImportPlan, Task> import,
         Func<HarnessImportProject, Task> importProject,
@@ -41,14 +38,13 @@ public sealed partial class SettingsWindow : Window
         Func<Task> repositoryChanged)
     {
         InitializeComponent();
-        _git = git;
         _save = save;
         _import = import;
         _importProject = importProject;
         _openProject = openProject;
         _repositoryChanged = repositoryChanged;
         DataContext = new SettingsWindowViewModel(settings, workspacePath);
-        Opened += async (_, _) => await RefreshRepositoryAsync();
+        Opened += async (_, _) => await RefreshGitHubAsync();
         Closed += (_, _) => _lifetime.Cancel();
     }
 
@@ -259,11 +255,11 @@ public sealed partial class SettingsWindow : Window
     private async void OpenProject_OnClick(object? sender, RoutedEventArgs e) =>
         await RunAsync("Opening project…", _openProject);
 
-    private async void RefreshRepository_OnClick(object? sender, RoutedEventArgs e) => await RefreshRepositoryAsync();
+    private async void RefreshGitHub_OnClick(object? sender, RoutedEventArgs e) => await RefreshGitHubAsync();
     private async void GitHubSignIn_OnClick(object? sender, RoutedEventArgs e) => await RunAsync("Opening GitHub device sign-in…", async () =>
     {
         await _github.SignInAsync(_lifetime.Token);
-        await RefreshRepositoryAsync();
+        await RefreshGitHubAsync();
         await _repositoryChanged();
         try
         {
@@ -274,99 +270,14 @@ public sealed partial class SettingsWindow : Window
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            ViewModel.Status = $"GitHub connected. Enter commit identity manually if needed: {exception.Message}";
+            ViewModel.Status = $"GitHub connected: {exception.Message}";
         }
     });
-    private async void InitializeGit_OnClick(object? sender, RoutedEventArgs e) => await RunGitActionAsync("Initializing repository…", () => _git.InitializeRepositoryAsync(ViewModel.WorkspacePath, _lifetime.Token));
-    private async void AttachOrigin_OnClick(object? sender, RoutedEventArgs e) => await RunGitActionAsync("Attaching origin…", () => _git.SetOriginAsync(ViewModel.WorkspacePath, ViewModel.RemoteUrl, _lifetime.Token));
-    private async void CreateGitHubRepository_OnClick(object? sender, RoutedEventArgs e) => await RunGitActionAsync("Creating initial commit and publishing repository…", PublishRepositoryAsync);
-    private async void Commit_OnClick(object? sender, RoutedEventArgs e) => await RunGitActionAsync("Creating commit…", async () =>
+    private async Task RefreshGitHubAsync()
     {
-        await EnsureCommitIdentityAsync();
-        await _git.CommitAsync(ViewModel.WorkspacePath, ViewModel.CommitMessage, _lifetime.Token);
-    });
-    private async void Fetch_OnClick(object? sender, RoutedEventArgs e) => await RunGitActionAsync("Fetching origin…", () => _git.FetchAsync(ViewModel.WorkspacePath, _lifetime.Token));
-    private async void Pull_OnClick(object? sender, RoutedEventArgs e) => await RunGitActionAsync("Pulling…", () => _git.PullAsync(ViewModel.WorkspacePath, _lifetime.Token));
-    private async void Push_OnClick(object? sender, RoutedEventArgs e) => await RunGitActionAsync("Pushing…", () => _git.PushAsync(ViewModel.WorkspacePath, _lifetime.Token));
-
-    private async Task RunGitActionAsync(string status, Func<Task> action) =>
-        await RunAsync(status, async () => { await action(); await RefreshRepositoryAsync(); await _repositoryChanged(); ViewModel.Status = "Repository updated"; });
-
-    private async Task EnsureCommitIdentityAsync()
-    {
-        if (string.IsNullOrWhiteSpace(ViewModel.GitAuthorName)
-            || string.IsNullOrWhiteSpace(ViewModel.GitAuthorEmail))
-        {
-            var profile = await _github.GetAuthenticatedUserAsync(_lifetime.Token);
-            if (string.IsNullOrWhiteSpace(ViewModel.GitAuthorName)) ViewModel.GitAuthorName = profile.Name;
-            if (string.IsNullOrWhiteSpace(ViewModel.GitAuthorEmail)) ViewModel.GitAuthorEmail = profile.Email;
-        }
-        await _git.ConfigureIdentityAsync(
-            ViewModel.WorkspacePath,
-            ViewModel.GitAuthorName,
-            ViewModel.GitAuthorEmail,
-            _lifetime.Token);
-        await _save(ViewModel.ToSettings());
-    }
-
-    private async Task PublishRepositoryAsync()
-    {
-        var connection = await _github.GetConnectionStatusAsync(_lifetime.Token);
-        if (!connection.IsAuthenticated)
-            throw new InvalidOperationException("Sign in to GitHub before creating a repository.");
-        await _git.InitializeRepositoryAsync(
-            ViewModel.WorkspacePath,
-            _lifetime.Token,
-            ViewModel.DefaultGitBranch);
-        await _git.RenameCurrentBranchAsync(
-            ViewModel.WorkspacePath,
-            ViewModel.DefaultGitBranch,
-            _lifetime.Token);
-        await EnsureCommitIdentityAsync();
-        var excluded = await _git.ExcludeOversizedFilesAsync(ViewModel.WorkspacePath, cancellationToken: _lifetime.Token);
-        var trackedOversized = excluded.Any(file => file.WasTracked);
-        if (trackedOversized
-            && await _git.GetCommitCountAsync(ViewModel.WorkspacePath, _lifetime.Token) > 1)
-            throw new InvalidOperationException("An oversized file exists in multi-commit history. Use Git LFS or git filter-repo before publishing.");
-        await _git.PrepareForInitialPushAsync(
-            ViewModel.WorkspacePath,
-            "Initial commit",
-            amendSingleInitialCommit: trackedOversized,
-            cancellationToken: _lifetime.Token);
-        var remote = await _git.GetRemoteUrlAsync(ViewModel.WorkspacePath, _lifetime.Token);
-        if (string.IsNullOrWhiteSpace(remote))
-        {
-            var existing = await _github.GetRepositoryUrlAsync(ViewModel.RepositoryName, _lifetime.Token);
-            if (existing is null)
-            {
-                await _github.CreateRepositoryAsync(
-                    ViewModel.WorkspacePath,
-                    ViewModel.RepositoryName,
-                    ViewModel.PrivateRepository,
-                    _lifetime.Token);
-                return;
-            }
-            await _git.SetOriginAsync(ViewModel.WorkspacePath, existing, _lifetime.Token);
-        }
-        await _git.PushAsync(ViewModel.WorkspacePath, _lifetime.Token);
-        if (excluded.Count > 0)
-        {
-            ViewModel.GitHubStatus += $" · Excluded {excluded.Count} file(s) over GitHub's 100 MB limit";
-        }
-    }
-
-    private async Task RefreshRepositoryAsync()
-    {
-        await RunAsync("Checking repository…", async () =>
+        await RunAsync("Checking GitHub connection…", async () =>
         {
             ViewModel.GitHubStatus = await _github.ReadStatusAsync(_lifetime.Token);
-            var snapshot = await _git.ReadStatusAsync(ViewModel.WorkspacePath, _lifetime.Token);
-            ViewModel.RemoteUrl = snapshot.IsRepository
-                ? await _git.GetRemoteUrlAsync(snapshot.RepositoryRoot!, _lifetime.Token) ?? ""
-                : "";
-            ViewModel.GitHubStatus += snapshot.IsRepository
-                ? $" · {snapshot.Branch} · {snapshot.Files.Count} changed"
-                : " · This folder is not a Git repository";
             ViewModel.Status = "Ready";
         });
     }

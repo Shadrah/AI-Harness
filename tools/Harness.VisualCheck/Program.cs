@@ -453,8 +453,10 @@ try
     var publishIdentity = await gitProbe.ReadIdentityAsync(publishProbeRepository);
     var publishStatus = await gitProbe.ReadStatusAsync(publishProbeRepository);
     var publishCommitCount = await gitProbe.GetCommitCountAsync(publishProbeRepository);
+    var committedCleanTree = await gitProbe.CommitAllAsync(publishProbeRepository, "must not create an empty commit");
     if (!createdInitialCommit
         || !repairedInitialCommit
+        || committedCleanTree
         || excludedOversized.Count != 1
         || excludedOversized[0].RelativePath != "release/oversized.exe"
         || !excludedOversized[0].WasTracked
@@ -506,6 +508,14 @@ if (productionProbe.RepositoryOperationStatus != "Current branch pushed"
     || productionProbe.RepositoryOperationColor != "#65C7D0")
 {
     throw new InvalidOperationException("Primary repository actions did not expose visible success feedback.");
+}
+productionProbe.BeginRepositoryRefresh("Next workspace");
+if (productionProbe.RepositoryRoot is not null
+    || productionProbe.CanUseRepositoryActions
+    || productionProbe.CanUseRemoteActions
+    || productionProbe.BranchStatus != "BRANCH · LOADING")
+{
+    throw new InvalidOperationException("Workspace switching left stale repository actions enabled.");
 }
 
 var sessionNamingProbe = new MainWindowViewModel();
@@ -773,10 +783,13 @@ settingsWindow.Show();
 var settingsTabs = settingsWindow.FindControl<TabControl>("SettingsTabs")
     ?? throw new InvalidOperationException("The Settings category navigator was not created.");
 settingsTabs.SelectedIndex = 5;
-_ = settingsWindow.FindControl<TextBox>("GitAuthorNameBox")
-    ?? throw new InvalidOperationException("GitHub settings did not expose a commit author name.");
-_ = settingsWindow.FindControl<TextBox>("GitAuthorEmailBox")
-    ?? throw new InvalidOperationException("GitHub settings did not expose a commit author email.");
+_ = settingsWindow.FindControl<Button>("GitHubConnectButton")
+    ?? throw new InvalidOperationException("GitHub settings did not expose account connection.");
+_ = settingsWindow.FindControl<Button>("GitHubRefreshButton")
+    ?? throw new InvalidOperationException("GitHub settings did not expose connection refresh.");
+if (settingsWindow.FindControl<TextBox>("GitAuthorNameBox") is not null
+    || settingsWindow.FindControl<TextBox>("GitAuthorEmailBox") is not null)
+    throw new InvalidOperationException("GitHub settings still exposed workspace repository controls.");
 var githubSettingsPath = Path.Combine(
     Path.GetDirectoryName(Path.GetFullPath(outputPath))!,
     $"{Path.GetFileNameWithoutExtension(outputPath)}-github-settings{Path.GetExtension(outputPath)}");

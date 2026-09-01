@@ -248,12 +248,16 @@ public sealed class GitWorkspaceClient
         EnsureSuccess(await RunGitAsync(Path.GetFullPath(repositoryRoot), ["commit", "-m", message.Trim()], cancellationToken), "create the commit");
     }
 
-    public async Task CommitAllAsync(string repositoryRoot, string message, CancellationToken cancellationToken = default)
+    public async Task<bool> CommitAllAsync(string repositoryRoot, string message, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(message)) throw new InvalidOperationException("A commit message is required.");
         var root = Path.GetFullPath(repositoryRoot);
         EnsureSuccess(await RunGitAsync(root, ["add", "-A"], cancellationToken), "stage workspace changes");
+        var staged = await RunGitAsync(root, ["diff", "--cached", "--quiet"], cancellationToken);
+        if (staged.ExitCode == 0) return false;
+        if (staged.ExitCode != 1) EnsureSuccess(staged, "inspect staged workspace files");
         EnsureSuccess(await RunGitAsync(root, ["commit", "-m", message.Trim()], cancellationToken), "create the commit");
+        return true;
     }
 
     public async Task<GitIdentity> ReadIdentityAsync(string repositoryRoot, CancellationToken cancellationToken = default)

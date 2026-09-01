@@ -217,7 +217,7 @@
 
               <Border Grid.Row="2" Grid.ColumnSpan="11" BorderBrush="#29313C" BorderThickness="0,1,0,0" Margin="0,5,0,0" Padding="0,5,0,0">
                 <Grid ColumnDefinitions="Auto,*,Auto,6,Auto,6,Auto">
-                  <Button x:Name="RepositoryDockButton" Content="{Binding RepositoryDockLabel}" Classes="ghost" Click="RepositoryDock_OnClick" ToolTip.Tip="Open the working tree or connect this workspace to Git" />
+                  <Button x:Name="RepositoryDockButton" Content="{Binding RepositoryDockLabel}" Classes="ghost" Click="RepositoryDock_OnClick" ToolTip.Tip="Manage this workspace repository, branch, and remote" />
                   <TextBlock Grid.Column="1" Text="{Binding WorkingTreeStatus}" Classes="muted mono" FontSize="8" VerticalAlignment="Center" Margin="8,0" />
                   <Button x:Name="RepositoryCommitButton" Grid.Column="2" Content="COMMIT" Classes="ghost" IsEnabled="{Binding CanUseRepositoryActions}" Click="RepositoryCommit_OnClick" />
                   <Button x:Name="RepositoryPullButton" Grid.Column="4" Content="PULL" Classes="ghost" IsEnabled="{Binding CanUseRemoteActions}" Click="RepositoryPull_OnClick" />

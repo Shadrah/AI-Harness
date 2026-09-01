@@ -196,10 +196,11 @@ working tree, and repository state without requiring a new application window.
 
 ## Settings and repository boundary
 
-Low-frequency workflows live in the Settings module: workspace visibility,
-imports, personalization, startup behavior, provider management, GitHub, and
-advanced controls. The conversation, active model controls, usage, context, and
-working-tree entry point remain workspace concerns and can be selectively hidden.
+Low-frequency persistent configuration lives in the Settings module: workspace
+visibility, imports, personalization, startup behavior, provider management,
+GitHub account connection, and advanced controls. Repository initialization,
+branch naming, origin attachment, GitHub repository creation, commit, pull, push,
+and the working tree are workspace actions and remain in the primary UI.
 
 Repository support uses argument-list `git` and `gh` processes. Harness can
 initialize a repository, attach or update `origin`, create a GitHub repository,
@@ -212,6 +213,11 @@ be amended automatically to recover from a rejected first push.
 Every remote mutation requires a direct user action. GitHub credentials remain
 in the system credential store managed by GitHub CLI and are never copied into
 the Harness database.
+
+Workspace changes clear cached repository state immediately. Each primary Git
+action then resolves the selected workspace and current branch again before it
+runs, so an in-flight background refresh cannot send an action to the previously
+selected repository.
 
 ## Skills Library boundary
 

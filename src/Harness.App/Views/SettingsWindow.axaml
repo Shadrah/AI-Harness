@@ -67,19 +67,23 @@
         </StackPanel>
       </TabItem>
       <TabItem Header="GITHUB">
-        <ScrollViewer><StackPanel Margin="24,8" Spacing="16" MaxWidth="650">
-          <TextBlock Text="Git &amp; GitHub" FontSize="22" FontWeight="SemiBold"/>
-          <TextBlock Text="{Binding WorkspacePath}" Classes="muted mono" FontSize="10" TextWrapping="Wrap"/>
-          <Border Classes="panel" Padding="14"><StackPanel Spacing="10">
-            <TextBlock Text="{Binding GitHubStatus}"/>
-            <StackPanel Orientation="Horizontal" Spacing="8"><Button Content="SIGN IN TO GITHUB" Click="GitHubSignIn_OnClick"/><Button Content="REFRESH" Click="RefreshRepository_OnClick"/></StackPanel>
-          </StackPanel></Border>
-          <StackPanel Spacing="7"><TextBlock Text="COMMIT IDENTITY" Classes="micro"/><TextBlock Text="Stored as Harness defaults and applied to this repository only when Harness creates a commit." Classes="muted" TextWrapping="Wrap"/><Grid ColumnDefinitions="*,10,*"><TextBox x:Name="GitAuthorNameBox" Text="{Binding GitAuthorName}" Watermark="Commit author name"/><TextBox x:Name="GitAuthorEmailBox" Grid.Column="2" Text="{Binding GitAuthorEmail}" Watermark="name@example.com"/></Grid></StackPanel>
-          <StackPanel Spacing="7"><TextBlock Text="ORIGIN REMOTE" Classes="micro"/><TextBox Text="{Binding RemoteUrl}" Watermark="https://github.com/owner/repository.git"/><StackPanel Orientation="Horizontal" Spacing="8"><Button Content="INITIALIZE GIT" Click="InitializeGit_OnClick"/><Button Content="ATTACH / UPDATE ORIGIN" Click="AttachOrigin_OnClick"/></StackPanel></StackPanel>
-          <StackPanel Spacing="7"><TextBlock Text="CREATE GITHUB REPOSITORY" Classes="micro"/><TextBlock Text="Creates an initial commit from the current workspace and pushes it to the new repository." Classes="muted"/><Grid ColumnDefinitions="*,10,180"><StackPanel Spacing="5"><TextBlock Text="REPOSITORY NAME" Classes="micro" FontSize="8"/><TextBox Text="{Binding RepositoryName}" Watermark="repository-name"/></StackPanel><StackPanel Grid.Column="2" Spacing="5"><TextBlock Text="INITIAL BRANCH" Classes="micro" FontSize="8"/><TextBox Text="{Binding DefaultGitBranch}" Watermark="main"/></StackPanel></Grid><CheckBox Content="Private repository" IsChecked="{Binding PrivateRepository}"/><Button Content="CREATE, COMMIT, AND PUSH" HorizontalAlignment="Left" Click="CreateGitHubRepository_OnClick"/></StackPanel>
-          <StackPanel Spacing="7"><TextBlock Text="COMMIT" Classes="micro"/><TextBox Text="{Binding CommitMessage}" Watermark="Describe the staged changes"/><Button Content="COMMIT STAGED CHANGES" HorizontalAlignment="Left" Click="Commit_OnClick"/></StackPanel>
-          <StackPanel Orientation="Horizontal" Spacing="8"><Button Content="FETCH" Click="Fetch_OnClick"/><Button Content="PULL (FAST-FORWARD)" Click="Pull_OnClick"/><Button Content="PUSH" Click="Push_OnClick"/></StackPanel>
-        </StackPanel></ScrollViewer>
+        <StackPanel Margin="24,8" Spacing="18" MaxWidth="620">
+          <StackPanel Spacing="4">
+            <TextBlock Text="GitHub connection" FontSize="22" FontWeight="SemiBold"/>
+            <TextBlock Text="Connect the GitHub account Harness should use across workspaces. Authentication persists until GitHub expires or revokes it." Classes="muted" TextWrapping="Wrap"/>
+          </StackPanel>
+          <Border Classes="panel" Padding="16">
+            <StackPanel Spacing="12">
+              <TextBlock Text="ACCOUNT" Classes="micro" Foreground="#65C7D0"/>
+              <TextBlock Text="{Binding GitHubStatus}" TextWrapping="Wrap"/>
+              <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button x:Name="GitHubConnectButton" Content="CONNECT GITHUB" Classes="primary" Click="GitHubSignIn_OnClick"/>
+                <Button x:Name="GitHubRefreshButton" Content="REFRESH CONNECTION" Click="RefreshGitHub_OnClick"/>
+              </StackPanel>
+            </StackPanel>
+          </Border>
+          <TextBlock Text="Repository setup, branches, remotes, commits, pulls, and pushes are managed from the Git controls in each workspace." Classes="muted" TextWrapping="Wrap"/>
+        </StackPanel>
       </TabItem>
       <TabItem Header="ADVANCED">
         <StackPanel Margin="24,8" Spacing="14" MaxWidth="620"><TextBlock Text="Advanced" FontSize="22" FontWeight="SemiBold"/><TextBlock Text="Database, runtime, logging, approval, and sandbox controls belong here as those subsystems become user-configurable." Classes="muted" TextWrapping="Wrap"/></StackPanel>

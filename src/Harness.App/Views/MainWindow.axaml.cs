@@ -194,12 +194,11 @@ public sealed partial class MainWindow : Window
         _settingsWindow = new SettingsWindow(
             _applicationSettings,
             ViewModel.WorkspacePath,
-            _git,
             SaveApplicationSettingsAsync,
             ImportConversationAsync,
             ImportHarnessProjectAsync,
             ChooseProjectFromSettingsAsync,
-            RefreshWorkingTreeAsync);
+            () => RefreshWorkingTreeAsync());
         _settingsWindow.Closed += (_, _) => _settingsWindow = null;
         _settingsWindow.Show(this);
     }
@@ -326,6 +325,7 @@ public sealed partial class MainWindow : Window
         _workspaceSwitch = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
         var switchCts = _workspaceSwitch;
         var version = Interlocked.Increment(ref _workspaceSwitchVersion);
+        ViewModel.BeginRepositoryRefresh(selected.Name);
         try
         {
             if (!await LoadWorkspaceAsync(selected.Path, version, switchCts.Token)
@@ -563,7 +563,7 @@ public sealed partial class MainWindow : Window
                 && importVersion != Interlocked.Read(ref _workspaceSwitchVersion)) return false;
             _applicationSettings = _applicationSettings with { LastWorkspacePath = path };
             await _store.SaveApplicationSettingsAsync(_applicationSettings, token);
-            _ = CompleteWorkspaceActivationAsync(switchVersion);
+            _ = CompleteWorkspaceActivationAsync(path, switchVersion, token);
             return true;
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested || cancellationToken.IsCancellationRequested)
@@ -577,18 +577,21 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private async Task CompleteWorkspaceActivationAsync(long? switchVersion)
+    private async Task CompleteWorkspaceActivationAsync(
+        string workspacePath,
+        long? switchVersion,
+        CancellationToken cancellationToken)
     {
         try
         {
             if (switchVersion is { } requested
                 && requested != Interlocked.Read(ref _workspaceSwitchVersion)) return;
-            await RefreshWorkingTreeAsync();
+            await RefreshWorkingTreeAsync(workspacePath, cancellationToken);
             if (switchVersion is { } current
                 && current != Interlocked.Read(ref _workspaceSwitchVersion)) return;
             await ResumeActiveThreadAsync();
         }
-        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested || cancellationToken.IsCancellationRequested)
         {
         }
         catch (Exception exception)
@@ -974,87 +977,126 @@ public sealed partial class MainWindow : Window
         await viewer.ShowDialog(this);
     }
 
-    private async Task RefreshWorkingTreeAsync()
+    private async Task RefreshWorkingTreeAsync(
+        string? expectedWorkspacePath = null,
+        CancellationToken cancellationToken = default)
     {
         try
         {
-            var snapshot = await _git.ReadStatusAsync(ViewModel.WorkspacePath, _lifetime.Token);
+            var workspacePath = expectedWorkspacePath ?? ViewModel.WorkspacePath;
+            var token = cancellationToken.CanBeCanceled ? cancellationToken : _lifetime.Token;
+            var snapshot = await _git.ReadStatusAsync(workspacePath, token);
+            if (!string.Equals(workspacePath, ViewModel.WorkspacePath, StringComparison.OrdinalIgnoreCase)) return;
             ViewModel.ApplyWorkingTree(snapshot);
             var remote = snapshot.RepositoryRoot is { } root
-                ? await _git.GetRemoteUrlAsync(root, _lifetime.Token)
+                ? await _git.GetRemoteUrlAsync(root, token)
                 : null;
+            if (!string.Equals(workspacePath, ViewModel.WorkspacePath, StringComparison.OrdinalIgnoreCase)) return;
             ViewModel.ApplyRepositoryRemote(remote);
-            var github = await _github.GetConnectionStatusAsync(_lifetime.Token);
+            var github = await _github.GetConnectionStatusAsync(token);
+            if (!string.Equals(workspacePath, ViewModel.WorkspacePath, StringComparison.OrdinalIgnoreCase)) return;
             ViewModel.ApplyGitHubConnection(github.IsAuthenticated);
+            ViewModel.SetRepositoryOperationStatus(snapshot.IsRepository
+                ? $"{snapshot.Branch ?? "Current branch"} ready"
+                : "Git is not configured for this workspace");
         }
-        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested || cancellationToken.IsCancellationRequested)
         {
         }
     }
 
     private async void RepositoryDock_OnClick(object? sender, RoutedEventArgs e)
     {
-        if (!ViewModel.IsRepository
-            || !ViewModel.HasRepositoryRemote
-            || !ViewModel.IsGitHubConnected)
-        {
-            await ShowRepositorySetupAsync();
-            return;
-        }
-        OpenWorkingTreeModule_OnClick(sender, e);
+        await ShowRepositorySetupAsync();
     }
 
     private async void RepositoryCommit_OnClick(object? sender, RoutedEventArgs e)
     {
-        if (ViewModel.RepositoryRoot is not { } root) return;
-        var request = await AskForCommitMessageAsync(root);
+        var workspacePath = ViewModel.WorkspacePath;
+        var repository = await ResolveRepositoryForActionAsync(workspacePath, "commit");
+        if (repository is null) return;
+        if (repository.Snapshot.Files.Count == 0)
+        {
+            ViewModel.SetRepositoryOperationStatus($"Nothing to commit · {repository.Branch} is clean");
+            return;
+        }
+        var request = await AskForCommitMessageAsync(repository.Root);
         if (request is null) return;
+        repository = await ResolveRepositoryForActionAsync(workspacePath, "commit");
+        if (repository is null) return;
+        var committed = false;
         await RunRepositoryActionAsync(
             "COMMIT",
-            "Creating commit…",
-            () => "Changes committed",
+            $"Creating commit on {repository.Branch}…",
+            () => committed
+                ? $"Changes committed on {repository.Branch}"
+                : $"Nothing to commit · {repository.Branch} is clean",
             async () =>
             {
-                await _git.ConfigureIdentityAsync(root, request.Identity.Name, request.Identity.Email, _lifetime.Token);
+                await _git.ConfigureIdentityAsync(repository.Root, request.Identity.Name, request.Identity.Email, _lifetime.Token);
                 await SaveGitIdentityDefaultsAsync(request.Identity);
-                await _git.CommitAllAsync(root, request.Message, _lifetime.Token);
+                committed = await _git.CommitAllAsync(repository.Root, request.Message, _lifetime.Token);
             });
     }
 
     private async void RepositoryPull_OnClick(object? sender, RoutedEventArgs e)
     {
-        if (ViewModel.RepositoryRoot is not { } root) return;
+        var workspacePath = ViewModel.WorkspacePath;
+        var repository = await ResolveRepositoryForActionAsync(workspacePath, "pull");
+        if (repository is null) return;
         await RunRepositoryActionAsync(
-            "PULL", "Pulling from origin…", () => "Workspace is up to date",
-            () => _git.PullAsync(root, _lifetime.Token));
+            "PULL", $"Pulling {repository.Branch} from origin…", () => $"{repository.Branch} is up to date",
+            () => _git.PullAsync(repository.Root, _lifetime.Token));
     }
 
     private async void RepositoryPush_OnClick(object? sender, RoutedEventArgs e)
     {
-        if (ViewModel.RepositoryRoot is not { } root) return;
+        var workspacePath = ViewModel.WorkspacePath;
+        var repository = await ResolveRepositoryForActionAsync(workspacePath, "push");
+        if (repository is null) return;
         IReadOnlyList<GitExcludedFile> excluded = [];
         await RunRepositoryActionAsync(
             "PUSH",
-            "Checking and pushing current branch…",
+            $"Checking and pushing {repository.Branch}…",
             () => excluded.Count == 0
-                ? "Current branch pushed"
-                : $"Current branch pushed · {excluded.Count} oversized file(s) excluded",
+                ? $"{repository.Branch} pushed"
+                : $"{repository.Branch} pushed · {excluded.Count} oversized file(s) excluded",
             async () =>
             {
-                excluded = await _git.ExcludeOversizedFilesAsync(root, cancellationToken: _lifetime.Token);
+                excluded = await _git.ExcludeOversizedFilesAsync(repository.Root, cancellationToken: _lifetime.Token);
                 var trackedOversized = excluded.Any(file => file.WasTracked);
-                if (trackedOversized && await _git.GetCommitCountAsync(root, _lifetime.Token) > 1)
+                if (trackedOversized && await _git.GetCommitCountAsync(repository.Root, _lifetime.Token) > 1)
                     throw new InvalidOperationException("An oversized file exists in multi-commit history. Use Git LFS or git filter-repo before pushing.");
                 if (trackedOversized)
                 {
                     await _git.PrepareForInitialPushAsync(
-                        root,
+                        repository.Root,
                         "Initial commit",
                         amendSingleInitialCommit: true,
                         cancellationToken: _lifetime.Token);
                 }
-                await _git.PushAsync(root, _lifetime.Token);
+                await _git.PushAsync(repository.Root, _lifetime.Token);
             });
+    }
+
+    private async Task<ActiveRepository?> ResolveRepositoryForActionAsync(string workspacePath, string action)
+    {
+        var snapshot = await _git.ReadStatusAsync(workspacePath, _lifetime.Token);
+        if (!string.Equals(workspacePath, ViewModel.WorkspacePath, StringComparison.OrdinalIgnoreCase))
+        {
+            ViewModel.SetRepositoryOperationStatus($"Cancelled {action} · active workspace changed");
+            return null;
+        }
+        ViewModel.ApplyWorkingTree(snapshot);
+        if (!snapshot.IsRepository || snapshot.RepositoryRoot is null)
+        {
+            ViewModel.SetRepositoryOperationStatus($"Cannot {action} · Git is not configured", isError: true);
+            return null;
+        }
+        return new ActiveRepository(
+            snapshot.RepositoryRoot,
+            snapshot.Branch ?? "current branch",
+            snapshot);
     }
 
     private async Task RunRepositoryActionAsync(
@@ -1135,11 +1177,23 @@ public sealed partial class MainWindow : Window
 
     private async Task ShowRepositorySetupAsync()
     {
-        var remoteUrl = new TextBox { Watermark = "https://github.com/owner/repository.git", MinWidth = 460 };
+        var workspacePath = ViewModel.WorkspacePath;
+        var repositorySnapshot = await _git.ReadStatusAsync(workspacePath, _lifetime.Token);
+        var currentRemote = repositorySnapshot.RepositoryRoot is { } repositoryRoot
+            ? await _git.GetRemoteUrlAsync(repositoryRoot, _lifetime.Token)
+            : null;
+        var remoteUrl = new TextBox
+        {
+            Text = currentRemote ?? string.Empty,
+            Watermark = "https://github.com/owner/repository.git",
+            MinWidth = 460
+        };
         var repositoryName = new TextBox { Text = ViewModel.WorkspaceName, Watermark = "repository-name" };
         var branchName = new TextBox
         {
-            Text = string.IsNullOrWhiteSpace(_applicationSettings.DefaultGitBranch)
+            Text = !string.IsNullOrWhiteSpace(repositorySnapshot.Branch)
+                ? repositorySnapshot.Branch
+                : string.IsNullOrWhiteSpace(_applicationSettings.DefaultGitBranch)
                 ? "main"
                 : _applicationSettings.DefaultGitBranch,
             Watermark = "main"
@@ -1160,60 +1214,70 @@ public sealed partial class MainWindow : Window
             TextWrapping = TextWrapping.Wrap
         };
         var initialize = new Button { Content = "INITIALIZE LOCAL", Classes = { "ghost" } };
+        var setBranch = new Button { Content = "SET BRANCH", Classes = { "ghost" } };
+        var openWorkingTree = new Button
+        {
+            Content = "OPEN WORKING TREE",
+            Classes = { "ghost" },
+            IsEnabled = repositorySnapshot.IsRepository
+        };
         var attach = new Button { Content = "ATTACH ORIGIN", Classes = { "ghost" } };
         var signIn = new Button { Content = "SIGN IN TO GITHUB", Classes = { "ghost" } };
         var create = new Button { Content = "CREATE ON GITHUB", Classes = { "primary" } };
         var cancel = new Button { Content = "CANCEL", Classes = { "ghost" } };
+        var shouldOpenWorkingTree = false;
         var dialog = CreateWorkspaceDialog(
-            "Set up repository",
+            "Repository controls",
             new StackPanel
             {
                 Spacing = 12,
                 Children =
                 {
-                    new TextBlock { Text = "Connect this workspace", FontSize = 19, FontWeight = FontWeight.SemiBold },
+                    new TextBlock { Text = "Repository controls", FontSize = 19, FontWeight = FontWeight.SemiBold },
                     new TextBlock
                     {
-                        Text = "Initialize Git locally, attach an existing origin, or create a GitHub repository. Repository name controls the GitHub project; initial branch controls main/master.",
+                        Text = "Manage this workspace's local repository, current branch, origin remote, and GitHub publication without leaving the workspace.",
                         Classes = { "muted" },
                         TextWrapping = TextWrapping.Wrap
                     },
                     status,
-                    new TextBlock { Text = "EXISTING REPOSITORY", Classes = { "micro" } },
-                    remoteUrl,
+                    new TextBlock { Text = "LOCAL REPOSITORY", Classes = { "micro" } },
+                    new TextBlock
+                    {
+                        Text = repositorySnapshot.IsRepository
+                            ? $"Current branch: {repositorySnapshot.Branch ?? "no commits"}"
+                            : "Git has not been initialized for this workspace.",
+                        Classes = { "muted" }
+                    },
+                    new StackPanel
+                    {
+                        Spacing = 4,
+                        Children =
+                        {
+                            new TextBlock { Text = "CURRENT / INITIAL BRANCH", Classes = { "micro" }, FontSize = 8 },
+                            branchName
+                        }
+                    },
                     new StackPanel
                     {
                         Orientation = Avalonia.Layout.Orientation.Horizontal,
                         Spacing = 7,
-                        Children = { initialize, attach }
+                        Children = { initialize, setBranch, openWorkingTree }
                     },
+                    new Border { Height = 1, Background = Brush.Parse("#29313C") },
+                    new TextBlock { Text = "ORIGIN REMOTE", Classes = { "micro" } },
+                    remoteUrl,
+                    attach,
                     new Border { Height = 1, Background = Brush.Parse("#29313C") },
                     new TextBlock { Text = "NEW GITHUB REPOSITORY", Classes = { "micro" } },
                     new TextBlock { Text = "Harness will commit the current workspace and push it immediately.", Classes = { "muted" } },
-                    new Grid
+                    new StackPanel
                     {
-                        ColumnDefinitions = new ColumnDefinitions("*,10,150"),
+                        Spacing = 4,
                         Children =
                         {
-                            new StackPanel
-                            {
-                                Spacing = 4,
-                                Children =
-                                {
-                                    new TextBlock { Text = "REPOSITORY NAME", Classes = { "micro" }, FontSize = 8 },
-                                    repositoryName
-                                }
-                            },
-                            new StackPanel
-                            {
-                                [Grid.ColumnProperty] = 2,
-                                Spacing = 4,
-                                Children =
-                                {
-                                    new TextBlock { Text = "INITIAL BRANCH", Classes = { "micro" }, FontSize = 8 },
-                                    branchName
-                                }
-                            }
+                            new TextBlock { Text = "REPOSITORY NAME", Classes = { "micro" }, FontSize = 8 },
+                            repositoryName
                         }
                     },
                     privateRepository,
@@ -1255,15 +1319,31 @@ public sealed partial class MainWindow : Window
 
         initialize.Click += async (_, _) => await RunSetupAsync(
             "Initializing local repository…",
-            () => "Local Git repository initialized",
-            () => _git.InitializeRepositoryAsync(ViewModel.WorkspacePath, _lifetime.Token));
+            () => $"Local Git repository initialized on {branchName.Text?.Trim()}",
+            async () =>
+            {
+                await _git.InitializeRepositoryAsync(workspacePath, _lifetime.Token, branchName.Text ?? "main");
+                await _git.RenameCurrentBranchAsync(workspacePath, branchName.Text ?? "main", _lifetime.Token);
+                await SaveDefaultGitBranchAsync(branchName.Text);
+            });
+        setBranch.Click += async (_, _) => await RunSetupAsync(
+            $"Setting branch to {branchName.Text?.Trim()}…",
+            () => $"Current branch set to {branchName.Text?.Trim()}",
+            async () =>
+            {
+                await _git.InitializeRepositoryAsync(workspacePath, _lifetime.Token, branchName.Text ?? "main");
+                await _git.RenameCurrentBranchAsync(workspacePath, branchName.Text ?? "main", _lifetime.Token);
+                await SaveDefaultGitBranchAsync(branchName.Text);
+            });
         attach.Click += async (_, _) => await RunSetupAsync(
             "Attaching origin…",
             () => "Origin remote attached",
             async () =>
             {
-                await _git.InitializeRepositoryAsync(ViewModel.WorkspacePath, _lifetime.Token);
-                await _git.SetOriginAsync(ViewModel.WorkspacePath, remoteUrl.Text ?? string.Empty, _lifetime.Token);
+                await _git.InitializeRepositoryAsync(workspacePath, _lifetime.Token, branchName.Text ?? "main");
+                await _git.RenameCurrentBranchAsync(workspacePath, branchName.Text ?? "main", _lifetime.Token);
+                await _git.SetOriginAsync(workspacePath, remoteUrl.Text ?? string.Empty, _lifetime.Token);
+                await SaveDefaultGitBranchAsync(branchName.Text);
             });
         var publishResult = "Repository published to GitHub";
         create.Click += async (_, _) => await RunSetupAsync(
@@ -1310,8 +1390,14 @@ public sealed partial class MainWindow : Window
                 status.Foreground = Brush.Parse("#E2A84A");
             }
         };
+        openWorkingTree.Click += (_, _) =>
+        {
+            shouldOpenWorkingTree = true;
+            dialog.Close(false);
+        };
         cancel.Click += (_, _) => dialog.Close(false);
         await dialog.ShowDialog<bool>(this);
+        if (shouldOpenWorkingTree) OpenWorkingTreeModule_OnClick(null, new RoutedEventArgs());
     }
 
     private async Task<GitIdentity> ResolveGitIdentityAsync(string workspacePath)
@@ -1354,6 +1440,13 @@ public sealed partial class MainWindow : Window
                 ? _applicationSettings.DefaultGitBranch
                 : defaultBranch.Trim()
         };
+        await _store.SaveApplicationSettingsAsync(_applicationSettings, _lifetime.Token);
+    }
+
+    private async Task SaveDefaultGitBranchAsync(string? branchName)
+    {
+        if (_store is null || string.IsNullOrWhiteSpace(branchName)) return;
+        _applicationSettings = _applicationSettings with { DefaultGitBranch = branchName.Trim() };
         await _store.SaveApplicationSettingsAsync(_applicationSettings, _lifetime.Token);
     }
 
@@ -1406,16 +1499,26 @@ public sealed partial class MainWindow : Window
     }
 
     private sealed record CommitRequest(string Message, GitIdentity Identity);
+    private sealed record ActiveRepository(string Root, string Branch, WorkingTreeSnapshot Snapshot);
 
     private static Window CreateWorkspaceDialog(string title, Control content) => new()
     {
         Title = title,
         Width = 540,
         SizeToContent = SizeToContent.Height,
+        MaxHeight = 760,
         CanResize = false,
         WindowStartupLocation = WindowStartupLocation.CenterOwner,
         Background = Brush.Parse("#11151B"),
-        Content = new Border { Padding = new Thickness(18), Child = content }
+        Content = new Border
+        {
+            Padding = new Thickness(18),
+            Child = new ScrollViewer
+            {
+                VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
+                Content = content
+            }
+        }
     };
 
     private void OpenWorkingTreeModule_OnClick(object? sender, RoutedEventArgs e)
