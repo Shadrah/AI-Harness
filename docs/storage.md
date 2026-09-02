@@ -15,6 +15,10 @@ The first schema persists:
 - provider identity, thread ID, selected model, reasoning effort, and service tier;
 - raw provider notifications for audit and future re-projection;
 - context-file attachment metadata and content-addressed Harness-owned copies.
+- cached Skills Library manifest metadata; repository source totals, index state,
+  complete path count, hydrated-description count, revision, and refresh time;
+  and installed-skill target, scope, source revision,
+  content hash, package path, provider path, and provenance.
 
 SQLite runs with foreign keys, write-ahead logging, and normal synchronous mode.
 Message writes are upserts keyed by a stable local message ID. Final assistant
@@ -45,3 +49,9 @@ scanner warnings and message count. Imported messages remain durable with an
 first successful model turn records `harness/importContextBriefV2Applied`; if a normal
 provider thread must be rebuilt, Harness instead records
 `harness/sessionContextReconstructed`.
+
+Model controls are session state, not application defaults. Harness persists a
+provider/model/reasoning/service-tier selection when any selector changes and
+again when a provider thread is created. Restoring a session reapplies only
+options currently advertised by that provider, then opens the transcript at its
+latest message after the conversation surface has completed layout.

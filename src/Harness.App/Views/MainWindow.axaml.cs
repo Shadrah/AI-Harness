@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Diagnostics;
 using Avalonia;
 using Avalonia.Automation;
 using Avalonia.Controls;
@@ -7,6 +8,7 @@ using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using Harness.App.ViewModels;
 using Harness.Core.Models;
 using Harness.Providers.Codex;
@@ -42,7 +44,15 @@ public sealed partial class MainWindow : Window
     private long _workspaceSwitchVersion;
     private readonly object _deltaLock = new();
     private readonly Dictionary<string, PendingUiDelta> _pendingUiDeltas = [];
+    private readonly HashSet<string> _pendingGeneratedImagePaths = new(StringComparer.OrdinalIgnoreCase);
     private readonly DispatcherTimer _deltaFlushTimer;
+    private long _modelSettingsPersistenceVersion;
+    private long _conversationRestoreVersion;
+    private long _conversationAdvanceVersion;
+    private bool _suppressPermissionModeChange;
+    private string _lastPermissionMode = "ask";
+    private bool _isClosing;
+    private bool _providerConfigurationRefreshPending;
 
     public MainWindow() : this(usePreviewData: false)
     {
@@ -57,6 +67,8 @@ public sealed partial class MainWindow : Window
             RoutingStrategies.Tunnel,
             handledEventsToo: true);
         DataContext = new MainWindowViewModel(usePreviewData);
+        ViewModel.ConversationRestored += ViewModel_OnConversationRestored;
+        ViewModel.ConversationAdvanced += ViewModel_OnConversationAdvanced;
         _deltaFlushTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
         _deltaFlushTimer.Tick += (_, _) => FlushPendingUiDeltas();
         _deltaFlushTimer.Start();
@@ -84,6 +96,7 @@ public sealed partial class MainWindow : Window
     private async void MainWindow_OnOpened(object? sender, EventArgs e)
     {
         await InitializePersistenceAsync();
+        _ = WarmSkillCatalogAsync();
         await RefreshWorkingTreeAsync();
         await ConnectCodexAsync();
     }
@@ -95,7 +108,10 @@ public sealed partial class MainWindow : Window
             _store = new HarnessStore(HarnessStore.DefaultDatabasePath);
             await _store.InitializeAsync(_lifetime.Token);
             _applicationSettings = await _store.LoadApplicationSettingsAsync(_lifetime.Token);
+            _suppressPermissionModeChange = true;
             ViewModel.ApplyApplicationSettings(_applicationSettings);
+            _lastPermissionMode = ViewModel.SelectedPermissionMode.Id;
+            _suppressPermissionModeChange = false;
             var initialWorkspace = _applicationSettings.RestoreLastWorkspace
                 && !string.IsNullOrWhiteSpace(_applicationSettings.LastWorkspacePath)
                 && Directory.Exists(_applicationSettings.LastWorkspacePath)
@@ -149,6 +165,7 @@ public sealed partial class MainWindow : Window
 
     private async void MainWindow_OnClosed(object? sender, EventArgs e)
     {
+        _isClosing = true;
         _settingsWindow?.Close();
         _settingsWindow = null;
         _executionWindow?.Close();
@@ -160,6 +177,8 @@ public sealed partial class MainWindow : Window
         _workspaceSwitch?.Dispose();
         _workspaceSwitch = null;
         _deltaFlushTimer.Stop();
+        ViewModel.ConversationRestored -= ViewModel_OnConversationRestored;
+        ViewModel.ConversationAdvanced -= ViewModel_OnConversationAdvanced;
         await StopCodexAsync();
         await FlushPersistenceAsync();
         if (_store is not null)
@@ -169,6 +188,96 @@ public sealed partial class MainWindow : Window
             _store = null;
         }
         _lifetime.Dispose();
+    }
+
+    private void ViewModel_OnConversationRestored(object? sender, EventArgs e)
+    {
+        QueueSessionModelSettingsPersistence();
+        var version = Interlocked.Increment(ref _conversationRestoreVersion);
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (version != Interlocked.Read(ref _conversationRestoreVersion)) return;
+            ConversationScrollViewer.UpdateLayout();
+            ConversationScrollViewer.ScrollToEnd();
+        }, DispatcherPriority.Background);
+    }
+
+    private void ViewModel_OnConversationAdvanced(object? sender, EventArgs e)
+    {
+        var version = Interlocked.Increment(ref _conversationAdvanceVersion);
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (version != Interlocked.Read(ref _conversationAdvanceVersion)) return;
+            ConversationScrollViewer.UpdateLayout();
+            ConversationScrollViewer.ScrollToEnd();
+        }, DispatcherPriority.Background);
+    }
+
+    private async void PermissionMode_OnChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressPermissionModeChange) return;
+        var selected = ViewModel.SelectedPermissionMode;
+        if (selected.Id == _lastPermissionMode) return;
+        if (selected.Id == "full" && _lastPermissionMode != "full"
+            && !await ConfirmFullAccessAsync())
+        {
+            _suppressPermissionModeChange = true;
+            ViewModel.SelectedPermissionMode = PermissionModeOption.Resolve(_lastPermissionMode);
+            _suppressPermissionModeChange = false;
+            return;
+        }
+
+        _lastPermissionMode = selected.Id;
+        await SaveApplicationSettingsAsync(_applicationSettings with { PermissionMode = selected.Id });
+        ViewModel.AddActivity("PERMISSIONS", selected.Description, selected.Id == "full" ? "#E2A84A" : "#65C7D0");
+    }
+
+    private void SessionModelSetting_OnChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        QueueSessionModelSettingsPersistence();
+    }
+
+    private void QueueSessionModelSettingsPersistence()
+    {
+        if (_isClosing) return;
+        if (_activeSession is { ProviderId.Length: > 0 } session
+            && ViewModel.SelectedModel is { } model
+            && !string.Equals(session.ProviderId, model.ProviderId, StringComparison.OrdinalIgnoreCase))
+        {
+            _threadId = null;
+        }
+        var version = Interlocked.Increment(ref _modelSettingsPersistenceVersion);
+        TrackPersistence(PersistSessionModelSettingsAsync(version));
+    }
+
+    private async Task PersistSessionModelSettingsAsync(long version)
+    {
+        await Task.Delay(175);
+        if (version != Interlocked.Read(ref _modelSettingsPersistenceVersion)) return;
+        var store = _store;
+        var session = _activeSession;
+        var model = ViewModel.SelectedModel;
+        if (store is null || session is null || model is null) return;
+
+        var providerChanged = !string.IsNullOrWhiteSpace(session.ProviderId)
+            && !string.Equals(session.ProviderId, model.ProviderId, StringComparison.OrdinalIgnoreCase);
+        await store.UpdateSessionModelSettingsAsync(
+            session.Id,
+            model.ProviderId,
+            model.ModelName,
+            ViewModel.SelectedReasoningLevel?.Id,
+            ViewModel.SelectedServiceTier?.Id);
+        if (_activeSession?.Id != session.Id) return;
+        if (providerChanged) _threadId = null;
+        _activeSession = session with
+        {
+            ProviderId = model.ProviderId,
+            ProviderThreadId = providerChanged ? null : session.ProviderThreadId,
+            ModelId = model.ModelName,
+            ReasoningEffort = ViewModel.SelectedReasoningLevel?.Id,
+            ServiceTier = ViewModel.SelectedServiceTier?.Id,
+            UpdatedAt = DateTimeOffset.UtcNow
+        };
     }
 
     private void OpenExecution_OnClick(object? sender, RoutedEventArgs e)
@@ -183,11 +292,16 @@ public sealed partial class MainWindow : Window
         _executionWindow.Show(this);
     }
 
-    private void OpenSettings_OnClick(object? sender, RoutedEventArgs e)
+    private void OpenSettings_OnClick(object? sender, RoutedEventArgs e) => OpenSettings(openSkills: false);
+
+    private void OpenSkills_OnClick(object? sender, RoutedEventArgs e) => OpenSettings(openSkills: true);
+
+    private void OpenSettings(bool openSkills)
     {
         if (_store is null) return;
         if (_settingsWindow is not null)
         {
+            if (openSkills) _settingsWindow.ShowSkills();
             _settingsWindow.Activate();
             return;
         }
@@ -198,9 +312,79 @@ public sealed partial class MainWindow : Window
             ImportConversationAsync,
             ImportHarnessProjectAsync,
             ChooseProjectFromSettingsAsync,
-            () => RefreshWorkingTreeAsync());
+            () => RefreshWorkingTreeAsync(),
+            _store,
+            BuildSkillInstallTargets(),
+            BuildSkillCompatibilityTargets(),
+            openSkills);
         _settingsWindow.Closed += (_, _) => _settingsWindow = null;
         _settingsWindow.Show(this);
+    }
+
+    private IReadOnlyList<SkillInstallTarget> BuildSkillInstallTargets()
+    {
+        if (ViewModel.Models.Count == 0) return [];
+        return
+        [
+            new SkillInstallTarget(
+                "openai-codex",
+                $"OpenAI Codex · all connected models ({ViewModel.Models.Count})")
+        ];
+    }
+
+    private IReadOnlyList<SkillCompatibilityOption> BuildSkillCompatibilityTargets() =>
+        ViewModel.Models.Select(model => new SkillCompatibilityOption(
+            $"openai-codex:{model.ModelName}",
+            "openai-codex",
+            model.ModelName,
+            model.DisplayName)).ToArray();
+
+    private async Task WarmSkillCatalogAsync()
+    {
+        if (_store is null) return;
+        try
+        {
+            var cachedSources = await _store.ListSkillSourcesAsync(_lifetime.Token);
+            if (cachedSources.Count > 0
+                && cachedSources.All(source => source.IndexState.StartsWith("COMPLETE PATH INDEX", StringComparison.OrdinalIgnoreCase))
+                && DateTimeOffset.UtcNow - cachedSources.Max(source => source.RefreshedAt) < TimeSpan.FromHours(24)) return;
+            if (cachedSources.Count == 0)
+            {
+                var discovered = await _github.DiscoverSkillRepositoriesAsync(
+                    query: null,
+                    category: null,
+                    repository: null,
+                    maxRepositories: 1,
+                    skillsPerRepository: 12,
+                    hydrateMetadata: false,
+                    cancellationToken: _lifetime.Token);
+                await _store.UpsertSkillInventoriesAsync(discovered, _lifetime.Token);
+                cachedSources = await _store.ListSkillSourcesAsync(_lifetime.Token);
+            }
+            if (cachedSources.Count < 6)
+            {
+                var candidates = await _github.DiscoverSkillSourceCandidatesAsync(6, _lifetime.Token);
+                await _store.UpsertSkillInventoriesAsync(
+                    candidates.Select(source => new SkillRepositoryInventory(source, [])).ToArray(),
+                    _lifetime.Token);
+                cachedSources = await _store.ListSkillSourcesAsync(_lifetime.Token);
+            }
+            foreach (var source in cachedSources)
+            {
+                var inventory = await _github.IndexSkillRepositoryTreeAsync(source, _lifetime.Token);
+                await _store.UpsertSkillInventoriesAsync([inventory], _lifetime.Token);
+                if (inventory.Skills.Count == 0)
+                    await _store.RemoveSkillSourceIfEmptyAsync(source.Repository, _lifetime.Token);
+            }
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+        {
+        }
+        catch
+        {
+            // Startup catalog refresh is deliberately non-blocking. The Skills
+            // section retains cached metadata and surfaces interactive failures.
+        }
     }
 
     private async Task SaveApplicationSettingsAsync(HarnessApplicationSettings settings)
@@ -208,7 +392,12 @@ public sealed partial class MainWindow : Window
         if (_store is null) return;
         _applicationSettings = settings with { LastWorkspacePath = ViewModel.WorkspacePath };
         await _store.SaveApplicationSettingsAsync(_applicationSettings, _lifetime.Token);
+        _suppressPermissionModeChange = true;
         ViewModel.ApplyApplicationSettings(_applicationSettings);
+        _lastPermissionMode = ViewModel.SelectedPermissionMode.Id;
+        _suppressPermissionModeChange = false;
+        _providerConfigurationRefreshPending = true;
+        await RefreshActiveThreadConfigurationAsync();
     }
 
     private async Task ImportConversationAsync(ConversationImportPlan plan)
@@ -279,6 +468,22 @@ public sealed partial class MainWindow : Window
         _activeImportSource = await _store.GetImportSourceAsync(sessionId, _lifetime.Token);
         _importContextApplied = _activeImportSource is not null
             && await _store.HasProviderEventAsync(sessionId, ImportContextAppliedEvent, _lifetime.Token);
+        var latestTokenPayload = await _store.GetLatestProviderEventPayloadAsync(
+            sessionId,
+            "thread/tokenUsage/updated",
+            _lifetime.Token);
+        if (!string.IsNullOrWhiteSpace(latestTokenPayload))
+        {
+            try
+            {
+                using var tokenEvent = JsonDocument.Parse(latestTokenPayload);
+                ApplyTokenUsage(tokenEvent.RootElement);
+            }
+            catch (JsonException exception)
+            {
+                ViewModel.AddActivity("CONTEXT", $"Stored provider telemetry could not be read: {CleanError(exception)}", "#E2A84A");
+            }
+        }
         if (_activeImportSource is not null)
         {
             ViewModel.AddActivity(
@@ -410,23 +615,105 @@ public sealed partial class MainWindow : Window
 
     private async void AttachImage_OnClick(object? sender, RoutedEventArgs e)
     {
+        await AttachTurnFilesAsync(
+            "image",
+            "Attach images to this turn",
+            new FilePickerFileType("Images")
+            {
+                Patterns = ["*.png", "*.jpg", "*.jpeg", "*.webp", "*.gif", "*.bmp"]
+            });
+    }
+
+    private async void AttachVideo_OnClick(object? sender, RoutedEventArgs e)
+    {
+        await AttachTurnFilesAsync(
+            "video",
+            "Attach videos to this turn",
+            new FilePickerFileType("Videos")
+            {
+                Patterns = ["*.mp4", "*.mov", "*.webm", "*.mkv", "*.avi", "*.m4v"]
+            });
+    }
+
+    private async void AttachText_OnClick(object? sender, RoutedEventArgs e)
+    {
+        await AttachTurnFilesAsync(
+            "text",
+            "Attach text or code to this turn",
+            new FilePickerFileType("Text and code")
+            {
+                Patterns =
+                [
+                    "*.txt", "*.md", "*.json", "*.jsonl", "*.yaml", "*.yml", "*.xml",
+                    "*.csv", "*.tsv", "*.cs", "*.csproj", "*.sln", "*.py", "*.js", "*.ts",
+                    "*.tsx", "*.jsx", "*.html", "*.css", "*.scss", "*.rs", "*.go", "*.java",
+                    "*.c", "*.cpp", "*.h", "*.hpp", "*.toml", "*.ini", "*.log", "*.sql",
+                    "*.sh", "*.ps1", "*.bat"
+                ]
+            });
+    }
+
+    private async Task AttachTurnFilesAsync(string kind, string title, FilePickerFileType fileType)
+    {
         var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
         {
-            Title = "Attach an image",
-            AllowMultiple = false,
-            FileTypeFilter =
-            [
-                new FilePickerFileType("Images")
-                {
-                    Patterns = ["*.png", "*.jpg", "*.jpeg", "*.webp", "*.gif"]
-                }
-            ]
+            Title = title,
+            AllowMultiple = true,
+            FileTypeFilter = [fileType]
         });
+        var paths = files
+            .Select(file => file.TryGetLocalPath())
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Cast<string>()
+            .ToArray();
+        if (paths.Length == 0) return;
+        ViewModel.AddTurnAttachments(paths, kind);
+        ViewModel.AddActivity("ATTACH", $"Added {paths.Length} {kind} file{(paths.Length == 1 ? string.Empty : "s")} to the next turn", "#65C7D0");
+    }
 
-        var path = files.FirstOrDefault()?.TryGetLocalPath();
-        if (path is not null)
+    private void RemoveTurnAttachment_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: string id }) ViewModel.RemoveTurnAttachment(id);
+    }
+
+    private void ChatImagePreview_OnPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (e.GetCurrentPoint(this).Properties.PointerUpdateKind != PointerUpdateKind.LeftButtonPressed
+            || sender is not Control { Tag: string path }) return;
+        OpenChatImage(path);
+        e.Handled = true;
+    }
+
+    private void OpenChatImage_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Control { Tag: string path }) OpenChatImage(path);
+    }
+
+    private async void CopyChatImagePath_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string path } button || Clipboard is null) return;
+        await Clipboard.SetTextAsync(path);
+        button.Content = "COPIED";
+        ViewModel.AddActivity("IMAGE", $"Copied {Path.GetFileName(path)} path", "#65C7D0");
+        await Task.Delay(1_200);
+        if (button.IsAttachedToVisualTree()) button.Content = "COPY PATH";
+    }
+
+    private void OpenChatImage(string path)
+    {
+        try
         {
-            ViewModel.SetImage(path);
+            if (!File.Exists(path))
+            {
+                ViewModel.AddActivity("IMAGE", $"Image no longer exists · {path}", "#E2A84A");
+                return;
+            }
+            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+            ViewModel.AddActivity("IMAGE", $"Opened {Path.GetFileName(path)}", "#65C7D0");
+        }
+        catch (Exception exception)
+        {
+            ViewModel.AddActivity("IMAGE", $"Could not open image · {exception.Message}", "#E2A84A");
         }
     }
 
@@ -1652,7 +1939,9 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        var imagePath = ViewModel.ImagePath;
+        var turnAttachments = ViewModel.TurnAttachments
+            .Select(attachment => new FilePart(attachment.FullPath, attachment.MediaType))
+            .ToArray();
         var requestedEffort = ViewModel.SelectedReasoningLevel?.Id;
         var requestedTier = ViewModel.SelectedServiceTier?.Id;
         var requestedTierLabel = ViewModel.SelectedServiceTier?.DisplayName ?? "provider default";
@@ -1687,7 +1976,7 @@ public sealed partial class MainWindow : Window
         NameSessionFromFirstPrompt(prompt);
         ViewModel.AddActivity(
             "MODEL",
-            $"Requested {model.ModelName} · reasoning {requestedEffort ?? "provider default"} · tier {requestedTierLabel} · context {contextFiles.Count}",
+            $"Requested {model.ModelName} · reasoning {requestedEffort ?? "provider default"} · tier {requestedTierLabel} · turn files {turnAttachments.Length} · context {contextFiles.Count}",
             "#65C7D0");
         if (importedContext is not null)
         {
@@ -1703,7 +1992,10 @@ public sealed partial class MainWindow : Window
                 _threadId = await _codex.StartThreadAsync(
                     ViewModel.WorkspacePath,
                     model.ModelName,
+                    ViewModel.SelectedPermissionMode.Id,
+                    _applicationSettings.PersonalInstructions,
                     _lifetime.Token);
+                _providerConfigurationRefreshPending = false;
                 if (_store is not null && _activeSession is not null)
                 {
                     _activeSession = _activeSession with
@@ -1730,7 +2022,8 @@ public sealed partial class MainWindow : Window
                 model.ModelName,
                 requestedEffort,
                 requestedTier,
-                imagePath,
+                ViewModel.SelectedPermissionMode.Id,
+                turnAttachments,
                 contextFiles,
                 _lifetime.Token);
             if (importedContext is not null && _store is not null && _activeSession is not null)
@@ -1750,7 +2043,7 @@ public sealed partial class MainWindow : Window
                         appliedAt = DateTimeOffset.UtcNow
                     })));
             }
-            ViewModel.SetImage(null);
+            ViewModel.ClearTurnAttachments();
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
         {
@@ -1865,7 +2158,8 @@ public sealed partial class MainWindow : Window
         {
             if (request.Method is not (
                 "item/commandExecution/requestApproval"
-                or "item/fileChange/requestApproval"))
+                or "item/fileChange/requestApproval"
+                or "item/permissions/requestApproval"))
             {
                 await client.RejectServerRequestAsync(
                     request,
@@ -1875,10 +2169,24 @@ public sealed partial class MainWindow : Window
             }
 
             var approved = await ShowApprovalOnUiThreadAsync(request);
-            await client.RespondToServerRequestAsync(
-                request,
-                new { decision = approved ? "accept" : "decline" },
-                cancellationToken);
+            if (request.Method == "item/permissions/requestApproval")
+            {
+                var granted = approved
+                    && request.Parameters.TryGetProperty("permissions", out var requested)
+                        ? requested.Clone()
+                        : JsonSerializer.SerializeToElement(new { });
+                await client.RespondToServerRequestAsync(
+                    request,
+                    new { permissions = granted, scope = "turn" },
+                    cancellationToken);
+            }
+            else
+            {
+                await client.RespondToServerRequestAsync(
+                    request,
+                    new { decision = approved ? "accept" : "decline" },
+                    cancellationToken);
+            }
         }
     }
 
@@ -1904,11 +2212,17 @@ public sealed partial class MainWindow : Window
     {
         var parameters = request.Parameters;
         var isCommand = request.Method.Contains("commandExecution", StringComparison.Ordinal);
+        var isPermissionExpansion = request.Method.Contains("permissions", StringComparison.Ordinal);
         var itemId = GetNullableString(parameters, "itemId") ?? $"approval-{Guid.NewGuid():N}";
-        var title = isCommand ? "Approve command" : "Approve file changes";
+        var title = isCommand
+            ? "Approve command"
+            : isPermissionExpansion ? "Approve expanded access" : "Approve file changes";
         var subject = isCommand
             ? GetNullableString(parameters, "command") ?? "Command was not reported."
-            : GetNullableString(parameters, "reason") ?? "The model wants to modify workspace files.";
+            : GetNullableString(parameters, "reason")
+              ?? (isPermissionExpansion
+                  ? GetJsonValue(parameters, "permissions")
+                  : "The model wants to modify workspace files.");
         var cwd = GetNullableString(parameters, "cwd");
         var detail = string.IsNullOrWhiteSpace(cwd) ? subject : $"{subject}\n\nWorking directory: {cwd}";
         ViewModel.StartExecutionItem(itemId, "APPROVAL", title, detail, "#E2A84A", isCommand);
@@ -1960,6 +2274,49 @@ public sealed partial class MainWindow : Window
         return approved;
     }
 
+    private async Task<bool> ConfirmFullAccessAsync()
+    {
+        var enable = new Button { Content = "ENABLE FULL ACCESS", Classes = { "primary" }, MinWidth = 160 };
+        var cancel = new Button { Content = "KEEP SAFEGUARDS", MinWidth = 140 };
+        var dialog = new Window
+        {
+            Title = "Enable full access",
+            Width = 560,
+            SizeToContent = SizeToContent.Height,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new StackPanel
+            {
+                Margin = new Thickness(20),
+                Spacing = 14,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = "FULL ACCESS",
+                        Foreground = Avalonia.Media.Brushes.Orange,
+                        FontWeight = Avalonia.Media.FontWeight.SemiBold
+                    },
+                    new TextBlock
+                    {
+                        Text = "This disables command approval and the workspace sandbox for this provider thread. The model can read, change, or delete anything your account can access.",
+                        TextWrapping = TextWrapping.Wrap
+                    },
+                    new StackPanel
+                    {
+                        Orientation = Avalonia.Layout.Orientation.Horizontal,
+                        HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+                        Spacing = 8,
+                        Children = { cancel, enable }
+                    }
+                }
+            }
+        };
+        enable.Click += (_, _) => dialog.Close(true);
+        cancel.Click += (_, _) => dialog.Close(false);
+        return await dialog.ShowDialog<bool>(this);
+    }
+
     private void HandleNotification(CodexNotification notification)
     {
         var parameters = notification.Parameters;
@@ -2008,29 +2365,12 @@ public sealed partial class MainWindow : Window
                 break;
 
             case "thread/tokenUsage/updated":
-                if (TryGetInt64(parameters, ["tokenUsage", "total", "totalTokens"], out var tokens))
-                {
-                    var contextWindow = TryGetInt64(
-                        parameters,
-                        ["tokenUsage", "modelContextWindow"],
-                        out var reportedWindow)
-                            ? reportedWindow
-                            : (long?)null;
-                    ViewModel.UpdateTokenUsage(tokens, contextWindow);
-                    if (ViewModel.IsContextCompacting
-                        && contextWindow is > 0
-                        && tokens * 100d / contextWindow.Value < 70)
-                    {
-                        Interlocked.Increment(ref _compactionAttempt);
-                        ViewModel.SetContextCompaction(false);
-                        ViewModel.AddActivity("CONTEXT", "Compaction confirmed by provider token usage", "#65C7D0");
-                    }
-                }
+                ApplyTokenUsage(parameters);
                 break;
 
             case "thread/compacted":
                 Interlocked.Increment(ref _compactionAttempt);
-                ViewModel.SetContextCompaction(false);
+                ViewModel.ConfirmContextCompacted();
                 ViewModel.AddActivity("CONTEXT", "Provider context compacted into a continuation summary", "#65C7D0");
                 break;
 
@@ -2077,6 +2417,39 @@ public sealed partial class MainWindow : Window
             case "account/rateLimits/updated":
                 _ = RefreshUsageAsync();
                 break;
+        }
+    }
+
+    private void ApplyTokenUsage(JsonElement parameters)
+    {
+        var activeInput = TryGetInt64(
+            parameters,
+            ["tokenUsage", "last", "inputTokens"],
+            out var reportedInput)
+                ? reportedInput
+                : (long?)null;
+        var cumulative = TryGetInt64(
+            parameters,
+            ["tokenUsage", "total", "totalTokens"],
+            out var reportedCumulative)
+                ? reportedCumulative
+                : (long?)null;
+        var contextWindow = TryGetInt64(
+            parameters,
+            ["tokenUsage", "modelContextWindow"],
+            out var reportedWindow)
+                ? reportedWindow
+                : (long?)null;
+
+        ViewModel.UpdateTokenUsage(activeInput, cumulative, contextWindow);
+        if (ViewModel.IsContextCompacting
+            && activeInput is > 0
+            && contextWindow is > 0
+            && activeInput.Value * 100d / contextWindow.Value < 70)
+        {
+            Interlocked.Increment(ref _compactionAttempt);
+            ViewModel.SetContextCompaction(false);
+            ViewModel.AddActivity("CONTEXT", "Compaction confirmed by provider active-context telemetry", "#65C7D0");
         }
     }
 
@@ -2128,6 +2501,8 @@ public sealed partial class MainWindow : Window
                 providerThreadId,
                 ViewModel.WorkspacePath,
                 _activeSession.ModelId,
+                ViewModel.SelectedPermissionMode.Id,
+                _applicationSettings.PersonalInstructions,
                 _lifetime.Token);
             ViewModel.AddActivity("SESSION", "Provider thread resumed", "#65C7D0");
         }
@@ -2141,6 +2516,40 @@ public sealed partial class MainWindow : Window
                 "SESSION",
                 $"Provider thread could not resume: {CleanError(exception)}",
                 "#E2A84A");
+        }
+    }
+
+    private async Task RefreshActiveThreadConfigurationAsync()
+    {
+        if (_codex is null
+            || _activeSession?.ProviderThreadId is not { Length: > 0 } providerThreadId
+            || !string.Equals(_activeSession.ProviderId, _codex.Id, StringComparison.Ordinal)
+            || ViewModel.IsRunning)
+        {
+            return;
+        }
+
+        try
+        {
+            _threadId = await _codex.ResumeThreadAsync(
+                providerThreadId,
+                ViewModel.WorkspacePath,
+                _activeSession.ModelId,
+                ViewModel.SelectedPermissionMode.Id,
+                _applicationSettings.PersonalInstructions,
+                _lifetime.Token);
+            _providerConfigurationRefreshPending = false;
+            ViewModel.AddActivity(
+                "SESSION",
+                $"Applied personalization and {ViewModel.SelectedPermissionMode.DisplayName.ToLowerInvariant()} permissions to the provider thread",
+                "#65C7D0");
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            ViewModel.AddActivity("SESSION", $"Could not apply provider settings: {CleanError(exception)}", "#E2A84A");
         }
     }
 
@@ -2304,6 +2713,14 @@ public sealed partial class MainWindow : Window
                     string.Empty,
                     "#65C7D0");
                 break;
+            case "imageGeneration":
+                ViewModel.StartExecutionItem(
+                    itemId,
+                    "IMAGE",
+                    "Generating image",
+                    string.Empty,
+                    "#65C7D0");
+                break;
         }
     }
 
@@ -2320,7 +2737,9 @@ public sealed partial class MainWindow : Window
         switch (type)
         {
             case "agentMessage":
-                ViewModel.CompleteAssistant(itemId, GetDisplayValue(item, "text"));
+                ViewModel.CompleteAssistant(
+                    itemId,
+                    AppendPendingGeneratedImageLinks(GetDisplayValue(item, "text")));
                 break;
             case "commandExecution":
                 var output = GetNullableString(item, "aggregatedOutput");
@@ -2359,7 +2778,33 @@ public sealed partial class MainWindow : Window
             case "webSearch":
                 ViewModel.CompleteExecutionItem(itemId, "COMPLETED");
                 break;
+            case "imageGeneration":
+                var savedPath = GetNullableString(item, "savedPath") ?? GetNullableString(item, "path");
+                if (!string.IsNullOrWhiteSpace(savedPath) && File.Exists(savedPath))
+                {
+                    _pendingGeneratedImagePaths.Add(Path.GetFullPath(savedPath));
+                }
+                ViewModel.CompleteExecutionItem(itemId, status, savedPath);
+                break;
         }
+    }
+
+    private string AppendPendingGeneratedImageLinks(string text)
+    {
+        if (_pendingGeneratedImagePaths.Count == 0) return text;
+        var builder = new System.Text.StringBuilder(text.TrimEnd());
+        foreach (var path in _pendingGeneratedImagePaths)
+        {
+            if (text.Contains(path, StringComparison.OrdinalIgnoreCase)
+                || text.Contains(path.Replace('\\', '/'), StringComparison.OrdinalIgnoreCase)) continue;
+            builder.AppendLine();
+            builder.AppendLine();
+            builder.Append("[Generated image](<");
+            builder.Append(path.Replace('\\', '/'));
+            builder.Append(">)");
+        }
+        _pendingGeneratedImagePaths.Clear();
+        return builder.ToString();
     }
 
     private void AppendExecutionDelta(
@@ -2410,8 +2855,16 @@ public sealed partial class MainWindow : Window
         }
         finally
         {
+            if (_pendingGeneratedImagePaths.Count > 0)
+            {
+                ViewModel.AddGeneratedImages(_pendingGeneratedImagePaths);
+                _pendingGeneratedImagePaths.Clear();
+            }
             ViewModel.CompleteTurn(error);
         }
+
+        if (_providerConfigurationRefreshPending)
+            await RefreshActiveThreadConfigurationAsync();
 
         await CompactContextIfNeededAsync();
 

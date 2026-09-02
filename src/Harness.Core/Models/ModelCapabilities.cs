@@ -12,7 +12,8 @@ public enum ModelCapability
     AudioInput = 1 << 5,
     AudioOutput = 1 << 6,
     PromptCaching = 1 << 7,
-    ComputerUse = 1 << 8
+    ComputerUse = 1 << 8,
+    VideoInput = 1 << 9
 }
 
 public sealed record ModelDescriptor(

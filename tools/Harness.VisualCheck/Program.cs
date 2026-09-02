@@ -3,6 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Headless;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.Threading;
 using System.Diagnostics;
 using System.Text.Json;
 using Harness.App;
@@ -169,10 +170,20 @@ try
             "model-probe",
             "high",
             "priority");
+        await store.UpdateSessionModelSettingsAsync(
+            firstSessionId,
+            "provider-probe",
+            "model-next",
+            "max",
+            null);
         await store.AppendProviderEventAsync(
             firstSessionId,
             "turn/completed",
             "{\"turn\":{\"status\":\"completed\"}}");
+        await store.AppendProviderEventAsync(
+            firstSessionId,
+            "thread/tokenUsage/updated",
+            "{\"tokenUsage\":{\"last\":{\"inputTokens\":37449},\"total\":{\"totalTokens\":24690858},\"modelContextWindow\":258400}}");
         var contextSource = Path.Combine(storageProbeWorkspace, "context.md");
         await File.WriteAllTextAsync(contextSource, "durable context");
         var attachment = await store.AddAttachmentAsync(firstSessionId, contextSource);
@@ -219,7 +230,9 @@ try
         await reopened.InitializeAsync();
         var recovered = await reopened.LoadSessionAsync(firstSessionId);
         if (recovered.Session.ProviderThreadId != "thread-probe"
-            || recovered.Session.ModelId != "model-probe"
+            || recovered.Session.ModelId != "model-next"
+            || recovered.Session.ReasoningEffort != "max"
+            || recovered.Session.ServiceTier is not null
             || recovered.Messages.Count != 1
             || recovered.Messages[0].Text != "complete"
             || recovered.Messages[0].Status != "COMPLETED"
@@ -330,10 +343,171 @@ try
             || loadedSettings.PersonalInstructions != "Be concise."
             || loadedSettings.GitAuthorName != "Harness Publisher"
             || loadedSettings.GitAuthorEmail != "publisher@users.noreply.github.com"
-            || loadedSettings.DefaultGitBranch != "release-main")
+            || loadedSettings.DefaultGitBranch != "release-main"
+            || loadedSettings.PermissionMode != "ask")
         {
             throw new InvalidOperationException("Application settings did not round-trip through SQLite.");
         }
+
+        settings = settings with { PermissionMode = "auto" };
+        await reopened.SaveApplicationSettingsAsync(settings);
+        loadedSettings = await reopened.LoadApplicationSettingsAsync();
+        var latestTokenEvent = await reopened.GetLatestProviderEventPayloadAsync(
+            firstSessionId,
+            "thread/tokenUsage/updated");
+        if (loadedSettings.PermissionMode != "auto"
+            || latestTokenEvent is null
+            || !latestTokenEvent.Contains("37449", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Permission mode or latest provider telemetry did not survive persistence.");
+        }
+
+        var contextProbe = new MainWindowViewModel();
+        contextProbe.UpdateTokenUsage(37_449, 24_690_858, 258_400);
+        if (contextProbe.ContextUsagePercent is < 14 or > 15
+            || contextProbe.ShouldCompactContext()
+            || !contextProbe.ContextWindowStatus.Contains("24,690,858 processed", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Context occupancy used cumulative thread tokens instead of active input tokens.");
+        }
+        contextProbe.UpdateTokenUsage(230_000, 24_920_858, 258_400);
+        if (!contextProbe.ShouldCompactContext())
+            throw new InvalidOperationException("Context compaction did not respond to active input occupancy.");
+
+        var activityProbe = new MainWindowViewModel(previewData: true);
+        var conversationAdvances = 0;
+        activityProbe.ConversationAdvanced += (_, _) => conversationAdvances++;
+        activityProbe.PromptText = "Implement the change";
+        activityProbe.BeginTurn();
+        activityProbe.StartAssistantMessage("status-probe");
+        activityProbe.AppendAssistantDelta("status-probe", "I am continuing with the implementation.");
+        activityProbe.CompleteAssistant("status-probe");
+        var deliveredMessage = activityProbe.Messages.Single(message => message.Role == "HARNESS" && message.Text.Contains("continuing", StringComparison.Ordinal));
+        activityProbe.StartExecutionItem("files-probe", "FILES", "Workspace changes", "", "#E2A84A");
+        if (conversationAdvances == 0
+            || activityProbe.TurnActivityStatus != "EDITING FILES"
+            || deliveredMessage.Status != "DELIVERED"
+            || activityProbe.PermissionModes.Select(mode => mode.Id).SequenceEqual(["ask", "auto", "full"]) is false)
+        {
+            throw new InvalidOperationException("Live chat follow, turn activity, or permission modes are incomplete.");
+        }
+        activityProbe.CompleteTurn();
+        if (deliveredMessage.Status != "COMPLETED")
+            throw new InvalidOperationException("Assistant text was marked complete before the provider turn completed.");
+
+        var turnImagePath = Path.Combine(storageProbeWorkspace, "turn-image.png");
+        var turnTextPath = Path.Combine(storageProbeWorkspace, "turn-notes.md");
+        await File.WriteAllBytesAsync(turnImagePath, [0x89, 0x50, 0x4E, 0x47]);
+        await File.WriteAllTextAsync(turnTextPath, "Turn-specific reference");
+        activityProbe.AddTurnAttachments([turnImagePath], "image");
+        activityProbe.AddTurnAttachments([turnTextPath], "text");
+        if (activityProbe.TurnAttachments.Count != 2
+            || activityProbe.TurnAttachments[0].MediaType != "image/png"
+            || activityProbe.TurnAttachments[1].MediaType != "text/markdown"
+            || !activityProbe.CanAttachImage
+            || activityProbe.CanAttachVideo
+            || !activityProbe.CanAttachText
+            || activityProbe.HasUnsupportedTurnAttachments)
+        {
+            throw new InvalidOperationException("Turn attachments lost type metadata or ignored provider capability gating.");
+        }
+        activityProbe.ClearTurnAttachments();
+
+        var videoCapabilityProbe = new MainWindowViewModel();
+        videoCapabilityProbe.ApplyModels(
+        [
+            new ModelDescriptor(
+                "video-provider",
+                "video-model",
+                "Video Model",
+                ModelCapability.Text | ModelCapability.Vision | ModelCapability.VideoInput,
+                IsDefault: true)
+        ]);
+        if (!videoCapabilityProbe.CanAttachVideo
+            || videoCapabilityProbe.VideoAttachmentAvailability != "NATIVE INPUT")
+            throw new InvalidOperationException("Provider-advertised video input was not surfaced in the attachment menu.");
+
+        var parsedSkill = SkillManifestParser.Parse(
+            "---\nname: physics-tuning\ndescription: Tune stable game physics.\n---\nInstructions",
+            "fallback");
+        if (parsedSkill.Name != "physics-tuning"
+            || parsedSkill.Description != "Tune stable game physics."
+            || SkillManifestParser.InferCategory(parsedSkill.Name, parsedSkill.Description, "skills/physics/SKILL.md") != "Game development")
+        {
+            throw new InvalidOperationException("Skill metadata parsing or category inference failed.");
+        }
+        var portableManifest = SkillManifestParser.Analyze(
+            "---\nname: portable\ndescription: Portable workflow.\nlicense: MIT\n---\nInstructions",
+            "fallback");
+        var claudeManifest = SkillManifestParser.Analyze(
+            "---\nname: claude-only\ndescription: Claude workflow.\ndisable-model-invocation: true\n---\nUse $ARGUMENTS",
+            "fallback");
+        if (portableManifest.Compatibility != "Portable Agent Skill"
+            || claudeManifest.Compatibility != "Claude Code extension")
+            throw new InvalidOperationException("Skill compatibility classification did not distinguish the open format from provider extensions.");
+        var catalogSkill = new SkillCatalogEntry(
+            "skill-catalog-probe",
+            parsedSkill.Name,
+            parsedSkill.Description,
+            "Game development",
+            "example/skills",
+            "physics-tuning/SKILL.md",
+            "0123456789abcdef0123456789abcdef01234567",
+            "https://github.com/example/skills/blob/0123456789abcdef0123456789abcdef01234567/physics-tuning/SKILL.md",
+            "Portable Agent Skill",
+            "UNREVIEWED GITHUB SOURCE",
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow);
+        var catalogSource = new SkillCatalogSource(
+            catalogSkill.Repository,
+            "example",
+            "https://github.com/example/skills",
+            428,
+            1,
+            catalogSkill.SourceRevision,
+            "PARTIAL · SEARCH TO EXPAND",
+            DateTimeOffset.UtcNow,
+            "Progressive metadata index");
+        await reopened.UpsertSkillInventoriesAsync([new SkillRepositoryInventory(catalogSource, [catalogSkill])]);
+        var matchingSkills = await reopened.SearchSkillCatalogAsync("physics", "Game development");
+        var matchingSources = await reopened.ListSkillSourcesAsync();
+        if (matchingSkills.Count != 1 || matchingSkills[0].Id != catalogSkill.Id
+            || matchingSources.Count != 1 || matchingSources[0].ReportedSkillCount != 428)
+            throw new InvalidOperationException("The local Skills catalog did not persist source counts or filter metadata.");
+
+        var packageRoot = Path.Combine(storageProbeRoot, "skill-package");
+        Directory.CreateDirectory(packageRoot);
+        await File.WriteAllTextAsync(Path.Combine(packageRoot, "SKILL.md"),
+            "---\nname: physics-tuning\ndescription: Tune stable game physics.\n---\nInstructions");
+        var downloaded = new DownloadedSkillPackage(packageRoot, "probe-sha256", 1, 90);
+        var installPath = await SkillPackageInstaller.InstallCodexAsync(
+            downloaded, catalogSkill, "WORKSPACE", storageProbeWorkspace);
+        if (!File.Exists(Path.Combine(installPath, "SKILL.md"))
+            || !installPath.Contains(Path.Combine(".agents", "skills"), StringComparison.OrdinalIgnoreCase)
+            || !Path.GetFileName(installPath).Contains("example-skills", StringComparison.OrdinalIgnoreCase)
+            || !(await File.ReadAllTextAsync(Path.Combine(installPath, "SKILL.md"))).Contains(
+                $"name: {SkillPackageInstaller.CreateInstalledSkillName(catalogSkill)}",
+                StringComparison.Ordinal)
+            || !File.Exists(Path.Combine(Path.GetDirectoryName(installPath)!, ".harness-skill-index.json")))
+            throw new InvalidOperationException("The Codex skill adapter did not create a distinct discoverable identity and provider index.");
+        var installedSkill = new InstalledSkill(
+            SkillPackageInstaller.CreateInstallId(catalogSkill.Id, "openai-codex", "WORKSPACE", storageProbeWorkspace),
+            catalogSkill.Id,
+            catalogSkill.Name,
+            catalogSkill.SourceRevision,
+            packageRoot,
+            installPath,
+            "WORKSPACE",
+            storageProbeWorkspace,
+            "openai-codex",
+            null,
+            downloaded.ContentSha256,
+            true,
+            DateTimeOffset.UtcNow);
+        await reopened.SaveInstalledSkillAsync(installedSkill);
+        var installedSkills = await reopened.ListInstalledSkillsAsync();
+        if (installedSkills.Count != 1 || installedSkills[0].CatalogId != catalogSkill.Id)
+            throw new InvalidOperationException("Installed skill provenance did not survive SQLite persistence.");
         await reopened.RemoveAttachmentAsync(attachmentId);
         if (File.Exists(storedAttachmentPath))
         {
@@ -571,7 +745,7 @@ if (sessionNamingProbe.CurrentSessionTitle != "Persist this conversation"
 }
 
 var modelProbe = new MainWindowViewModel(previewData: true);
-modelProbe.UpdateTokenUsage(90_000, 100_000);
+modelProbe.UpdateTokenUsage(90_000, 90_000, 100_000);
 if (!modelProbe.ReasoningLevels.Any(level => level.Id == "none")
     || !modelProbe.ReasoningLevels.Any(level => level.Id == "max")
     || modelProbe.SelectedReasoningLevel?.Id != "medium"
@@ -631,6 +805,25 @@ if (capabilityProbe.ReasoningLevels.Select(option => option.Id).SequenceEqual(["
     || capabilityProbe.SelectedServiceTier is not null)
 {
     throw new InvalidOperationException("Model switching leaked controls from the previously selected model.");
+}
+
+capabilityProbe.ApplySessionModelSettings(new StoredSession(
+    "model-continuity",
+    "project-continuity",
+    "Model continuity",
+    "provider-a",
+    "thread-continuity",
+    "model-a",
+    "high",
+    "priority",
+    DateTimeOffset.UtcNow,
+    DateTimeOffset.UtcNow));
+if (capabilityProbe.SelectedModel?.ProviderId != "provider-a"
+    || capabilityProbe.SelectedModel.ModelName != "model-a"
+    || capabilityProbe.SelectedReasoningLevel?.Id != "high"
+    || capabilityProbe.SelectedServiceTier?.Id != "priority")
+{
+    throw new InvalidOperationException("Persisted provider, model, reasoning, and service-tier settings were not restored together.");
 }
 
 var messageStreamProbe = new MainWindowViewModel();
@@ -762,6 +955,80 @@ _ = window.FindControl<Button>("RepositoryPullButton")
     ?? throw new InvalidOperationException("The repository pull action was not created.");
 _ = window.FindControl<Button>("RepositoryPushButton")
     ?? throw new InvalidOperationException("The repository push action was not created.");
+_ = window.FindControl<ComboBox>("PermissionModePicker")
+    ?? throw new InvalidOperationException("The workspace did not expose its permission mode.");
+var attachmentButton = window.FindControl<Button>("AttachmentMenuButton")
+    ?? throw new InvalidOperationException("The composer did not expose the attachment menu.");
+_ = window.FindControl<Button>("SkillsLibraryButton")
+    ?? throw new InvalidOperationException("The command strip did not expose the Skills Library bookshelf shortcut.");
+
+var previewViewModel = (MainWindowViewModel)window.DataContext!;
+previewViewModel.AddTurnAttachments([Path.GetFullPath(outputPath)], "image");
+previewViewModel.AddTurnAttachments([Path.GetFullPath("README.md")], "text");
+attachmentButton.Flyout?.ShowAt(attachmentButton);
+Dispatcher.UIThread.RunJobs(DispatcherPriority.Background);
+var attachmentMenuPath = Path.Combine(
+    Path.GetDirectoryName(Path.GetFullPath(outputPath))!,
+    $"{Path.GetFileNameWithoutExtension(outputPath)}-attachments{Path.GetExtension(outputPath)}");
+using (var attachmentMenuFrame = window.CaptureRenderedFrame()
+    ?? throw new InvalidOperationException("Avalonia did not render the attachment menu."))
+{
+    attachmentMenuFrame.Save(attachmentMenuPath);
+}
+attachmentButton.Flyout?.Hide();
+var generatedImageMessage = ChatMessageItem.Assistant(
+    $"Generated image:\n\n![Harness preview]({Path.GetFullPath(outputPath)})");
+generatedImageMessage.SetStatus("COMPLETED");
+previewViewModel.Messages.Add(generatedImageMessage);
+if (generatedImageMessage.Images.Count != 1
+    || generatedImageMessage.Images[0].FullPath != Path.GetFullPath(outputPath))
+{
+    throw new InvalidOperationException("Generated image links did not become inline chat previews.");
+}
+window.FindControl<ScrollViewer>("ConversationScrollViewer")?.ScrollToEnd();
+var imagePreviewPath = Path.Combine(
+    Path.GetDirectoryName(Path.GetFullPath(outputPath))!,
+    $"{Path.GetFileNameWithoutExtension(outputPath)}-image-preview{Path.GetExtension(outputPath)}");
+using (var imagePreviewFrame = window.CaptureRenderedFrame()
+    ?? throw new InvalidOperationException("Avalonia did not render the generated image card."))
+{
+    imagePreviewFrame.Save(imagePreviewPath);
+}
+
+var restoreSession = new StoredSession(
+    "restore-scroll-session",
+    "preview-project",
+    "Restored conversation",
+    "preview",
+    "preview-thread",
+    "gpt-5.6-sol",
+    "max",
+    "priority",
+    DateTimeOffset.UtcNow,
+    DateTimeOffset.UtcNow);
+var restoreMessages = Enumerable.Range(0, 36)
+    .Select(index => new StoredMessage(
+        $"restore-message-{index}",
+        restoreSession.Id,
+        index,
+        index % 2 == 0 ? "YOU" : "HARNESS",
+        index % 2 == 0 ? "Prompt" : "Response",
+        $"Persisted message {index + 1}: {new string('x', 180)}",
+        "COMPLETED",
+        index % 2 == 0 ? "#8993A3" : "#65C7D0",
+        false,
+        DateTimeOffset.UtcNow.AddMinutes(index)))
+    .ToArray();
+previewViewModel.ApplyStoredSession(restoreSession, restoreMessages);
+Dispatcher.UIThread.RunJobs(DispatcherPriority.Background);
+var conversationScroll = window.FindControl<ScrollViewer>("ConversationScrollViewer")
+    ?? throw new InvalidOperationException("Conversation scroll surface was not created.");
+conversationScroll.UpdateLayout();
+var maximumConversationOffset = Math.Max(0, conversationScroll.Extent.Height - conversationScroll.Viewport.Height);
+if (conversationScroll.Offset.Y < maximumConversationOffset - 2)
+{
+    throw new InvalidOperationException("A restored conversation did not open at its latest message.");
+}
 window.Close();
 
 var workingTreeViewModel = new WorkingTreeWindowViewModel();
@@ -797,17 +1064,73 @@ workingTreeWindow.Close();
 
 var settingsWindow = new SettingsWindow
 {
-    Width = 940,
-    Height = 680
+    Width = 1480,
+    Height = 880
 };
 settingsWindow.Show();
 var settingsTabs = settingsWindow.FindControl<TabControl>("SettingsTabs")
     ?? throw new InvalidOperationException("The Settings category navigator was not created.");
+var settingsViewModel = (SettingsWindowViewModel)settingsWindow.DataContext!;
+var previewSkills = new[]
+{
+    ("game-feel", "Add shake, hit-stop, easing, and layered feedback without losing responsiveness.", "Game development", "community/indie-skills"),
+    ("repo-mapper", "Map repository structure, dependencies, and ownership before making changes.", "DevOps", "community/indie-skills"),
+    ("secure-auth-audit", "Audit authentication flows and identify common authorization failures.", "Security", "sec-labs/agent-skills"),
+    ("ui-wireframe-planner", "Generate implementation-ready interface structure from product requirements.", "Frontend", "design-labs/skillbook"),
+    ("test-orchestrator", "Coordinate unit, integration, and end-to-end verification across services.", "Testing", "community/indie-skills"),
+    ("agent-memory-toolkit", "Build durable context summaries without flooding the active model window.", "Data", "design-labs/skillbook")
+}.Select((item, index) => new SkillCatalogEntry(
+    $"preview-skill-{index}", item.Item1, item.Item2, item.Item3, item.Item4,
+    $"skills/{item.Item1}/SKILL.md",
+    $"abcdef0123456789abcdef0123456789abcde{index:00}",
+    $"https://github.com/{item.Item4}/blob/abcdef0123456789abcdef0123456789abcde{index:00}/skills/{item.Item1}/SKILL.md",
+    index == 2 ? "Claude Code extension" : "Portable Agent Skill",
+    "UNREVIEWED GITHUB SOURCE",
+    DateTimeOffset.UtcNow.AddMinutes(-index), DateTimeOffset.UtcNow.AddMinutes(-index))).ToArray();
+var previewSources = new[]
+{
+    new SkillCatalogSource("community/indie-skills", "community", "https://github.com/community/indie-skills", 1284, 1284, previewSkills[0].SourceRevision, "COMPLETE PATH INDEX", DateTimeOffset.UtcNow, DescribedSkillCount: 3),
+    new SkillCatalogSource("sec-labs/agent-skills", "sec-labs", "https://github.com/sec-labs/agent-skills", 147, 147, previewSkills[2].SourceRevision, "COMPLETE PATH INDEX", DateTimeOffset.UtcNow, DescribedSkillCount: 1),
+    new SkillCatalogSource("design-labs/skillbook", "design-labs", "https://github.com/design-labs/skillbook", 83, 83, previewSkills[3].SourceRevision, "COMPLETE PATH INDEX", DateTimeOffset.UtcNow, DescribedSkillCount: 2)
+};
+settingsViewModel.SetCompatibilityTargets(
+[
+    new SkillCompatibilityOption("openai-codex:gpt-5.6-sol", "openai-codex", "gpt-5.6-sol", "OpenAI Codex · GPT-5.6-Sol"),
+    new SkillCompatibilityOption("anthropic-claude:claude-opus", "anthropic-claude", "claude-opus", "Anthropic Claude · Opus")
+]);
+settingsViewModel.SelectedSkillCompatibility = settingsViewModel.SkillCompatibilityOptions[1];
+settingsViewModel.ReplaceSkills(previewSkills, [], previewSources);
 settingsTabs.SelectedIndex = 5;
+_ = settingsWindow.FindControl<TextBox>("SkillSearchBox")
+    ?? throw new InvalidOperationException("Skills settings did not expose catalog search.");
+_ = settingsWindow.FindControl<Button>("SkillInstallButton")
+    ?? throw new InvalidOperationException("Skills settings did not expose explicit installation.");
+_ = settingsWindow.FindControl<Button>("SkillSyncButton")
+    ?? throw new InvalidOperationException("Skills settings did not expose repository inventory sync.");
+var skillsSettingsPath = Path.Combine(
+    Path.GetDirectoryName(Path.GetFullPath(outputPath))!,
+    $"{Path.GetFileNameWithoutExtension(outputPath)}-skills{Path.GetExtension(outputPath)}");
+using (var skillsSettingsFrame = settingsWindow.CaptureRenderedFrame()
+    ?? throw new InvalidOperationException("Avalonia did not render the Skills Library settings section."))
+{
+    skillsSettingsFrame.Save(skillsSettingsPath);
+}
+settingsTabs.SelectedIndex = 6;
 _ = settingsWindow.FindControl<Button>("GitHubConnectButton")
     ?? throw new InvalidOperationException("GitHub settings did not expose account connection.");
 _ = settingsWindow.FindControl<Button>("GitHubRefreshButton")
     ?? throw new InvalidOperationException("GitHub settings did not expose connection refresh.");
+settingsTabs.SelectedIndex = 7;
+_ = settingsWindow.FindControl<ComboBox>("SettingsPermissionModePicker")
+    ?? throw new InvalidOperationException("Advanced settings did not expose the persistent permission mode.");
+var advancedSettingsPath = Path.Combine(
+    Path.GetDirectoryName(Path.GetFullPath(outputPath))!,
+    $"{Path.GetFileNameWithoutExtension(outputPath)}-advanced{Path.GetExtension(outputPath)}");
+using (var advancedSettingsFrame = settingsWindow.CaptureRenderedFrame()
+    ?? throw new InvalidOperationException("Avalonia did not render advanced settings."))
+{
+    advancedSettingsFrame.Save(advancedSettingsPath);
+}
 if (settingsWindow.FindControl<TextBox>("GitAuthorNameBox") is not null
     || settingsWindow.FindControl<TextBox>("GitAuthorEmailBox") is not null)
     throw new InvalidOperationException("GitHub settings still exposed workspace repository controls.");

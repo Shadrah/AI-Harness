@@ -110,10 +110,19 @@ and removal. A button or provider call by itself is not a completed feature.
 
 - Discover public skills through searchable catalogs and GitHub sources without
   requiring users to know a repository or skill name in advance.
+- Populate and refresh the local catalog unobtrusively in the background after
+  startup; browsing never waits for GitHub, while direct searches may fetch and
+  stream additional remote results on demand.
 - Search and filter by task category, language, framework, provider compatibility,
   capability, license, trust state, popularity, and update recency.
 - Preview source, instructions, scripts, assets, dependencies, permissions,
   supported providers, version history, and install scope before installation.
+- Keep discovery and update scans metadata-only. Download, provider setup,
+  dependency installation, activation, and updates require an explicit user
+  action for a selected skill and visible approval of consequential operations.
+- Lock provider-specific skills to compatible targets; for portable skills, let
+  the user choose among compatible connected providers/models and installation
+  scope, while tracking setup state separately for every selected target.
 - Install immutable, hashed copies into user or workspace scope; update, pin,
   disable, fork, export, and remove them without requiring the source to remain.
 - Adapt portable skills to each provider while clearly labeling provider-specific

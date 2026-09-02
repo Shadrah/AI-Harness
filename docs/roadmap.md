@@ -24,6 +24,11 @@ driver without keeping that driver installed?
 - Persistent Settings module for workspace visibility, personalization, startup,
   providers, imports, GitHub account connection, and advanced controls. All
   repository and branch operations live in the primary workspace Git surface.
+- Provider-native personalization delivery and persistent Ask, safeguarded
+  automatic review, and Full access permission modes are wired through thread
+  and turn configuration.
+- Active context occupancy is separated from cumulative provider throughput;
+  chat streams auto-follow and expose a compact turn-level working phase.
 - Loss-aware transcript import for Markdown, text, JSON, and JSONL with preview,
   normalized durable messages, provenance, and a retained source copy.
 - Installed-history detection for Codex and Claude Code, including selectable
@@ -55,6 +60,11 @@ driver without keeping that driver installed?
 
 ## P3 — Skills Library
 
+- Implemented foundation: Settings library and command-strip shortcut, SQLite
+  catalog/provenance, repository-level GitHub source totals, progressive
+  description indexing, direct source search, topics/source/status filters,
+  pre-download directory inspection, explicit confirmation, content hashing, and
+  Codex user/workspace `.agents/skills` setup.
 - Implement the complete discovery, compatibility, trust, installation, provider
   delivery, update, and removal contract in [Skills Library](skills-library.md).
 - Search public catalogs and configured GitHub sources by category, capability,

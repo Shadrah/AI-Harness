@@ -8,7 +8,7 @@ namespace Harness.Storage;
 
 public sealed class HarnessStore : IAsyncDisposable
 {
-    private const int SchemaVersion = 2;
+    private const int SchemaVersion = 4;
     private readonly string _connectionString;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
@@ -130,7 +130,59 @@ public sealed class HarnessStore : IAsyncDisposable
                     imported_at TEXT NOT NULL
                 );
 
-                UPDATE schema_info SET version = 2 WHERE version < 2;
+                CREATE TABLE IF NOT EXISTS skill_catalog (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    repository TEXT NOT NULL,
+                    skill_path TEXT NOT NULL,
+                    source_revision TEXT NOT NULL,
+                    source_url TEXT NOT NULL,
+                    compatibility TEXT NOT NULL,
+                    trust_state TEXT NOT NULL,
+                    discovered_at TEXT NOT NULL,
+                    refreshed_at TEXT NOT NULL,
+                    raw_metadata_json TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS ix_skill_catalog_name
+                    ON skill_catalog(name COLLATE NOCASE);
+                CREATE INDEX IF NOT EXISTS ix_skill_catalog_category
+                    ON skill_catalog(category COLLATE NOCASE);
+
+                CREATE TABLE IF NOT EXISTS skill_sources (
+                    repository TEXT PRIMARY KEY,
+                    owner TEXT NOT NULL,
+                    source_url TEXT NOT NULL,
+                    reported_skill_count INTEGER NOT NULL,
+                    indexed_skill_count INTEGER NOT NULL,
+                    source_revision TEXT NOT NULL,
+                    index_state TEXT NOT NULL,
+                    refreshed_at TEXT NOT NULL,
+                    diagnostic TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS installed_skills (
+                    id TEXT PRIMARY KEY,
+                    catalog_id TEXT NOT NULL REFERENCES skill_catalog(id) ON DELETE RESTRICT,
+                    name TEXT NOT NULL,
+                    source_revision TEXT NOT NULL,
+                    package_path TEXT NOT NULL,
+                    install_path TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    workspace_path TEXT NULL,
+                    provider_id TEXT NOT NULL,
+                    model_id TEXT NULL,
+                    content_sha256 TEXT NOT NULL,
+                    enabled INTEGER NOT NULL,
+                    installed_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS ix_installed_skills_catalog
+                    ON installed_skills(catalog_id, provider_id, scope);
+
+                UPDATE schema_info SET version = 4 WHERE version < 4;
                 """;
             await command.ExecuteNonQueryAsync(cancellationToken);
             await ClassifyLegacyInternalCodexImportsAsync(connection, cancellationToken);
@@ -215,6 +267,437 @@ public sealed class HarnessStore : IAsyncDisposable
             command.Parameters.AddWithValue("$json", JsonSerializer.Serialize(settings));
             command.Parameters.AddWithValue("$updatedAt", FormatTimestamp(DateTimeOffset.UtcNow));
             await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task UpsertSkillCatalogAsync(
+        IEnumerable<SkillCatalogEntry> entries,
+        CancellationToken cancellationToken = default)
+    {
+        var materialized = entries.ToArray();
+        if (materialized.Length == 0) return;
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            await using var connection = await OpenConnectionAsync(cancellationToken);
+            await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+            foreach (var entry in materialized)
+            {
+                await using var command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText = """
+                    INSERT INTO skill_catalog(
+                        id, name, description, category, repository, skill_path,
+                        source_revision, source_url, compatibility, trust_state,
+                        discovered_at, refreshed_at, raw_metadata_json)
+                    VALUES(
+                        $id, $name, $description, $category, $repository, $skillPath,
+                        $revision, $url, $compatibility, $trustState,
+                        $discoveredAt, $refreshedAt, $rawMetadata)
+                    ON CONFLICT(id) DO UPDATE SET
+                        name = CASE WHEN excluded.description LIKE 'Description not cached yet · %' THEN skill_catalog.name ELSE excluded.name END,
+                        description = CASE WHEN excluded.description LIKE 'Description not cached yet · %' THEN skill_catalog.description ELSE excluded.description END,
+                        category = CASE WHEN excluded.description LIKE 'Description not cached yet · %' THEN skill_catalog.category ELSE excluded.category END,
+                        repository = excluded.repository,
+                        skill_path = excluded.skill_path,
+                        source_revision = excluded.source_revision,
+                        source_url = excluded.source_url,
+                        compatibility = CASE WHEN excluded.description LIKE 'Description not cached yet · %' THEN skill_catalog.compatibility ELSE excluded.compatibility END,
+                        trust_state = excluded.trust_state,
+                        refreshed_at = excluded.refreshed_at,
+                        raw_metadata_json = excluded.raw_metadata_json;
+                    """;
+                command.Parameters.AddWithValue("$id", entry.Id);
+                command.Parameters.AddWithValue("$name", entry.Name);
+                command.Parameters.AddWithValue("$description", entry.Description);
+                command.Parameters.AddWithValue("$category", entry.Category);
+                command.Parameters.AddWithValue("$repository", entry.Repository);
+                command.Parameters.AddWithValue("$skillPath", entry.SkillPath);
+                command.Parameters.AddWithValue("$revision", entry.SourceRevision);
+                command.Parameters.AddWithValue("$url", entry.SourceUrl);
+                command.Parameters.AddWithValue("$compatibility", entry.Compatibility);
+                command.Parameters.AddWithValue("$trustState", entry.TrustState);
+                command.Parameters.AddWithValue("$discoveredAt", FormatTimestamp(entry.DiscoveredAt));
+                command.Parameters.AddWithValue("$refreshedAt", FormatTimestamp(entry.RefreshedAt));
+                command.Parameters.AddWithValue("$rawMetadata", entry.RawMetadataJson);
+                await command.ExecuteNonQueryAsync(cancellationToken);
+            }
+            await transaction.CommitAsync(cancellationToken);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task UpsertSkillInventoriesAsync(
+        IEnumerable<SkillRepositoryInventory> inventories,
+        CancellationToken cancellationToken = default)
+    {
+        var materialized = inventories.ToArray();
+        if (materialized.Length == 0) return;
+
+        const int batchSize = 1_000;
+        foreach (var inventory in materialized)
+        {
+            var skills = inventory.Skills.ToArray();
+            var isBatched = skills.Length > batchSize;
+            await UpsertSkillSourceAsync(
+                inventory.Source with
+                {
+                    IndexState = isBatched ? "INDEXING PATHS" : inventory.Source.IndexState,
+                    Diagnostic = isBatched
+                        ? $"Writing {skills.Length:N0} catalog paths in background batches."
+                        : inventory.Source.Diagnostic
+                },
+                preserveExistingForDiscoveryOnly: string.IsNullOrWhiteSpace(inventory.Source.SourceRevision),
+                cancellationToken);
+
+            foreach (var batch in skills.Chunk(batchSize))
+            {
+                await _gate.WaitAsync(cancellationToken);
+                try
+                {
+                    await using var connection = await OpenConnectionAsync(cancellationToken);
+                    await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+                    await using var command = connection.CreateCommand();
+                    command.Transaction = transaction;
+                    command.CommandText = """
+                    INSERT INTO skill_catalog(
+                        id, name, description, category, repository, skill_path,
+                        source_revision, source_url, compatibility, trust_state,
+                        discovered_at, refreshed_at, raw_metadata_json)
+                    VALUES(
+                        $id, $name, $description, $category, $repository, $skillPath,
+                        $revision, $url, $compatibility, $trustState,
+                        $discoveredAt, $refreshedAt, $rawMetadata)
+                    ON CONFLICT(id) DO UPDATE SET
+                        name = CASE WHEN excluded.description LIKE 'Description not cached yet · %' THEN skill_catalog.name ELSE excluded.name END,
+                        description = CASE WHEN excluded.description LIKE 'Description not cached yet · %' THEN skill_catalog.description ELSE excluded.description END,
+                        category = CASE WHEN excluded.description LIKE 'Description not cached yet · %' THEN skill_catalog.category ELSE excluded.category END,
+                        source_revision = excluded.source_revision,
+                        source_url = excluded.source_url,
+                        compatibility = CASE WHEN excluded.description LIKE 'Description not cached yet · %' THEN skill_catalog.compatibility ELSE excluded.compatibility END,
+                        trust_state = excluded.trust_state,
+                        refreshed_at = excluded.refreshed_at,
+                        raw_metadata_json = excluded.raw_metadata_json;
+                    """;
+                    var id = command.Parameters.Add("$id", SqliteType.Text);
+                    var name = command.Parameters.Add("$name", SqliteType.Text);
+                    var description = command.Parameters.Add("$description", SqliteType.Text);
+                    var category = command.Parameters.Add("$category", SqliteType.Text);
+                    var repository = command.Parameters.Add("$repository", SqliteType.Text);
+                    var skillPath = command.Parameters.Add("$skillPath", SqliteType.Text);
+                    var revision = command.Parameters.Add("$revision", SqliteType.Text);
+                    var url = command.Parameters.Add("$url", SqliteType.Text);
+                    var compatibility = command.Parameters.Add("$compatibility", SqliteType.Text);
+                    var trustState = command.Parameters.Add("$trustState", SqliteType.Text);
+                    var discoveredAt = command.Parameters.Add("$discoveredAt", SqliteType.Text);
+                    var refreshedAt = command.Parameters.Add("$refreshedAt", SqliteType.Text);
+                    var rawMetadata = command.Parameters.Add("$rawMetadata", SqliteType.Text);
+                    await command.PrepareAsync(cancellationToken);
+                    foreach (var entry in batch)
+                    {
+                        id.Value = entry.Id;
+                        name.Value = entry.Name;
+                        description.Value = entry.Description;
+                        category.Value = entry.Category;
+                        repository.Value = entry.Repository;
+                        skillPath.Value = entry.SkillPath;
+                        revision.Value = entry.SourceRevision;
+                        url.Value = entry.SourceUrl;
+                        compatibility.Value = entry.Compatibility;
+                        trustState.Value = entry.TrustState;
+                        discoveredAt.Value = FormatTimestamp(entry.DiscoveredAt);
+                        refreshedAt.Value = FormatTimestamp(entry.RefreshedAt);
+                        rawMetadata.Value = entry.RawMetadataJson;
+                        await command.ExecuteNonQueryAsync(cancellationToken);
+                    }
+
+                    await transaction.CommitAsync(cancellationToken);
+                }
+                finally
+                {
+                    _gate.Release();
+                }
+            }
+
+            await UpsertSkillSourceAsync(
+                inventory.Source,
+                preserveExistingForDiscoveryOnly: string.IsNullOrWhiteSpace(inventory.Source.SourceRevision),
+                cancellationToken);
+            await RefreshSkillSourceCountAsync(inventory.Source.Repository, cancellationToken);
+        }
+    }
+
+    private async Task UpsertSkillSourceAsync(
+        SkillCatalogSource source,
+        bool preserveExistingForDiscoveryOnly,
+        CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            await using var connection = await OpenConnectionAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                INSERT INTO skill_sources(
+                    repository, owner, source_url, reported_skill_count,
+                    indexed_skill_count, source_revision, index_state,
+                    refreshed_at, diagnostic)
+                VALUES(
+                    $repository, $owner, $sourceUrl, $reported, $indexed,
+                    $revision, $state, $refreshedAt, $diagnostic)
+                ON CONFLICT(repository) DO UPDATE SET
+                    owner = excluded.owner,
+                    source_url = excluded.source_url,
+                    reported_skill_count = CASE WHEN $preserve = 1 THEN skill_sources.reported_skill_count ELSE excluded.reported_skill_count END,
+                    indexed_skill_count = CASE WHEN $preserve = 1 THEN skill_sources.indexed_skill_count ELSE MAX(skill_sources.indexed_skill_count, excluded.indexed_skill_count) END,
+                    source_revision = CASE WHEN $preserve = 1 THEN skill_sources.source_revision ELSE excluded.source_revision END,
+                    index_state = CASE WHEN $preserve = 1 THEN skill_sources.index_state ELSE excluded.index_state END,
+                    refreshed_at = excluded.refreshed_at,
+                    diagnostic = excluded.diagnostic;
+                """;
+            command.Parameters.AddWithValue("$repository", source.Repository);
+            command.Parameters.AddWithValue("$owner", source.Owner);
+            command.Parameters.AddWithValue("$sourceUrl", source.SourceUrl);
+            command.Parameters.AddWithValue("$reported", source.ReportedSkillCount);
+            command.Parameters.AddWithValue("$indexed", source.IndexedSkillCount);
+            command.Parameters.AddWithValue("$revision", source.SourceRevision);
+            command.Parameters.AddWithValue("$state", source.IndexState);
+            command.Parameters.AddWithValue("$refreshedAt", FormatTimestamp(source.RefreshedAt));
+            command.Parameters.AddWithValue("$diagnostic", source.Diagnostic);
+            command.Parameters.AddWithValue("$preserve", preserveExistingForDiscoveryOnly ? 1 : 0);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    private async Task RefreshSkillSourceCountAsync(string repository, CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            await using var connection = await OpenConnectionAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                UPDATE skill_sources
+                SET indexed_skill_count = (
+                    SELECT COUNT(*) FROM skill_catalog
+                    WHERE repository = $repository COLLATE NOCASE),
+                    index_state = CASE
+                        WHEN reported_skill_count = 0 THEN index_state
+                        WHEN (SELECT COUNT(*) FROM skill_catalog WHERE repository = $repository COLLATE NOCASE) = reported_skill_count THEN 'COMPLETE PATH INDEX'
+                        WHEN (SELECT COUNT(*) FROM skill_catalog WHERE repository = $repository COLLATE NOCASE) < reported_skill_count THEN 'PARTIAL · SEARCH TO EXPAND'
+                        ELSE 'STALE ENTRIES · REFRESH SOURCE'
+                    END
+                WHERE repository = $repository COLLATE NOCASE;
+                """;
+            command.Parameters.AddWithValue("$repository", repository);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<IReadOnlyList<SkillCatalogSource>> ListSkillSourcesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            await using var connection = await OpenConnectionAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT repository, owner, source_url, reported_skill_count,
+                       indexed_skill_count, source_revision, index_state,
+                       refreshed_at, diagnostic,
+                       (SELECT COUNT(*) FROM skill_catalog catalog
+                        WHERE catalog.repository = skill_sources.repository COLLATE NOCASE
+                          AND catalog.description NOT LIKE 'Description not cached yet · %') AS described_skill_count
+                FROM skill_sources
+                ORDER BY reported_skill_count DESC, repository COLLATE NOCASE ASC;
+                """;
+            var result = new List<SkillCatalogSource>();
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                result.Add(new SkillCatalogSource(
+                    reader.GetString(0), reader.GetString(1), reader.GetString(2),
+                    reader.GetInt32(3), reader.GetInt32(4), reader.GetString(5),
+                    reader.GetString(6), ParseTimestamp(reader.GetString(7)), reader.GetString(8), reader.GetInt32(9)));
+            }
+            return result;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task RemoveSkillSourceIfEmptyAsync(
+        string repository,
+        CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            await using var connection = await OpenConnectionAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                DELETE FROM skill_sources
+                WHERE repository = $repository COLLATE NOCASE
+                  AND reported_skill_count = 0
+                  AND NOT EXISTS (
+                      SELECT 1 FROM skill_catalog
+                      WHERE skill_catalog.repository = $repository COLLATE NOCASE);
+                """;
+            command.Parameters.AddWithValue("$repository", repository);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<IReadOnlyList<SkillCatalogEntry>> SearchSkillCatalogAsync(
+        string? query = null,
+        string? category = null,
+        string? repository = null,
+        string? compatibilityProvider = null,
+        CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            await using var connection = await OpenConnectionAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT id, name, description, category, repository, skill_path,
+                       source_revision, source_url, compatibility, trust_state,
+                       discovered_at, refreshed_at, raw_metadata_json
+                FROM skill_catalog
+                WHERE ($query = '' OR name LIKE $pattern ESCAPE '\' COLLATE NOCASE
+                    OR description LIKE $pattern ESCAPE '\' COLLATE NOCASE
+                    OR repository LIKE $pattern ESCAPE '\' COLLATE NOCASE
+                    OR skill_path LIKE $pattern ESCAPE '\' COLLATE NOCASE)
+                  AND ($category = '' OR category = $category COLLATE NOCASE)
+                  AND ($repository = '' OR repository = $repository COLLATE NOCASE)
+                  AND ($provider = ''
+                    OR compatibility = 'Portable Agent Skill' COLLATE NOCASE
+                    OR ($provider = 'openai-codex' AND compatibility = 'Codex extension' COLLATE NOCASE)
+                    OR ($provider = 'anthropic-claude' AND compatibility = 'Claude Code extension' COLLATE NOCASE))
+                ORDER BY refreshed_at DESC, name COLLATE NOCASE ASC
+                LIMIT 250;
+                """;
+            var normalizedQuery = query?.Trim() ?? string.Empty;
+            var normalizedCategory = string.Equals(category, "All", StringComparison.OrdinalIgnoreCase)
+                ? string.Empty
+                : category?.Trim() ?? string.Empty;
+            var escaped = normalizedQuery.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
+            command.Parameters.AddWithValue("$query", normalizedQuery);
+            command.Parameters.AddWithValue("$pattern", $"%{escaped}%");
+            command.Parameters.AddWithValue("$category", normalizedCategory);
+            command.Parameters.AddWithValue("$repository",
+                string.Equals(repository, "All sources", StringComparison.OrdinalIgnoreCase)
+                    ? string.Empty
+                    : repository?.Trim() ?? string.Empty);
+            command.Parameters.AddWithValue("$provider", compatibilityProvider?.Trim() ?? string.Empty);
+            var result = new List<SkillCatalogEntry>();
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken)) result.Add(ReadSkillCatalogEntry(reader));
+            return result;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task SaveInstalledSkillAsync(
+        InstalledSkill skill,
+        CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            await using var connection = await OpenConnectionAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                INSERT INTO installed_skills(
+                    id, catalog_id, name, source_revision, package_path, install_path,
+                    scope, workspace_path, provider_id, model_id, content_sha256,
+                    enabled, installed_at)
+                VALUES(
+                    $id, $catalogId, $name, $revision, $packagePath, $installPath,
+                    $scope, $workspacePath, $providerId, $modelId, $sha256,
+                    $enabled, $installedAt)
+                ON CONFLICT(id) DO UPDATE SET
+                    source_revision = excluded.source_revision,
+                    package_path = excluded.package_path,
+                    install_path = excluded.install_path,
+                    content_sha256 = excluded.content_sha256,
+                    enabled = excluded.enabled,
+                    installed_at = excluded.installed_at;
+                """;
+            command.Parameters.AddWithValue("$id", skill.Id);
+            command.Parameters.AddWithValue("$catalogId", skill.CatalogId);
+            command.Parameters.AddWithValue("$name", skill.Name);
+            command.Parameters.AddWithValue("$revision", skill.SourceRevision);
+            command.Parameters.AddWithValue("$packagePath", skill.PackagePath);
+            command.Parameters.AddWithValue("$installPath", skill.InstallPath);
+            command.Parameters.AddWithValue("$scope", skill.Scope);
+            command.Parameters.AddWithValue("$workspacePath", (object?)skill.WorkspacePath ?? DBNull.Value);
+            command.Parameters.AddWithValue("$providerId", skill.ProviderId);
+            command.Parameters.AddWithValue("$modelId", (object?)skill.ModelId ?? DBNull.Value);
+            command.Parameters.AddWithValue("$sha256", skill.ContentSha256);
+            command.Parameters.AddWithValue("$enabled", skill.Enabled ? 1 : 0);
+            command.Parameters.AddWithValue("$installedAt", FormatTimestamp(skill.InstalledAt));
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<IReadOnlyList<InstalledSkill>> ListInstalledSkillsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            await using var connection = await OpenConnectionAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT id, catalog_id, name, source_revision, package_path, install_path,
+                       scope, workspace_path, provider_id, model_id, content_sha256,
+                       enabled, installed_at
+                FROM installed_skills ORDER BY installed_at DESC;
+                """;
+            var result = new List<InstalledSkill>();
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                result.Add(new InstalledSkill(
+                    reader.GetString(0), reader.GetString(1), reader.GetString(2),
+                    reader.GetString(3), reader.GetString(4), reader.GetString(5),
+                    reader.GetString(6), reader.IsDBNull(7) ? null : reader.GetString(7),
+                    reader.GetString(8), reader.IsDBNull(9) ? null : reader.GetString(9),
+                    reader.GetString(10), reader.GetInt64(11) != 0,
+                    ParseTimestamp(reader.GetString(12))));
+            }
+            return result;
         }
         finally
         {
@@ -420,6 +903,28 @@ public sealed class HarnessStore : IAsyncDisposable
             command.Parameters.AddWithValue("$sessionId", sessionId);
             command.Parameters.AddWithValue("$method", method);
             return Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture) != 0;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<string?> GetLatestProviderEventPayloadAsync(
+        string sessionId,
+        string method,
+        CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            await using var connection = await OpenConnectionAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SELECT payload_json FROM provider_events WHERE session_id = $sessionId AND method = $method ORDER BY created_at DESC LIMIT 1;";
+            command.Parameters.AddWithValue("$sessionId", sessionId);
+            command.Parameters.AddWithValue("$method", method);
+            var value = await command.ExecuteScalarAsync(cancellationToken);
+            return value is null or DBNull ? null : Convert.ToString(value, CultureInfo.InvariantCulture);
         }
         finally
         {
@@ -773,6 +1278,47 @@ public sealed class HarnessStore : IAsyncDisposable
                 """;
             command.Parameters.AddWithValue("$providerId", providerId);
             command.Parameters.AddWithValue("$providerThreadId", providerThreadId);
+            command.Parameters.AddWithValue("$modelId", modelId);
+            command.Parameters.AddWithValue("$reasoningEffort", (object?)reasoningEffort ?? DBNull.Value);
+            command.Parameters.AddWithValue("$serviceTier", (object?)serviceTier ?? DBNull.Value);
+            command.Parameters.AddWithValue("$updatedAt", FormatTimestamp(DateTimeOffset.UtcNow));
+            command.Parameters.AddWithValue("$sessionId", sessionId);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task UpdateSessionModelSettingsAsync(
+        string sessionId,
+        string providerId,
+        string modelId,
+        string? reasoningEffort,
+        string? serviceTier,
+        CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            await using var connection = await OpenConnectionAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                UPDATE sessions
+                SET provider_thread_id = CASE
+                        WHEN provider_id IS NULL OR provider_id = $providerId
+                            THEN provider_thread_id
+                        ELSE NULL
+                    END,
+                    provider_id = $providerId,
+                    model_id = $modelId,
+                    reasoning_effort = $reasoningEffort,
+                    service_tier = $serviceTier,
+                    updated_at = $updatedAt
+                WHERE id = $sessionId;
+                """;
+            command.Parameters.AddWithValue("$providerId", providerId);
             command.Parameters.AddWithValue("$modelId", modelId);
             command.Parameters.AddWithValue("$reasoningEffort", (object?)reasoningEffort ?? DBNull.Value);
             command.Parameters.AddWithValue("$serviceTier", (object?)serviceTier ?? DBNull.Value);
@@ -1154,6 +1700,21 @@ public sealed class HarnessStore : IAsyncDisposable
         reader.GetString(2),
         ParseTimestamp(reader.GetString(3)),
         ParseTimestamp(reader.GetString(4)));
+
+    private static SkillCatalogEntry ReadSkillCatalogEntry(SqliteDataReader reader) => new(
+        reader.GetString(0),
+        reader.GetString(1),
+        reader.GetString(2),
+        reader.GetString(3),
+        reader.GetString(4),
+        reader.GetString(5),
+        reader.GetString(6),
+        reader.GetString(7),
+        reader.GetString(8),
+        reader.GetString(9),
+        ParseTimestamp(reader.GetString(10)),
+        ParseTimestamp(reader.GetString(11)),
+        reader.GetString(12));
 
     private static StoredSession ReadSession(SqliteDataReader reader) => new(
         reader.GetString(0),

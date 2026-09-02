@@ -150,6 +150,24 @@
       <Setter Property="BorderBrush" Value="#35404D" />
       <Setter Property="Foreground" Value="#D8DEE8" />
     </Style>
+    <Style Selector="MenuFlyoutPresenter">
+      <Setter Property="Background" Value="#181E26" />
+      <Setter Property="BorderBrush" Value="#35404D" />
+      <Setter Property="Foreground" Value="#D8DEE8" />
+    </Style>
+    <Style Selector="MenuItem">
+      <Setter Property="Background" Value="#181E26" />
+      <Setter Property="Foreground" Value="#D8DEE8" />
+      <Setter Property="MinHeight" Value="42" />
+      <Setter Property="Padding" Value="10,4" />
+    </Style>
+    <Style Selector="MenuItem:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="#29313C" />
+      <Setter Property="TextElement.Foreground" Value="#D8DEE8" />
+    </Style>
+    <Style Selector="MenuItem:disabled">
+      <Setter Property="Opacity" Value="0.48" />
+    </Style>
     <Style Selector="ScrollBar">
       <Setter Property="Background" Value="Transparent" />
     </Style>

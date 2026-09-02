@@ -1,5 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Text.Json;
+using System.Text.RegularExpressions;
+using Avalonia.Media.Imaging;
 using Harness.Core.Models;
 using Harness.Workspace;
 
@@ -14,9 +16,9 @@ public sealed class MainWindowViewModel : ObservableObject
     private string _connectionStatus = "CONNECTING";
     private string _usageStatus = "WAITING FOR RUNTIME";
     private string _usageDetail = "Usage has not been reported.";
-    private string? _imagePath;
     private bool _isRunning;
-    private long? _totalTokens;
+    private long? _activeContextTokens;
+    private long? _cumulativeTokens;
     private long? _contextWindowTokens;
     private bool _isCompactingContext;
     private long? _lastCompactionTokenTotal;
@@ -45,6 +47,8 @@ public sealed class MainWindowViewModel : ObservableObject
     private bool _showTurnDiffInspector = true;
     private ExecutionItem? _selectedExecutionItem;
     private WorkspaceItem? _selectedWorkspace;
+    private PermissionModeOption _selectedPermissionMode = PermissionModeOption.All[0];
+    private string _turnActivityStatus = "READY";
 
     public MainWindowViewModel(bool previewData = false)
     {
@@ -71,7 +75,6 @@ public sealed class MainWindowViewModel : ObservableObject
     public string WorkspacePath => _workspacePath;
     public string WorkspaceName => new DirectoryInfo(WorkspacePath).Name;
     public string WorkspaceSummary => WorkspacePath;
-    public string? ImagePath => _imagePath;
     public ObservableCollection<ModelOption> Models { get; } = [];
     public ObservableCollection<CapabilityItem> Capabilities { get; } = [];
     public ObservableCollection<UsageWindowItem> UsageWindows { get; } = [];
@@ -83,7 +86,10 @@ public sealed class MainWindowViewModel : ObservableObject
     public ObservableCollection<ContextFileItem> ContextFiles { get; } = [];
     public ObservableCollection<WorkingTreeFileItem> WorkingTreeFiles { get; } = [];
     public ObservableCollection<ExecutionItem> ExecutionItems { get; } = [];
+    public ObservableCollection<TurnAttachmentItem> TurnAttachments { get; } = [];
     public event EventHandler<MessagePersistenceRequestedEventArgs>? MessagePersistenceRequested;
+    public event EventHandler? ConversationRestored;
+    public event EventHandler? ConversationAdvanced;
     public ExecutionItem? SelectedExecutionItem
     {
         get => _selectedExecutionItem;
@@ -97,6 +103,22 @@ public sealed class MainWindowViewModel : ObservableObject
     public string ExecutionStatus => ExecutionItems.Count == 0
         ? "NO ACTIVITY"
         : $"{ExecutionItems.Count} EVENT{(ExecutionItems.Count == 1 ? string.Empty : "S")}";
+    public IReadOnlyList<PermissionModeOption> PermissionModes => PermissionModeOption.All;
+    public PermissionModeOption SelectedPermissionMode
+    {
+        get => _selectedPermissionMode;
+        set
+        {
+            if (!SetProperty(ref _selectedPermissionMode, value)) return;
+            RaisePropertyChanged(nameof(PermissionModeStatus));
+        }
+    }
+    public string PermissionModeStatus => SelectedPermissionMode.ShortLabel;
+    public string TurnActivityStatus
+    {
+        get => _turnActivityStatus;
+        private set => SetProperty(ref _turnActivityStatus, value);
+    }
 
     public TaskItem? SelectedTask
     {
@@ -207,6 +229,7 @@ public sealed class MainWindowViewModel : ObservableObject
         ShowUsageInspector = settings.ShowUsageInspector;
         ShowContextInspector = settings.ShowContextInspector;
         ShowTurnDiffInspector = settings.ShowTurnDiffInspector;
+        SelectedPermissionMode = PermissionModeOption.Resolve(settings.PermissionMode);
     }
 
     public ModelOption? SelectedModel
@@ -222,7 +245,17 @@ public sealed class MainWindowViewModel : ObservableObject
             RaisePropertyChanged(nameof(ActiveModelName));
             RaisePropertyChanged(nameof(ActiveProviderLabel));
             RaisePropertyChanged(nameof(SupportsVision));
-            RaisePropertyChanged(nameof(VisionStatus));
+            RaisePropertyChanged(nameof(SupportsVideoInput));
+            RaisePropertyChanged(nameof(CanAttachImage));
+            RaisePropertyChanged(nameof(CanAttachVideo));
+            RaisePropertyChanged(nameof(CanAttachText));
+            RaisePropertyChanged(nameof(ImageAttachmentAvailability));
+            RaisePropertyChanged(nameof(VideoAttachmentAvailability));
+            RaisePropertyChanged(nameof(TextAttachmentAvailability));
+            RaisePropertyChanged(nameof(AttachmentStatus));
+            RaisePropertyChanged(nameof(AttachmentStatusColor));
+            RaisePropertyChanged(nameof(HasUnsupportedTurnAttachments));
+            RaisePropertyChanged(nameof(ShowAttachmentWarning));
             RaisePropertyChanged(nameof(ReasoningLevels));
             RaisePropertyChanged(nameof(ServiceTiers));
             RaisePropertyChanged(nameof(HasServiceTiers));
@@ -283,6 +316,9 @@ public sealed class MainWindowViewModel : ObservableObject
                 RaisePropertyChanged(nameof(RunButtonLabel));
                 RaisePropertyChanged(nameof(CanUseRepositoryActions));
                 RaisePropertyChanged(nameof(CanUseRemoteActions));
+                RaisePropertyChanged(nameof(CanAttachImage));
+                RaisePropertyChanged(nameof(CanAttachVideo));
+                RaisePropertyChanged(nameof(CanAttachText));
             }
         }
     }
@@ -338,32 +374,43 @@ public sealed class MainWindowViewModel : ObservableObject
     public string ActiveModelName => SelectedModel?.ModelName ?? "No model connected";
     public string ActiveProviderLabel => SelectedModel?.ProviderLabel ?? "RUNTIME UNAVAILABLE";
     public bool SupportsVision => SelectedModel?.Capabilities.Contains("VISION") == true;
-    public string VisionStatus => SelectedModel is null
-        ? "NO MODEL"
-        : _imagePath is not null
-            ? $"IMAGE · {Path.GetFileName(_imagePath)}"
-            : SupportsVision ? "VISION SUPPORTED" : "TEXT + TOOLS";
+    public bool SupportsVideoInput => SelectedModel?.Capabilities.Contains("VIDEO IN") == true;
+    public bool CanAttachImage => SelectedModel is not null && SupportsVision && !IsRunning;
+    public bool CanAttachVideo => SelectedModel is not null && SupportsVideoInput && !IsRunning;
+    public bool CanAttachText => SelectedModel?.Capabilities.Contains("TEXT") == true && !IsRunning;
+    public bool HasTurnAttachments => TurnAttachments.Count > 0;
+    public bool HasUnsupportedTurnAttachments => TurnAttachments.Any(attachment => !IsTurnAttachmentSupported(attachment));
+    public bool ShowAttachmentWarning => HasUnsupportedTurnAttachments;
+    public string ImageAttachmentAvailability => SupportsVision ? "NATIVE INPUT" : "NOT SUPPORTED BY MODEL";
+    public string VideoAttachmentAvailability => SupportsVideoInput ? "NATIVE INPUT" : "NOT SUPPORTED BY RUNTIME";
+    public string TextAttachmentAvailability => SelectedModel?.Capabilities.Contains("TEXT") == true ? "FILE REFERENCE" : "NOT SUPPORTED BY MODEL";
+    public string AttachmentStatus => SelectedModel is null
+        ? string.Empty
+        : HasUnsupportedTurnAttachments ? "REMOVE UNSUPPORTED FILE" : string.Empty;
+    public string AttachmentStatusColor => HasUnsupportedTurnAttachments ? "#E2A84A" : "#65C7D0";
     public bool CanSend => SelectedModel is not null
         && !IsRunning
-        && !string.IsNullOrWhiteSpace(PromptText);
+        && !HasUnsupportedTurnAttachments
+        && (!string.IsNullOrWhiteSpace(PromptText) || HasTurnAttachments);
     public string RunStatus => IsRunning ? "RUNNING" : "READY";
     public string RunButtonLabel => IsRunning ? "STOP" : "RUN  ↵";
     public string RuntimeActionLabel => IsInstallingRuntime
         ? "UPDATING RUNTIME…"
         : "INSTALL / UPDATE CODEX RUNTIME";
-    public string TokenStatus => _totalTokens is { } tokens
+    public string TokenStatus => _activeContextTokens is { } tokens
         ? _contextWindowTokens is { } window && window > 0
             ? $"CONTEXT  {Math.Clamp(tokens * 100d / window, 0, 100):0}% · {tokens:N0} / {window:N0}"
             : $"CONTEXT  {tokens:N0} / LIMIT NOT REPORTED"
         : "CONTEXT  —";
-    public double ContextUsagePercent => _totalTokens is { } tokens
+    public double ContextUsagePercent => _activeContextTokens is { } tokens
         && _contextWindowTokens is { } window && window > 0
             ? Math.Clamp(tokens * 100d / window, 0, 100)
             : 0;
     public string ContextWindowStatus => _isCompactingContext
         ? "Compaction requested · waiting for the provider to publish the smaller context"
-        : _totalTokens is { } tokens && _contextWindowTokens is { } window && window > 0
-            ? $"{tokens:N0} of {window:N0} tokens · {Math.Max(0, window - tokens):N0} available"
+        : _activeContextTokens is { } tokens && _contextWindowTokens is { } window && window > 0
+            ? $"Active input {tokens:N0} of {window:N0} · {Math.Max(0, window - tokens):N0} available"
+              + (_cumulativeTokens is { } cumulative ? $" · {cumulative:N0} processed this provider thread" : string.Empty)
             : "The provider has not reported this session's context limit yet.";
     public bool HasContextWindow => _contextWindowTokens is > 0;
     public bool IsContextCompacting => _isCompactingContext;
@@ -449,7 +496,7 @@ public sealed class MainWindowViewModel : ObservableObject
     {
         _activeSessionId = session.Id;
         SelectedTask = Tasks.FirstOrDefault(task => task.SessionId == session.Id);
-        Messages.Clear();
+        ClearMessages();
         foreach (var message in messages)
         {
             if (message.Status != "IMPORTED" && message.Role is "YOU" or "HARNESS" or "REPORT")
@@ -479,15 +526,18 @@ public sealed class MainWindowViewModel : ObservableObject
                 ? $"Restored {messages.Count} persisted records"
                 : "New durable session",
             "#65C7D0"));
-        _totalTokens = null;
+        _activeContextTokens = null;
+        _cumulativeTokens = null;
         _contextWindowTokens = null;
         _isCompactingContext = false;
         _lastCompactionTokenTotal = null;
-        SetImage(null);
+        TurnActivityStatus = "READY";
+        ClearTurnAttachments();
         RaisePropertyChanged(nameof(TokenStatus));
         RaisePropertyChanged(nameof(ContextUsagePercent));
         RaisePropertyChanged(nameof(ContextWindowStatus));
         RaisePropertyChanged(nameof(HasContextWindow));
+        ConversationRestored?.Invoke(this, EventArgs.Empty);
     }
 
     public void AddStoredSession(StoredSession session)
@@ -567,7 +617,9 @@ public sealed class MainWindowViewModel : ObservableObject
         }
 
         SelectedModel = Models.FirstOrDefault(model =>
-            string.Equals(model.ModelName, session.ModelId, StringComparison.OrdinalIgnoreCase))
+            string.Equals(model.ModelName, session.ModelId, StringComparison.OrdinalIgnoreCase)
+            && (string.IsNullOrWhiteSpace(session.ProviderId)
+                || string.Equals(model.ProviderId, session.ProviderId, StringComparison.OrdinalIgnoreCase)))
             ?? SelectedModel;
         SelectedReasoningLevel = ReasoningLevels.FirstOrDefault(level =>
             string.Equals(level.Id, session.ReasoningEffort, StringComparison.OrdinalIgnoreCase))
@@ -633,13 +685,19 @@ public sealed class MainWindowViewModel : ObservableObject
     public string BeginTurn()
     {
         var prompt = PromptText.Trim();
-        var visiblePrompt = _imagePath is null
+        var attachmentNote = string.Join(
+            Environment.NewLine,
+            TurnAttachments.Select(attachment => $"[{attachment.KindLabel}: {attachment.DisplayName}]"));
+        var visiblePrompt = string.IsNullOrWhiteSpace(attachmentNote)
             ? prompt
-            : $"{prompt}\n\n[Image: {Path.GetFileName(_imagePath)}]";
+            : string.IsNullOrWhiteSpace(prompt)
+                ? attachmentNote
+                : $"{prompt}\n\n{attachmentNote}";
         Messages.Add(ChatMessageItem.User(visiblePrompt));
         RequestMessagePersistence(Messages[^1]);
         PromptText = string.Empty;
         IsRunning = true;
+        TurnActivityStatus = "STARTING";
         _streamingAssistantMessages.Clear();
         _executionItems.Clear();
         ExecutionItems.Clear();
@@ -648,15 +706,52 @@ public sealed class MainWindowViewModel : ObservableObject
         ChangedFiles.Clear();
         SetTurnDiff(string.Empty);
         Activity.Add(ActivityItem.Now("MODEL", "Turn started", "#65C7D0", true));
+        ConversationAdvanced?.Invoke(this, EventArgs.Empty);
         return prompt;
     }
 
-    public void SetImage(string? path)
+    public void AddTurnAttachments(IEnumerable<string> paths, string kind)
     {
-        _imagePath = path;
-        RaisePropertyChanged(nameof(ImagePath));
-        RaisePropertyChanged(nameof(VisionStatus));
+        foreach (var path in paths.Where(File.Exists).Select(Path.GetFullPath))
+        {
+            if (TurnAttachments.Any(item => string.Equals(item.FullPath, path, StringComparison.OrdinalIgnoreCase)))
+                continue;
+            TurnAttachments.Add(TurnAttachmentItem.Create(path, kind));
+        }
+        RaiseTurnAttachmentProperties();
     }
+
+    public void RemoveTurnAttachment(string id)
+    {
+        var attachment = TurnAttachments.FirstOrDefault(item => item.Id == id);
+        if (attachment is null) return;
+        TurnAttachments.Remove(attachment);
+        RaiseTurnAttachmentProperties();
+    }
+
+    public void ClearTurnAttachments()
+    {
+        if (TurnAttachments.Count == 0) return;
+        TurnAttachments.Clear();
+        RaiseTurnAttachmentProperties();
+    }
+
+    private void RaiseTurnAttachmentProperties()
+    {
+        RaisePropertyChanged(nameof(HasTurnAttachments));
+        RaisePropertyChanged(nameof(HasUnsupportedTurnAttachments));
+        RaisePropertyChanged(nameof(ShowAttachmentWarning));
+        RaisePropertyChanged(nameof(AttachmentStatus));
+        RaisePropertyChanged(nameof(AttachmentStatusColor));
+        RaisePropertyChanged(nameof(CanSend));
+    }
+
+    private bool IsTurnAttachmentSupported(TurnAttachmentItem attachment) => attachment.Kind switch
+    {
+        "image" => SupportsVision,
+        "video" => SupportsVideoInput,
+        _ => SelectedModel?.Capabilities.Contains("TEXT") == true
+    };
 
     public void SetWorkspace(string path)
     {
@@ -667,7 +762,7 @@ public sealed class MainWindowViewModel : ObservableObject
         }
 
         _workspacePath = fullPath;
-        Messages.Clear();
+        ClearMessages();
         ChangedFiles.Clear();
         _executionItems.Clear();
         ExecutionItems.Clear();
@@ -676,11 +771,13 @@ public sealed class MainWindowViewModel : ObservableObject
         SetTurnDiff(string.Empty);
         Activity.Clear();
         Activity.Add(ActivityItem.Now("WORKSPACE", $"Opened {fullPath}", "#65C7D0"));
-        _totalTokens = null;
+        _activeContextTokens = null;
+        _cumulativeTokens = null;
         _contextWindowTokens = null;
         _isCompactingContext = false;
         _lastCompactionTokenTotal = null;
-        SetImage(null);
+        TurnActivityStatus = "READY";
+        ClearTurnAttachments();
         RaisePropertyChanged(nameof(WorkspacePath));
         RaisePropertyChanged(nameof(WorkspaceName));
         RaisePropertyChanged(nameof(WorkspaceSummary));
@@ -690,12 +787,20 @@ public sealed class MainWindowViewModel : ObservableObject
         RaisePropertyChanged(nameof(HasContextWindow));
     }
 
+    private void ClearMessages()
+    {
+        foreach (var message in Messages) message.Dispose();
+        Messages.Clear();
+    }
+
     public void StartAssistantMessage(string itemId)
     {
         if (_streamingAssistantMessages.ContainsKey(itemId)) return;
         var message = ChatMessageItem.Assistant(string.Empty);
         _streamingAssistantMessages[itemId] = message;
         Messages.Add(message);
+        TurnActivityStatus = "RESPONDING";
+        ConversationAdvanced?.Invoke(this, EventArgs.Empty);
     }
 
     public void AppendAssistantDelta(string itemId, string delta)
@@ -706,6 +811,8 @@ public sealed class MainWindowViewModel : ObservableObject
             message = _streamingAssistantMessages[itemId];
         }
         message.Append(delta);
+        TurnActivityStatus = "RESPONDING";
+        ConversationAdvanced?.Invoke(this, EventArgs.Empty);
     }
 
     public void CompleteAssistant(string itemId, string? authoritativeText = null)
@@ -727,9 +834,26 @@ public sealed class MainWindowViewModel : ObservableObject
             // final answer from overwriting an earlier response in the same turn.
             message.ReplaceText(authoritativeText);
         }
-        message.SetStatus("COMPLETED");
+        message.SetStatus(IsRunning ? "DELIVERED" : "COMPLETED");
         RequestMessagePersistence(message);
         _streamingAssistantMessages.Remove(itemId);
+        RefreshTurnActivity();
+        ConversationAdvanced?.Invoke(this, EventArgs.Empty);
+    }
+
+    public void AddGeneratedImages(IEnumerable<string> paths)
+    {
+        var links = paths
+            .Where(File.Exists)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(path => $"[Generated image](<{Path.GetFullPath(path).Replace('\\', '/') }>)")
+            .ToArray();
+        if (links.Length == 0) return;
+        var message = ChatMessageItem.Assistant($"Generated image output:{Environment.NewLine}{Environment.NewLine}{string.Join(Environment.NewLine, links)}");
+        message.SetStatus(IsRunning ? "DELIVERED" : "COMPLETED");
+        Messages.Add(message);
+        RequestMessagePersistence(message);
+        ConversationAdvanced?.Invoke(this, EventArgs.Empty);
     }
 
     public void StartExecutionItem(
@@ -757,6 +881,7 @@ public sealed class MainWindowViewModel : ObservableObject
         }
         RaisePropertyChanged(nameof(ExecutionStatus));
         Activity.Add(ActivityItem.Now(kind, title, color, true));
+        RefreshTurnActivity();
     }
 
     public void AppendExecutionDelta(
@@ -792,6 +917,7 @@ public sealed class MainWindowViewModel : ObservableObject
         }
 
         item.SetStatus(status);
+        RefreshTurnActivity();
     }
 
     public void ApplyFileChanges(string itemId, JsonElement changes, string status)
@@ -864,6 +990,12 @@ public sealed class MainWindowViewModel : ObservableObject
     public void CompleteTurn(string? error = null)
     {
         IsRunning = false;
+        TurnActivityStatus = error is null ? "READY" : "NEEDS ATTENTION";
+        foreach (var delivered in Messages.Where(message => message.Status == "DELIVERED"))
+        {
+            delivered.SetStatus(error is null ? "COMPLETED" : "DELIVERED · TURN FAILED");
+            RequestMessagePersistence(delivered);
+        }
         foreach (var message in _streamingAssistantMessages.Values)
         {
             message.SetStatus(error is null ? "COMPLETED" : "FAILED");
@@ -880,6 +1012,7 @@ public sealed class MainWindowViewModel : ObservableObject
             error is null ? "MODEL" : "ERROR",
             error ?? "Turn completed",
             error is null ? "#65C7D0" : "#E2A84A"));
+        ConversationAdvanced?.Invoke(this, EventArgs.Empty);
     }
 
     private ChatMessageItem? BuildTurnReport(string? error)
@@ -920,9 +1053,13 @@ public sealed class MainWindowViewModel : ObservableObject
         return ChatMessageItem.Report(string.Join(Environment.NewLine, lines), error is null ? "COMPLETED" : "FAILED");
     }
 
-    public void UpdateTokenUsage(long totalTokens, long? contextWindowTokens = null)
+    public void UpdateTokenUsage(
+        long? activeContextTokens,
+        long? cumulativeTokens,
+        long? contextWindowTokens = null)
     {
-        _totalTokens = totalTokens;
+        if (activeContextTokens is > 0) _activeContextTokens = activeContextTokens;
+        if (cumulativeTokens is >= 0) _cumulativeTokens = cumulativeTokens;
         if (contextWindowTokens is > 0) _contextWindowTokens = contextWindowTokens;
         RaisePropertyChanged(nameof(TokenStatus));
         RaisePropertyChanged(nameof(ContextUsagePercent));
@@ -932,7 +1069,7 @@ public sealed class MainWindowViewModel : ObservableObject
 
     public void SetContextCompaction(bool active)
     {
-        if (_isCompactingContext && !active) _lastCompactionTokenTotal = _totalTokens;
+        if (_isCompactingContext && !active) _lastCompactionTokenTotal = _activeContextTokens;
         _isCompactingContext = active;
         RaisePropertyChanged(nameof(ContextWindowStatus));
         RaisePropertyChanged(nameof(IsContextCompacting));
@@ -940,12 +1077,39 @@ public sealed class MainWindowViewModel : ObservableObject
 
     public bool ShouldCompactContext(double thresholdPercent = 85) =>
         !_isCompactingContext
-        && _totalTokens is { } tokens
+        && _activeContextTokens is { } tokens
         && _contextWindowTokens is { } window
         && window > 0
         && tokens * 100d / window >= thresholdPercent
         && (_lastCompactionTokenTotal is null
             || Math.Abs(tokens - _lastCompactionTokenTotal.Value) >= window / 10);
+
+    public void ConfirmContextCompacted()
+    {
+        SetContextCompaction(false);
+        _activeContextTokens = null;
+        RaisePropertyChanged(nameof(TokenStatus));
+        RaisePropertyChanged(nameof(ContextUsagePercent));
+        RaisePropertyChanged(nameof(ContextWindowStatus));
+    }
+
+    private void RefreshTurnActivity()
+    {
+        if (!IsRunning) return;
+        var active = ExecutionItems.LastOrDefault(item => item.Status == "RUNNING");
+        TurnActivityStatus = active?.Kind switch
+        {
+            "COMMAND" or "OUTPUT" => "RUNNING COMMAND",
+            "FILES" => "EDITING FILES",
+            "WEB" => "SEARCHING WEB",
+            "TOOL" => "USING TOOL",
+            "IMAGE" => "GENERATING IMAGE",
+            "PLAN" => "PLANNING",
+            "REASONING" => "THINKING",
+            "APPROVAL" => "WAITING FOR APPROVAL",
+            _ => _streamingAssistantMessages.Count > 0 ? "RESPONDING" : "WORKING"
+        };
+    }
 
     public void ApplyEffectiveModelSettings(string? effort, string? serviceTier)
     {
@@ -1218,6 +1382,23 @@ public sealed record ServiceTierOption(
     string DisplayName,
     bool IsDefault = false,
     string? Description = null);
+public sealed record PermissionModeOption(
+    string Id,
+    string DisplayName,
+    string ShortLabel,
+    string Description)
+{
+    public static IReadOnlyList<PermissionModeOption> All { get; } =
+    [
+        new("ask", "Ask", "PERMISSIONS · ASK", "Ask before a model-requested command or access expansion."),
+        new("auto", "Approve for me", "PERMISSIONS · AUTO", "Use the provider's safeguarded automatic reviewer; uncertain or risky requests still come to you."),
+        new("full", "Full access", "PERMISSIONS · FULL", "Run without command approval or the workspace sandbox. Use only in workspaces you trust.")
+    ];
+
+    public static PermissionModeOption Resolve(string? id) =>
+        All.FirstOrDefault(option => string.Equals(option.Id, id, StringComparison.OrdinalIgnoreCase))
+        ?? All[0];
+}
 public sealed record UsageWindowItem(string Label, double RemainingPercent, string ResetText)
 {
     public string RemainingText => $"{RemainingPercent:0}% LEFT";
@@ -1322,6 +1503,7 @@ public sealed record WorkingTreeFileItem(
 public sealed record ModelOption(
     string DisplayName,
     string ModelName,
+    string ProviderId,
     string ProviderLabel,
     IReadOnlySet<string> Capabilities,
     IReadOnlyList<ReasoningLevelOption> ReasoningLevels,
@@ -1354,6 +1536,7 @@ public sealed record ModelOption(
         return new ModelOption(
             $"{FormatProviderName(descriptor.ProviderId)} · {descriptor.DisplayName}",
             descriptor.ModelId,
+            descriptor.ProviderId,
             $"{FormatProviderName(descriptor.ProviderId).ToUpperInvariant()} · {runtimeSource}",
             capabilities,
             reasoning,
@@ -1379,12 +1562,95 @@ public sealed record ModelOption(
         ModelCapability.AudioOutput => "AUDIO OUT",
         ModelCapability.PromptCaching => "CACHE",
         ModelCapability.ComputerUse => "COMPUTER",
+        ModelCapability.VideoInput => "VIDEO IN",
         _ => capability.ToString().ToUpperInvariant()
     };
 }
 
-public sealed class ChatMessageItem : ObservableObject
+public sealed record TurnAttachmentItem(
+    string Id,
+    string FullPath,
+    string DisplayName,
+    string Kind,
+    string KindLabel,
+    string MediaType,
+    long ByteLength)
 {
+    public string SizeText => ByteLength switch
+    {
+        >= 1024 * 1024 => $"{ByteLength / 1024d / 1024d:0.0} MB",
+        >= 1024 => $"{ByteLength / 1024d:0.0} KB",
+        _ => $"{ByteLength} B"
+    };
+
+    public static TurnAttachmentItem Create(string path, string kind)
+    {
+        var fullPath = Path.GetFullPath(path);
+        var file = new FileInfo(fullPath);
+        var normalizedKind = kind.Trim().ToLowerInvariant();
+        return new TurnAttachmentItem(
+            Guid.NewGuid().ToString("N"),
+            fullPath,
+            file.Name,
+            normalizedKind,
+            normalizedKind switch
+            {
+                "image" => "IMAGE",
+                "video" => "VIDEO",
+                _ => "FILE"
+            },
+            ResolveMediaType(file.Extension, normalizedKind),
+            file.Length);
+    }
+
+    private static string ResolveMediaType(string extension, string kind)
+    {
+        if (kind == "image")
+        {
+            return extension.ToLowerInvariant() switch
+            {
+                ".jpg" or ".jpeg" => "image/jpeg",
+                ".webp" => "image/webp",
+                ".gif" => "image/gif",
+                ".bmp" => "image/bmp",
+                _ => "image/png"
+            };
+        }
+        if (kind == "video")
+        {
+            return extension.ToLowerInvariant() switch
+            {
+                ".mov" => "video/quicktime",
+                ".webm" => "video/webm",
+                ".mkv" => "video/x-matroska",
+                ".avi" => "video/x-msvideo",
+                _ => "video/mp4"
+            };
+        }
+        return extension.ToLowerInvariant() switch
+        {
+            ".md" => "text/markdown",
+            ".json" or ".jsonl" => "application/json",
+            ".csv" => "text/csv",
+            ".html" => "text/html",
+            ".xml" => "application/xml",
+            _ => "text/plain"
+        };
+    }
+}
+
+public sealed class ChatMessageItem : ObservableObject, IDisposable
+{
+    private static readonly Regex MarkdownLinkPattern = new(
+        @"!?(?:\[[^\]]*\])\((?<path><[^>]+>|[^)\r\n]+)\)",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex WindowsImagePathPattern = new(
+        "(?<path>[A-Za-z]:\\\\[^\\r\\n<>|\\\"?*]+?\\.(?:png|jpe?g|webp|gif|bmp))",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+    private static readonly HashSet<string> ImageExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"
+    };
     private string _text;
     private string _status;
 
@@ -1409,6 +1675,7 @@ public sealed class ChatMessageItem : ObservableObject
         _status = status;
         CreatedAt = createdAt;
         Time = createdAt.ToLocalTime().ToString("h:mm");
+        RefreshImageAttachments();
     }
 
     public string Id { get; }
@@ -1419,6 +1686,7 @@ public sealed class ChatMessageItem : ObservableObject
     public string FontFamily { get; }
     public string Time { get; }
     public DateTimeOffset CreatedAt { get; }
+    public ObservableCollection<ChatImageAttachmentItem> Images { get; } = [];
     public bool IsMonospace => FontFamily.Contains("Mono", StringComparison.OrdinalIgnoreCase)
         || FontFamily.Contains("Consolas", StringComparison.OrdinalIgnoreCase);
     public string Status
@@ -1486,6 +1754,102 @@ public sealed class ChatMessageItem : ObservableObject
             status,
             DateTimeOffset.UtcNow);
     public void Append(string delta) => Text += delta;
-    public void ReplaceText(string text) => Text = text;
-    public void SetStatus(string status) => Status = status.ToUpperInvariant();
+    public void ReplaceText(string text)
+    {
+        Text = text;
+        RefreshImageAttachments();
+    }
+    public void SetStatus(string status)
+    {
+        Status = status.ToUpperInvariant();
+        if (Status is not "STREAMING" and not "RUNNING") RefreshImageAttachments();
+    }
+
+    private void RefreshImageAttachments()
+    {
+        if (Role != "HARNESS" || string.IsNullOrWhiteSpace(Text)) return;
+        var discovered = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (Match match in MarkdownLinkPattern.Matches(Text))
+        {
+            AddImagePath(match.Groups["path"].Value, discovered);
+        }
+        foreach (Match match in WindowsImagePathPattern.Matches(Text))
+        {
+            AddImagePath(match.Groups["path"].Value, discovered);
+        }
+
+        if (discovered.SetEquals(Images.Select(image => image.FullPath))) return;
+        foreach (var image in Images) image.Preview.Dispose();
+        Images.Clear();
+        foreach (var path in discovered)
+        {
+            var image = ChatImageAttachmentItem.TryFromPath(path);
+            if (image is not null) Images.Add(image);
+        }
+    }
+
+    private static void AddImagePath(string candidate, HashSet<string> discovered)
+    {
+        try
+        {
+            var cleaned = candidate.Trim().Trim('<', '>', '`', '"', '\'').TrimEnd('.', ',', ';', ':');
+            if (Uri.TryCreate(cleaned, UriKind.Absolute, out var uri) && uri.IsFile)
+            {
+                cleaned = uri.LocalPath;
+            }
+            cleaned = Uri.UnescapeDataString(cleaned);
+            if (OperatingSystem.IsWindows()
+                && cleaned.Length > 3
+                && cleaned[0] == '/'
+                && char.IsLetter(cleaned[1])
+                && cleaned[2] == ':')
+            {
+                cleaned = cleaned[1..];
+            }
+            if (!Path.IsPathFullyQualified(cleaned)
+                || !ImageExtensions.Contains(Path.GetExtension(cleaned))
+                || !File.Exists(cleaned)) return;
+            discovered.Add(Path.GetFullPath(cleaned));
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException or UriFormatException)
+        {
+            // Provider response text is untrusted. A malformed link remains plain
+            // chat text instead of interrupting response rendering.
+        }
+    }
+
+    public void Dispose()
+    {
+        foreach (var image in Images) image.Preview.Dispose();
+        Images.Clear();
+    }
+}
+
+public sealed class ChatImageAttachmentItem
+{
+    private ChatImageAttachmentItem(string fullPath, Bitmap preview)
+    {
+        FullPath = fullPath;
+        FileName = Path.GetFileName(fullPath);
+        DisplayPath = fullPath;
+        Preview = preview;
+    }
+
+    public string FullPath { get; }
+    public string FileName { get; }
+    public string DisplayPath { get; }
+    public Bitmap Preview { get; }
+
+    public static ChatImageAttachmentItem? TryFromPath(string path)
+    {
+        try
+        {
+            using var stream = File.OpenRead(path);
+            return new ChatImageAttachmentItem(path, Bitmap.DecodeToWidth(stream, 720));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return null;
+        }
+    }
 }

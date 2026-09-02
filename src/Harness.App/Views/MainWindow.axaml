@@ -38,6 +38,14 @@
                 ToolTip.Tip="Drag to move · double-click to maximize" />
         <Button Grid.Column="4" Content="{Binding RunButtonLabel}" Classes="primary" VerticalAlignment="Center" Click="RunOrStop_OnClick" />
         <StackPanel Grid.Column="6" Orientation="Horizontal" Spacing="4">
+          <Button x:Name="SkillsLibraryButton" Classes="icon-button" Click="OpenSkills_OnClick" ToolTip.Tip="Skills Library" AutomationProperties.Name="Open Skills Library">
+            <Grid Width="17" Height="16" ColumnDefinitions="4,2,4,2,4">
+              <Border Grid.Column="0" BorderBrush="#65C7D0" BorderThickness="1" CornerRadius="1"/>
+              <Border Grid.Column="2" BorderBrush="#D8DEE8" BorderThickness="1" CornerRadius="1"/>
+              <Border Grid.Column="4" BorderBrush="#8993A3" BorderThickness="1" CornerRadius="1"/>
+              <Border Grid.ColumnSpan="5" Height="1" Background="#536071" VerticalAlignment="Bottom"/>
+            </Grid>
+          </Button>
           <Button Classes="icon-button" Click="OpenExecution_OnClick" ToolTip.Tip="Activity" AutomationProperties.Name="Open activity">
             <Path Width="16" Height="16" Stretch="Uniform" Stroke="#D8DEE8" StrokeThickness="1.6" Data="M1,9 L4.5,9 L7,3 L10.5,15 L13,9 L17,9" />
           </Button>
@@ -136,7 +144,7 @@
       <!-- Conversation + activity trace -->
       <Grid Grid.Column="1" Background="#11151B">
         <Grid RowDefinitions="*,Auto">
-          <ScrollViewer Grid.Row="0">
+          <ScrollViewer x:Name="ConversationScrollViewer" Grid.Row="0">
             <StackPanel Margin="34,30,38,24" Spacing="24" MaxWidth="850">
               <StackPanel Spacing="4">
                 <TextBlock Text="CURRENT WORKSPACE" Classes="micro" Foreground="#65C7D0" />
@@ -158,6 +166,63 @@
                             <TextBlock Grid.Column="5" Text="{Binding Time}" Classes="muted mono" FontSize="9" />
                           </Grid>
                           <TextBlock Text="{Binding Text}" TextWrapping="Wrap" FontSize="13" LineHeight="20" FontFamily="{Binding FontFamily}" />
+                          <ItemsControl ItemsSource="{Binding Images}">
+                            <ItemsControl.ItemsPanel>
+                              <ItemsPanelTemplate>
+                                <StackPanel Spacing="10" />
+                              </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                              <DataTemplate x:DataType="vm:ChatImageAttachmentItem">
+                                <Border MaxWidth="720"
+                                        HorizontalAlignment="Left"
+                                        Background="#151A21"
+                                        BorderBrush="#29313C"
+                                        BorderThickness="1"
+                                        CornerRadius="5"
+                                        ClipToBounds="True">
+                                  <Grid RowDefinitions="Auto,40">
+                                    <Border Background="#0D1117"
+                                            Cursor="Hand"
+                                            Tag="{Binding FullPath}"
+                                            PointerPressed="ChatImagePreview_OnPointerPressed"
+                                            ToolTip.Tip="Open image">
+                                      <Image Source="{Binding Preview}"
+                                             MaxWidth="720"
+                                             MaxHeight="420"
+                                             Stretch="Uniform" />
+                                    </Border>
+                                    <Grid Grid.Row="1" ColumnDefinitions="*,Auto,Auto" Margin="8,0,6,0">
+                                      <Button Grid.Column="0"
+                                              Classes="ghost"
+                                              HorizontalAlignment="Stretch"
+                                              HorizontalContentAlignment="Left"
+                                              Tag="{Binding FullPath}"
+                                              Click="OpenChatImage_OnClick"
+                                              ToolTip.Tip="Open image">
+                                        <TextBlock Text="{Binding DisplayPath}"
+                                                   Classes="muted mono"
+                                                   FontSize="9"
+                                                   TextTrimming="CharacterEllipsis" />
+                                      </Button>
+                                      <Button Grid.Column="1"
+                                              Content="OPEN  ↗"
+                                              Classes="ghost"
+                                              Tag="{Binding FullPath}"
+                                              Click="OpenChatImage_OnClick"
+                                              ToolTip.Tip="Open image" />
+                                      <Button Grid.Column="2"
+                                              Content="COPY PATH"
+                                              Classes="ghost"
+                                              Tag="{Binding FullPath}"
+                                              Click="CopyChatImagePath_OnClick"
+                                              ToolTip.Tip="Copy the full image path" />
+                                    </Grid>
+                                  </Grid>
+                                </Border>
+                              </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                          </ItemsControl>
                         </StackPanel>
                       </Border>
                     </Grid>
@@ -169,27 +234,44 @@
 
           <!-- Multimodal composer -->
           <Border Grid.Row="1" Margin="22,0,22,18" Classes="panel" Padding="10">
-            <Grid RowDefinitions="Auto,40,30" ColumnDefinitions="Auto,6,Auto,6,Auto,12,Auto,*,Auto,8,Auto">
+            <Grid RowDefinitions="Auto,Auto,40,30" ColumnDefinitions="Auto,6,Auto,6,Auto,8,34,*,136,8,Auto">
               <TextBox x:Name="PromptBox" Grid.Row="0" Grid.ColumnSpan="11" MinHeight="72" AcceptsReturn="True" TextWrapping="Wrap" Watermark="Ask, edit, or direct the task…" BorderThickness="0" Background="#11151B" Text="{Binding PromptText, Mode=TwoWay}" />
-              <ComboBox x:Name="ModelPicker" Grid.Row="1"
+              <ItemsControl Grid.Row="1" Grid.ColumnSpan="11" ItemsSource="{Binding TurnAttachments}" IsVisible="{Binding HasTurnAttachments}" Margin="0,5,0,2">
+                <ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="vm:TurnAttachmentItem">
+                    <Border Background="#202731" BorderBrush="#35404D" BorderThickness="1" CornerRadius="4" Margin="0,0,6,4" Padding="7,2,3,2">
+                      <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding KindLabel}" Classes="micro" FontSize="8" Foreground="#65C7D0" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding DisplayName}" FontSize="10" MaxWidth="180" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding SizeText}" Classes="muted mono" FontSize="8" VerticalAlignment="Center"/>
+                        <Button Content="×" Tag="{Binding Id}" Classes="ghost" MinHeight="0" Height="20" Width="20" Padding="0" FontSize="13" Click="RemoveTurnAttachment_OnClick" ToolTip.Tip="Remove this turn attachment"/>
+                      </StackPanel>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+              <ComboBox x:Name="ModelPicker" Grid.Row="2"
                         Grid.Column="0"
-                        Width="260"
+                        Width="220"
                         VerticalAlignment="Bottom"
                         ItemsSource="{Binding Models}"
                         SelectedItem="{Binding SelectedModel, Mode=TwoWay}"
+                        SelectionChanged="SessionModelSetting_OnChanged"
                         ToolTip.Tip="Model supplied by the connected runtime">
                 <ComboBox.ItemTemplate>
                   <DataTemplate x:DataType="vm:ModelOption">
-                    <TextBlock Text="{Binding DisplayName}" />
+                    <TextBlock Text="{Binding DisplayName}" TextTrimming="CharacterEllipsis" />
                   </DataTemplate>
                 </ComboBox.ItemTemplate>
               </ComboBox>
-              <ComboBox x:Name="ReasoningPicker" Grid.Row="1"
+              <ComboBox x:Name="ReasoningPicker" Grid.Row="2"
                         Grid.Column="2"
-                        Width="102"
+                        Width="92"
                         VerticalAlignment="Bottom"
                         ItemsSource="{Binding ReasoningLevels}"
                         SelectedItem="{Binding SelectedReasoningLevel, Mode=TwoWay}"
+                        SelectionChanged="SessionModelSetting_OnChanged"
                         ToolTip.Tip="Reasoning levels advertised by this model">
                 <ComboBox.ItemTemplate>
                   <DataTemplate x:DataType="vm:ReasoningLevelOption">
@@ -197,13 +279,14 @@
                   </DataTemplate>
                 </ComboBox.ItemTemplate>
               </ComboBox>
-              <ComboBox x:Name="ServiceTierPicker" Grid.Row="1"
+              <ComboBox x:Name="ServiceTierPicker" Grid.Row="2"
                         Grid.Column="4"
-                        Width="104"
+                        Width="98"
                         VerticalAlignment="Bottom"
                         IsVisible="{Binding HasServiceTiers}"
                         ItemsSource="{Binding ServiceTiers}"
                         SelectedItem="{Binding SelectedServiceTier, Mode=TwoWay}"
+                        SelectionChanged="SessionModelSetting_OnChanged"
                         ToolTip.Tip="Service tiers advertised by this model">
                 <ComboBox.ItemTemplate>
                   <DataTemplate x:DataType="vm:ServiceTierOption">
@@ -211,17 +294,50 @@
                   </DataTemplate>
                 </ComboBox.ItemTemplate>
               </ComboBox>
-              <Button Grid.Row="1" Grid.Column="6" Content="IMAGE" Classes="ghost" VerticalAlignment="Bottom" IsEnabled="{Binding SupportsVision}" Click="AttachImage_OnClick" ToolTip.Tip="Attach or replace a local image" />
-              <TextBlock Grid.Row="1" Grid.Column="8" Text="{Binding VisionStatus}" Classes="micro" Foreground="#65C7D0" VerticalAlignment="Center" />
-              <Button Grid.Row="1" Grid.Column="10" Content="SEND  ↵" Classes="primary" VerticalAlignment="Bottom" IsEnabled="{Binding CanSend}" Click="SendPrompt_OnClick" />
+              <Button x:Name="AttachmentMenuButton" Grid.Row="2" Grid.Column="6" Classes="icon-button" Width="34" Height="30" MinHeight="30" Padding="0" VerticalAlignment="Bottom" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" ToolTip.Tip="Attach files to this turn">
+                <Grid Width="14" Height="14" HorizontalAlignment="Center" VerticalAlignment="Center">
+                  <Border Width="12" Height="2" CornerRadius="1" Background="#D8DEE8" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                  <Border Width="2" Height="12" CornerRadius="1" Background="#D8DEE8" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Grid>
+                <Button.Flyout>
+                  <MenuFlyout Placement="TopEdgeAlignedLeft">
+                    <MenuItem IsEnabled="{Binding CanAttachImage}" Click="AttachImage_OnClick">
+                      <MenuItem.Header><Grid Width="270" ColumnDefinitions="*,Auto"><StackPanel><TextBlock Text="Image"/><TextBlock Text="PNG, JPEG, WebP, GIF" Classes="muted" FontSize="9"/></StackPanel><TextBlock Grid.Column="1" Text="{Binding ImageAttachmentAvailability}" Classes="micro" FontSize="8" Foreground="#65C7D0" VerticalAlignment="Center"/></Grid></MenuItem.Header>
+                    </MenuItem>
+                    <MenuItem IsEnabled="{Binding CanAttachVideo}" Click="AttachVideo_OnClick">
+                      <MenuItem.Header><Grid Width="270" ColumnDefinitions="*,Auto"><StackPanel><TextBlock Text="Video"/><TextBlock Text="MP4, MOV, WebM, MKV" Classes="muted" FontSize="9"/></StackPanel><TextBlock Grid.Column="1" Text="{Binding VideoAttachmentAvailability}" Classes="micro" FontSize="8" Foreground="#65C7D0" VerticalAlignment="Center"/></Grid></MenuItem.Header>
+                    </MenuItem>
+                    <MenuItem IsEnabled="{Binding CanAttachText}" Click="AttachText_OnClick">
+                      <MenuItem.Header><Grid Width="270" ColumnDefinitions="*,Auto"><StackPanel><TextBlock Text="Text or code"/><TextBlock Text="Documents, source, and structured text" Classes="muted" FontSize="9"/></StackPanel><TextBlock Grid.Column="1" Text="{Binding TextAttachmentAvailability}" Classes="micro" FontSize="8" Foreground="#65C7D0" VerticalAlignment="Center"/></Grid></MenuItem.Header>
+                    </MenuItem>
+                  </MenuFlyout>
+                </Button.Flyout>
+              </Button>
+              <TextBlock Grid.Row="2" Grid.Column="7" Text="{Binding AttachmentStatus}" IsVisible="{Binding ShowAttachmentWarning}" Classes="micro" Foreground="{Binding AttachmentStatusColor}" VerticalAlignment="Center" HorizontalAlignment="Right" Margin="8,0" />
+              <ComboBox x:Name="PermissionModePicker" Grid.Row="2" Grid.Column="8" Height="30" MinHeight="30" FontSize="10" VerticalAlignment="Bottom"
+                        HorizontalAlignment="Stretch"
+                        IsEnabled="{Binding !IsRunning}"
+                        ItemsSource="{Binding PermissionModes}"
+                        SelectedItem="{Binding SelectedPermissionMode, Mode=TwoWay}"
+                        SelectionChanged="PermissionMode_OnChanged"
+                        ToolTip.Tip="{Binding SelectedPermissionMode.Description}">
+                <ComboBox.ItemTemplate>
+                  <DataTemplate x:DataType="vm:PermissionModeOption"><TextBlock Text="{Binding DisplayName}" TextTrimming="CharacterEllipsis"/></DataTemplate>
+                </ComboBox.ItemTemplate>
+              </ComboBox>
+              <Button Grid.Row="2" Grid.Column="10" Content="SEND  ↵" Classes="primary" VerticalAlignment="Bottom" IsEnabled="{Binding CanSend}" Click="SendPrompt_OnClick" />
 
-              <Border Grid.Row="2" Grid.ColumnSpan="11" BorderBrush="#29313C" BorderThickness="0,1,0,0" Margin="0,5,0,0" Padding="0,5,0,0">
-                <Grid ColumnDefinitions="Auto,*,Auto,6,Auto,6,Auto">
+              <Border Grid.Row="3" Grid.ColumnSpan="11" BorderBrush="#29313C" BorderThickness="0,1,0,0" Margin="0,5,0,0" Padding="0,5,0,0">
+                <Grid ColumnDefinitions="Auto,*,Auto,8,Auto,6,Auto,6,Auto">
                   <Button x:Name="RepositoryDockButton" Content="{Binding RepositoryDockLabel}" Classes="ghost" Click="RepositoryDock_OnClick" ToolTip.Tip="Manage this workspace repository, branch, and remote" />
                   <TextBlock Grid.Column="1" Text="{Binding WorkingTreeStatus}" Classes="muted mono" FontSize="8" VerticalAlignment="Center" Margin="8,0" />
-                  <Button x:Name="RepositoryCommitButton" Grid.Column="2" Content="COMMIT" Classes="ghost" IsEnabled="{Binding CanUseRepositoryActions}" Click="RepositoryCommit_OnClick" />
-                  <Button x:Name="RepositoryPullButton" Grid.Column="4" Content="PULL" Classes="ghost" IsEnabled="{Binding CanUseRemoteActions}" Click="RepositoryPull_OnClick" />
-                  <Button x:Name="RepositoryPushButton" Grid.Column="6" Content="PUSH" Classes="ghost" IsEnabled="{Binding CanUseRemoteActions}" Click="RepositoryPush_OnClick" />
+                  <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                    <ProgressBar Width="32" Height="3" IsIndeterminate="True" IsVisible="{Binding IsRunning}" Foreground="#65C7D0" Background="#29313C"/>
+                    <TextBlock Text="{Binding TurnActivityStatus}" Classes="micro" FontSize="8" Foreground="#65C7D0" VerticalAlignment="Center"/>
+                  </StackPanel>
+                  <Button x:Name="RepositoryCommitButton" Grid.Column="4" Content="COMMIT" Classes="ghost" IsEnabled="{Binding CanUseRepositoryActions}" Click="RepositoryCommit_OnClick" />
+                  <Button x:Name="RepositoryPullButton" Grid.Column="6" Content="PULL" Classes="ghost" IsEnabled="{Binding CanUseRemoteActions}" Click="RepositoryPull_OnClick" />
+                  <Button x:Name="RepositoryPushButton" Grid.Column="8" Content="PUSH" Classes="ghost" IsEnabled="{Binding CanUseRemoteActions}" Click="RepositoryPush_OnClick" />
                 </Grid>
               </Border>
             </Grid>

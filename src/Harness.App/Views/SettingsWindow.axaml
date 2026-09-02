@@ -5,7 +5,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:vm="using:Harness.App.ViewModels"
     Title="Harness — Settings"
-    Width="940" Height="680" MinWidth="820" MinHeight="600"
+    Width="1480" Height="880" MinWidth="1120" MinHeight="700"
     WindowStartupLocation="CenterOwner">
   <Grid RowDefinitions="64,*,42" Background="#11151B">
     <Border Classes="hairline" Background="#151A21" Padding="20,0">
@@ -48,7 +48,7 @@
       <TabItem Header="PERSONALIZATION">
         <StackPanel Margin="24,8" Spacing="14" MaxWidth="640">
           <TextBlock Text="Personalization" FontSize="22" FontWeight="SemiBold"/>
-          <TextBlock Text="Instructions stored by Harness for use with every provider. Provider delivery is being added per adapter; the text is never uploaded merely by saving it." Classes="muted" TextWrapping="Wrap"/>
+          <TextBlock Text="Standing instructions delivered through each provider's native developer-instruction channel. Saving updates the active provider thread without adding visible or ghost chat text." Classes="muted" TextWrapping="Wrap"/>
           <TextBox Text="{Binding PersonalInstructions}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="220" Watermark="Coding conventions, response preferences, and standing project habits…"/>
         </StackPanel>
       </TabItem>
@@ -65,6 +65,137 @@
           <TextBlock Text="OpenAI Codex is connected through the Harness-managed runtime. Model versions, reasoning levels, service tiers, and capabilities come from the provider catalog—not from this screen." TextWrapping="Wrap"/>
           <TextBlock Text="Additional provider adapters will appear here when installed." Classes="muted"/>
         </StackPanel>
+      </TabItem>
+      <TabItem Header="SKILLS">
+        <Grid Margin="20,8" RowDefinitions="Auto,12,Auto,8,Auto,8,Auto,10,*">
+          <Grid ColumnDefinitions="*,Auto,24,Auto">
+            <StackPanel Spacing="4">
+              <TextBlock Text="Skills Library" FontSize="23" FontWeight="SemiBold"/>
+              <TextBlock Text="Discover complete GitHub skill sources, cache descriptions, and install only what you choose." Classes="muted"/>
+            </StackPanel>
+            <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+              <TextBlock Text="{Binding SkillReportedSummary}" Classes="micro" Foreground="#65C7D0" HorizontalAlignment="Right"/>
+              <TextBlock Text="{Binding SkillSourceSummary}" Classes="micro" FontSize="8" HorizontalAlignment="Right"/>
+            </StackPanel>
+            <Button x:Name="SkillSyncButton" Grid.Column="3" Content="↻  SYNC CATALOG" VerticalAlignment="Center" Click="SyncSkillCatalog_OnClick"/>
+          </Grid>
+
+          <Border Grid.Row="2" Classes="panel" Padding="10">
+            <Grid ColumnDefinitions="*,8,155,8,135,8,205,8,150,8,Auto">
+              <TextBox x:Name="SkillSearchBox" Watermark="Search names, descriptions, tasks, or frameworks…" Text="{Binding SkillSearchText, Mode=TwoWay}" KeyDown="SkillSearch_OnKeyDown"/>
+              <ComboBox Grid.Column="2" ItemsSource="{Binding SkillSources}" SelectedItem="{Binding SelectedSkillSource, Mode=TwoWay}" SelectionChanged="SkillFilter_OnChanged"/>
+              <ComboBox Grid.Column="4" ItemsSource="{Binding SkillStatuses}" SelectedItem="{Binding SelectedSkillStatus, Mode=TwoWay}" SelectionChanged="SkillFilter_OnChanged"/>
+              <ComboBox Grid.Column="6" ItemsSource="{Binding SkillCompatibilityOptions}" SelectedItem="{Binding SelectedSkillCompatibility, Mode=TwoWay}" SelectionChanged="SkillFilter_OnChanged"/>
+              <ComboBox Grid.Column="8" ItemsSource="{Binding SkillSorts}" SelectedItem="{Binding SelectedSkillSort, Mode=TwoWay}" SelectionChanged="SkillFilter_OnChanged"/>
+              <Button Grid.Column="10" Content="SEARCH GITHUB" Classes="primary" Click="SearchSkills_OnClick"/>
+            </Grid>
+          </Border>
+
+          <ScrollViewer Grid.Row="4" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <Button Content="ALL TOPICS" Tag="All" Click="SkillTopic_OnClick"/>
+              <Button Content="GAME DEV" Tag="Game development" Click="SkillTopic_OnClick"/>
+              <Button Content="FRONTEND" Tag="Frontend" Click="SkillTopic_OnClick"/>
+              <Button Content="BACKEND" Tag="Backend" Click="SkillTopic_OnClick"/>
+              <Button Content="DEVOPS" Tag="DevOps" Click="SkillTopic_OnClick"/>
+              <Button Content="SECURITY" Tag="Security" Click="SkillTopic_OnClick"/>
+              <Button Content="DATA" Tag="Data" Click="SkillTopic_OnClick"/>
+              <Button Content="TESTING" Tag="Testing" Click="SkillTopic_OnClick"/>
+              <Button Content="DOCUMENTS" Tag="Documents" Click="SkillTopic_OnClick"/>
+              <Button Content="MEDIA" Tag="Media" Click="SkillTopic_OnClick"/>
+            </StackPanel>
+          </ScrollViewer>
+
+          <Border Grid.Row="6" Background="#151A21" BorderBrush="#29313C" BorderThickness="1" CornerRadius="4" Padding="8,6">
+            <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="Auto,12,*">
+              <TextBlock Text="SOURCE LEDGER" Classes="micro" Foreground="#65C7D0" VerticalAlignment="Center"/>
+              <ScrollViewer Grid.Column="2" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+                <ItemsControl ItemsSource="{Binding SkillSourceLedger}">
+                  <ItemsControl.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal" Spacing="18"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:SkillSourceItem">
+                      <StackPanel Orientation="Horizontal" Spacing="6">
+                        <TextBlock Text="{Binding Repository}" Classes="mono" FontSize="10" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding Count}" Classes="micro" FontSize="9" Foreground="#D8DEE8" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding Indexed}" Classes="micro" FontSize="9" Foreground="#8993A3" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding State}" Classes="micro" FontSize="9" Foreground="{Binding StateColor}" VerticalAlignment="Center"/>
+                      </StackPanel>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </ScrollViewer>
+              <TextBlock Grid.Row="1" Grid.ColumnSpan="3" Margin="0,5,0,0" Text="{Binding SkillCatalogStatus}" Classes="muted" FontSize="10" TextTrimming="CharacterEllipsis"/>
+            </Grid>
+          </Border>
+
+          <Grid Grid.Row="8" ColumnDefinitions="5*,12,2*">
+            <Border Classes="panel" Padding="0">
+              <Grid RowDefinitions="34,*">
+                <Grid Margin="12,0" ColumnDefinitions="*,105,155,82">
+                  <TextBlock Text="SKILL / DESCRIPTION" Classes="micro" VerticalAlignment="Center"/>
+                  <TextBlock Grid.Column="1" Text="TOPIC" Classes="micro" VerticalAlignment="Center"/>
+                  <TextBlock Grid.Column="2" Text="SOURCE" Classes="micro" VerticalAlignment="Center"/>
+                  <TextBlock Grid.Column="3" Text="STATUS" Classes="micro" VerticalAlignment="Center" HorizontalAlignment="Right"/>
+                </Grid>
+                <ListBox Grid.Row="1" ItemsSource="{Binding Skills}" SelectedItem="{Binding SelectedSkill, Mode=TwoWay}" Background="Transparent" BorderThickness="0" SelectionMode="Single">
+                  <ListBox.ItemTemplate>
+                    <DataTemplate x:DataType="vm:SkillCatalogItem">
+                      <Border BorderBrush="#29313C" BorderThickness="0,1,0,0" Padding="12,8" MinHeight="66">
+                        <Grid ColumnDefinitions="*,105,155,82">
+                          <StackPanel Spacing="3" VerticalAlignment="Center">
+                            <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                            <TextBlock Text="{Binding Description}" Classes="muted" FontSize="11" TextTrimming="CharacterEllipsis" MaxWidth="560"/>
+                            <TextBlock Text="{Binding CompatibilityStatus}" Classes="micro" FontSize="9" Foreground="#8993A3" TextTrimming="CharacterEllipsis"/>
+                          </StackPanel>
+                          <TextBlock Grid.Column="1" Text="{Binding Category}" Classes="micro" FontSize="8" Foreground="{Binding SpineColor}" VerticalAlignment="Center" TextWrapping="Wrap"/>
+                          <StackPanel Grid.Column="2" VerticalAlignment="Center" Spacing="3">
+                            <TextBlock Text="{Binding Repository}" Classes="mono" FontSize="10" TextTrimming="CharacterEllipsis"/>
+                            <TextBlock Text="{Binding SourceRevision}" Classes="muted mono" FontSize="9"/>
+                          </StackPanel>
+                          <Button Grid.Column="3" Content="{Binding InstallState}" Tag="{Binding}" IsEnabled="{Binding CanInstall}" Click="InstallSkill_OnClick" HorizontalAlignment="Right" VerticalAlignment="Center" MinWidth="72"/>
+                        </Grid>
+                      </Border>
+                    </DataTemplate>
+                  </ListBox.ItemTemplate>
+                </ListBox>
+              </Grid>
+            </Border>
+
+            <Border Grid.Column="2" Classes="panel" Padding="16" IsVisible="{Binding HasSelectedSkill}">
+              <Grid RowDefinitions="*,12,Auto">
+                <ScrollViewer>
+                  <StackPanel Spacing="13">
+                    <StackPanel Spacing="4">
+                      <TextBlock Text="SELECTED SKILL" Classes="micro" Foreground="#65C7D0"/>
+                      <TextBlock Text="{Binding SelectedSkill.Name}" FontSize="20" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                      <TextBlock Text="{Binding SelectedSkill.Description}" Classes="muted" TextWrapping="Wrap"/>
+                    </StackPanel>
+                    <Border Height="1" Background="#29313C"/>
+                    <StackPanel Spacing="5">
+                      <TextBlock Text="COMPATIBILITY" Classes="micro"/>
+                      <TextBlock Text="{Binding SelectedSkill.Compatibility}" TextWrapping="Wrap"/>
+                    </StackPanel>
+                    <StackPanel Spacing="5">
+                      <TextBlock Text="SOURCE" Classes="micro"/>
+                      <TextBlock Text="{Binding SelectedSkill.Repository}" Classes="mono" FontSize="10" TextWrapping="Wrap"/>
+                      <TextBlock Text="{Binding SelectedSkill.SourcePath}" Classes="muted mono" FontSize="9" TextWrapping="Wrap"/>
+                      <TextBlock Text="{Binding SelectedSkill.SourceRevision}" Classes="muted mono" FontSize="9"/>
+                    </StackPanel>
+                    <StackPanel Spacing="5">
+                      <TextBlock Text="PROVENANCE" Classes="micro"/>
+                      <TextBlock Text="{Binding SelectedSkill.TrustState}" Foreground="#E2A84A" FontSize="10" TextWrapping="Wrap"/>
+                    </StackPanel>
+                    <TextBlock Text="Catalog sync reads SKILL.md metadata only. Install inspects the selected package tree and asks before downloading its files." Classes="muted" FontSize="10" TextWrapping="Wrap"/>
+                  </StackPanel>
+                </ScrollViewer>
+                <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8">
+                  <Button Content="VIEW SOURCE" Click="ViewSkillSource_OnClick"/>
+                  <Button x:Name="SkillInstallButton" Content="INSTALL…" Classes="primary" IsEnabled="{Binding CanInstallSelectedSkill}" Click="InstallSkill_OnClick"/>
+                </StackPanel>
+              </Grid>
+            </Border>
+          </Grid>
+        </Grid>
       </TabItem>
       <TabItem Header="GITHUB">
         <StackPanel Margin="24,8" Spacing="18" MaxWidth="620">
@@ -86,7 +217,24 @@
         </StackPanel>
       </TabItem>
       <TabItem Header="ADVANCED">
-        <StackPanel Margin="24,8" Spacing="14" MaxWidth="620"><TextBlock Text="Advanced" FontSize="22" FontWeight="SemiBold"/><TextBlock Text="Database, runtime, logging, approval, and sandbox controls belong here as those subsystems become user-configurable." Classes="muted" TextWrapping="Wrap"/></StackPanel>
+        <StackPanel Margin="24,8" Spacing="18" MaxWidth="680">
+          <StackPanel Spacing="4">
+            <TextBlock Text="Advanced" FontSize="22" FontWeight="SemiBold"/>
+            <TextBlock Text="Control how model-requested commands and file access are reviewed." Classes="muted" TextWrapping="Wrap"/>
+          </StackPanel>
+          <Border Classes="panel" Padding="16">
+            <StackPanel Spacing="10">
+              <TextBlock Text="DEFAULT PERMISSION MODE" Classes="micro" Foreground="#65C7D0"/>
+              <ComboBox x:Name="SettingsPermissionModePicker" ItemsSource="{Binding PermissionModes}" SelectedItem="{Binding SelectedPermissionMode, Mode=TwoWay}" Width="220" HorizontalAlignment="Left">
+                <ComboBox.ItemTemplate>
+                  <DataTemplate x:DataType="vm:PermissionModeOption"><TextBlock Text="{Binding DisplayName}"/></DataTemplate>
+                </ComboBox.ItemTemplate>
+              </ComboBox>
+              <TextBlock Text="{Binding SelectedPermissionMode.Description}" Classes="muted" TextWrapping="Wrap"/>
+              <TextBlock Text="Approve for me uses the provider's safeguarded automatic reviewer. Full access disables command approval and the workspace sandbox for the active provider thread." Classes="muted" TextWrapping="Wrap"/>
+            </StackPanel>
+          </Border>
+        </StackPanel>
       </TabItem>
     </TabControl>
 

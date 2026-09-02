@@ -161,11 +161,21 @@ provider thread can no longer be resumed: durable local conversation becomes
 private background continuity for a new provider thread instead of forcing the
 model to infer state from the working tree.
 
-Context capacity is read from provider usage events. Harness displays actual
-tokens against the provider-reported model context window; it does not maintain
-a guessed per-model limit table. At the configured safety threshold, the adapter
+Context capacity is read from provider usage events. Harness uses the provider's
+latest input-token footprint as active context occupancy and keeps cumulative
+thread throughput separate; treating the cumulative counter as occupancy can
+incorrectly fill the meter after only a few turns. The active value is compared
+with the provider-reported model context window, with no guessed per-model limit
+table. At the configured safety threshold, the adapter
 requests the provider's native thread compaction so its continuation summary and
 tool state remain protocol-compatible.
+
+Turn attachments are capability-gated without changing the menu's structure.
+Image, Video, and Text or code remain visible in a fixed order; unsupported
+modalities are disabled with the provider/runtime reason. Images use native
+visual input, text and code use native file mentions, and video is enabled only
+for an adapter whose runtime protocol explicitly exposes video input. Harness
+does not reinterpret an unsupported video as text or silently extract frames.
 
 Detected history is grouped by source harness and normalized project path before
 the user chooses anything. A project import opens or creates that Harness
@@ -202,6 +212,13 @@ GitHub account connection, and advanced controls. Repository initialization,
 branch naming, origin attachment, GitHub repository creation, commit, pull, push,
 and the working tree are workspace actions and remain in the primary UI.
 
+Personalization is sent through the provider's native developer-instruction
+field on thread start and resume; it is never represented as visible or ghost
+chat history. Permission modes likewise map to provider protocol controls: Ask
+uses user review with workspace-write isolation, Approve for me uses the
+provider's safeguarded automatic reviewer inside that sandbox, and Full access
+uses no approvals with the provider's explicit full-access sandbox policy.
+
 Repository support uses argument-list `git` and `gh` processes. Harness can
 initialize a repository, attach or update `origin`, create a GitHub repository,
 configure a repository-local commit identity, choose the initial branch, commit,
@@ -221,13 +238,29 @@ selected repository.
 
 ## Skills Library boundary
 
-The planned Skills Library is a first-class Harness subsystem rather than an
-installer tied to another agent. It will discover public skill packages from
-configured registries and GitHub sources, support category and capability search,
-show source/version/license/permissions before installation, and install a pinned
-copy into the user's Harness environment.
+The Skills Library is a first-class Harness subsystem rather than an installer
+tied to another agent. Its local SQLite catalog stores both individual manifest
+descriptions and a source ledger. GitHub-wide discovery identifies repositories;
+repository-scoped code search then records each source's full reported
+`SKILL.md` count. Metadata-only partial Git clones enumerate complete repository
+trees beyond GitHub code search's result window without checking out files or
+fetching package blobs. Matching descriptions are indexed progressively during
+browse and direct search, so a 200,000-skill registry is represented truthfully
+without 200,000 package downloads. Discovery never installs packages.
+
+Selecting Install first reads the selected skill directory through GitHub's
+contents metadata API. Harness rejects incomplete, linked, credential-like,
+oversized, or path-escaping packages before confirmation. Only confirmation
+downloads the pinned Git blobs into Harness-owned storage and verifies their Git
+object hashes. The Codex adapter then copies the skill to the selected repository
+or user `.agents/skills` scope. Other providers require their own setup adapter;
+Harness does not pretend a Codex filesystem install configured them.
 
 Installed skills remain usable if the catalog or original harness disappears.
+Provider-facing copies receive collision-safe namespaced identities and each
+scope has a Harness skill index, while the pinned upstream package remains
+immutable. Compatibility is classified from open Agent Skills fields versus
+provider extensions, then filtered against live connected model/provider data.
 Updates are explicit and diffable. A skill package is untrusted code and
 instructions: manifests are validated, content is hashed, requested tools and
 permissions are declared, secrets are never bundled, and execution remains under

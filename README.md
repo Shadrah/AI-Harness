@@ -38,23 +38,43 @@ capability/content contracts:
 - model-specific reasoning and service-tier choices generated from the
   connected provider's model descriptor, with provider-confirmed effective
   settings shown in the inspector;
-- local-image attachment delivery for vision-capable Codex models;
+- a stable turn-attachment menu for image, video, and text/code: native image
+  delivery for vision-capable Codex models, native file references for text and
+  code, removable multi-file chips, and visible disabled rows for modalities the
+  connected runtime cannot accept;
+- generated-image links rendered as durable inline previews with open and
+  copy-path actions;
 - rolling and weekly usage-window surfaces backed by authenticated runtime data;
 - a Codex app-server adapter for model discovery and authenticated rate-limit
   snapshots without starting a model turn;
 - explicit ChatGPT subscription sign-in through the Codex runtime;
 - real Codex thread/turn startup, streamed assistant messages, activity events,
   and token-usage updates;
+- active-context tracking from the provider's latest input footprint (kept
+  distinct from cumulative thread throughput), native compaction requests, and
+  restart restoration from retained provider telemetry;
+- persistent Ask, Approve for me, and Full access modes mapped to the provider's
+  native reviewer, approval, and sandbox controls;
+- native developer-instruction delivery for saved personalization without
+  inserting hidden transcript messages;
+- live auto-follow for new and streaming chat content plus a compact turn-phase
+  indicator that distinguishes delivered text from a completed turn;
 - streamed reasoning summaries, plans, commands and command output, tool events,
   provider errors, file-change records, and turn-level diff inspection;
 - inline command and file-change approval prompts with explicit accept/decline;
 - versioned SQLite storage for projects, multiple named sessions, streaming
   transcript checkpoints, provider-native events, and model/thread settings;
-- restart recovery that restores the local transcript and resumes the saved
-  provider thread when the connected adapter supports it;
+- restart recovery that restores the local transcript at its newest message,
+  resumes the saved provider thread when supported, and preserves the session's
+  provider, model, reasoning effort, and service tier;
 - session creation, selection, renaming, and confirmed deletion from the task rail;
 - persistent session context files copied into Harness-owned content-addressed
   storage and delivered to Codex turns as native file mentions;
+- a Skills Library inside Settings with a bookshelf shortcut, repository-level
+  GitHub tree indexes beyond code-search limits, progressively cached searchable
+  descriptions, topic/source/status/connected-model filtering, collision-safe
+  provider identities, explicit package inspection, pinned downloads, and Codex
+  user/workspace installation;
 - live Git branch and working-tree inspection with staged, unstaged, and
   untracked status; full per-file diff review; stage and unstage actions; and
   confirmed revert actions that preserve a Harness recovery copy first;
@@ -64,8 +84,8 @@ capability/content contracts:
   inserts a line break) and explicit UTF-8 provider transport;
 - an auditable runtime resolver that prefers Harness-bundled or Harness-managed
   runtimes and never binds to another desktop harness;
-- honest unavailable states for context and working-tree features that have not
-  been implemented yet;
+- honest unavailable states whenever a provider has not reported context or
+  working-tree data;
 - headless visual-check utility for repeatable UI renders;
 - preserved Go terminal experiment under `prototypes/go-tui`.
 

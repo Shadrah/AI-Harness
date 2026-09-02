@@ -119,7 +119,6 @@ public sealed class CodexAppServerClient : IModelProvider, IProviderTelemetry, I
             {
                 capabilities |= ModelCapability.Vision;
             }
-
             if (model.SupportedReasoningEfforts.Count > 0)
             {
                 capabilities |= ModelCapability.Reasoning;
@@ -148,16 +147,21 @@ public sealed class CodexAppServerClient : IModelProvider, IProviderTelemetry, I
     public async Task<string> StartThreadAsync(
         string workingDirectory,
         string model,
+        string permissionMode,
+        string? developerInstructions,
         CancellationToken cancellationToken = default)
     {
+        var runtimePolicy = ResolveRuntimePolicy(permissionMode);
         var response = await CallAsync<ThreadStartResponse>(
             "thread/start",
             new
             {
                 cwd = Path.GetFullPath(workingDirectory),
                 model,
-                approvalPolicy = "on-request",
-                sandbox = "workspace-write",
+                approvalPolicy = runtimePolicy.ApprovalPolicy,
+                approvalsReviewer = runtimePolicy.ApprovalsReviewer,
+                sandbox = runtimePolicy.Sandbox,
+                developerInstructions = NullIfWhiteSpace(developerInstructions),
                 ephemeral = false
             },
             cancellationToken);
@@ -168,8 +172,11 @@ public sealed class CodexAppServerClient : IModelProvider, IProviderTelemetry, I
         string threadId,
         string workingDirectory,
         string? model = null,
+        string permissionMode = "ask",
+        string? developerInstructions = null,
         CancellationToken cancellationToken = default)
     {
+        var runtimePolicy = ResolveRuntimePolicy(permissionMode);
         var response = await CallAsync<ThreadResumeResponse>(
             "thread/resume",
             new
@@ -177,8 +184,10 @@ public sealed class CodexAppServerClient : IModelProvider, IProviderTelemetry, I
                 threadId,
                 cwd = Path.GetFullPath(workingDirectory),
                 model,
-                approvalPolicy = "on-request",
-                sandbox = "workspace-write"
+                approvalPolicy = runtimePolicy.ApprovalPolicy,
+                approvalsReviewer = runtimePolicy.ApprovalsReviewer,
+                sandbox = runtimePolicy.Sandbox,
+                developerInstructions = NullIfWhiteSpace(developerInstructions)
             },
             cancellationToken);
         return response.Thread.Id;
@@ -190,19 +199,37 @@ public sealed class CodexAppServerClient : IModelProvider, IProviderTelemetry, I
         string model,
         string? reasoningEffort,
         string? serviceTier,
-        string? localImagePath = null,
+        string permissionMode,
+        IReadOnlyList<FilePart>? turnAttachments = null,
         IReadOnlyList<FilePart>? contextFiles = null,
         CancellationToken cancellationToken = default)
     {
         var input = new List<object> { new { type = "text", text = prompt } };
-        if (!string.IsNullOrWhiteSpace(localImagePath))
+        foreach (var attachment in turnAttachments ?? [])
         {
-            input.Add(new
+            if (attachment.MediaType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) == true)
             {
-                type = "localImage",
-                path = Path.GetFullPath(localImagePath),
-                detail = "auto"
-            });
+                input.Add(new
+                {
+                    type = "localImage",
+                    path = Path.GetFullPath(attachment.Path),
+                    detail = "auto"
+                });
+            }
+            else if (attachment.MediaType?.StartsWith("video/", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                throw new NotSupportedException(
+                    "The connected Codex app-server protocol does not define native video input.");
+            }
+            else
+            {
+                input.Add(new
+                {
+                    type = "mention",
+                    name = Path.GetFileName(attachment.Path),
+                    path = Path.GetFullPath(attachment.Path)
+                });
+            }
         }
         foreach (var contextFile in contextFiles ?? [])
         {
@@ -214,6 +241,7 @@ public sealed class CodexAppServerClient : IModelProvider, IProviderTelemetry, I
             });
         }
 
+        var runtimePolicy = ResolveRuntimePolicy(permissionMode);
         var response = await CallAsync<TurnStartResponse>(
             "turn/start",
             new
@@ -222,11 +250,32 @@ public sealed class CodexAppServerClient : IModelProvider, IProviderTelemetry, I
                 input,
                 model,
                 effort = reasoningEffort,
-                serviceTier
+                serviceTier,
+                approvalPolicy = runtimePolicy.ApprovalPolicy,
+                approvalsReviewer = runtimePolicy.ApprovalsReviewer,
+                sandboxPolicy = runtimePolicy.IsFullAccess
+                    ? new { type = "dangerFullAccess" }
+                    : (object)new
+                    {
+                        type = "workspaceWrite",
+                        writableRoots = Array.Empty<string>(),
+                        networkAccess = false
+                    }
             },
             cancellationToken);
         return response.Turn.Id;
     }
+
+    private static CodexRuntimePolicy ResolveRuntimePolicy(string? permissionMode) =>
+        permissionMode?.Trim().ToLowerInvariant() switch
+        {
+            "auto" => new("on-request", "auto_review", "workspace-write", false),
+            "full" => new("never", "user", "danger-full-access", true),
+            _ => new("on-request", "user", "workspace-write", false)
+        };
+
+    private static string? NullIfWhiteSpace(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     public Task InterruptTurnAsync(
         string threadId,
@@ -567,6 +616,11 @@ public sealed class CodexAppServerClient : IModelProvider, IProviderTelemetry, I
     private sealed record TurnStartResponse(TurnReference Turn);
     private sealed record ThreadReference(string Id);
     private sealed record TurnReference(string Id);
+    private sealed record CodexRuntimePolicy(
+        string ApprovalPolicy,
+        string ApprovalsReviewer,
+        string Sandbox,
+        bool IsFullAccess);
 }
 
 public sealed record CodexNotification(string Method, JsonElement Parameters);
