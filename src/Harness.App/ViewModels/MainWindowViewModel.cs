@@ -75,7 +75,7 @@ public sealed class MainWindowViewModel : ObservableObject
     public string WorkspacePath => _workspacePath;
     public string WorkspaceName => new DirectoryInfo(WorkspacePath).Name;
     public string WorkspaceSummary => WorkspacePath;
-    public ObservableCollection<ModelOption> Models { get; } = [];
+    public BatchObservableCollection<ModelOption> Models { get; } = [];
     public ObservableCollection<CapabilityItem> Capabilities { get; } = [];
     public ObservableCollection<UsageWindowItem> UsageWindows { get; } = [];
     public ObservableCollection<WorkspaceItem> Workspaces { get; } = [];
@@ -454,7 +454,7 @@ public sealed class MainWindowViewModel : ObservableObject
         var previous = SelectedModel;
         var effort = SelectedReasoningLevel?.Id;
         var tier = SelectedServiceTier?.Id;
-        foreach (var item in Models.Where(item => item.ProviderId == providerId).ToArray()) Models.Remove(item);
+        var replacement = Models.Where(item => item.ProviderId != providerId).ToList();
         foreach (var descriptor in descriptors)
         {
             var option = descriptor;
@@ -465,8 +465,9 @@ public sealed class MainWindowViewModel : ObservableObject
                 ServiceTiers = descriptor.ServiceTiers is { Count: > 0 } tiers
                     ? new[] { new ServiceTierDescriptor(null, "Provider default", IsDefault: true) }.Concat(tiers).ToArray() : []
             };
-            Models.Add(ModelOption.FromDescriptor(option, source, providerName));
+            replacement.Add(ModelOption.FromDescriptor(option, source, providerName));
         }
+        Models.ReplaceAll(replacement);
         SelectedModel = previous is null ? Models.FirstOrDefault(model => model.IsDefault) ?? Models.FirstOrDefault()
             : Models.FirstOrDefault(model => model.ProviderId == previous.ProviderId && model.ModelName == previous.ModelName);
         if (SelectedModel is not null && previous is not null)

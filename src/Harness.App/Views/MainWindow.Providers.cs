@@ -32,11 +32,8 @@ public sealed partial class MainWindow
         await _apiRefreshGate.WaitAsync(_lifetime.Token);
         try
         {
-            var connections = await _apiConnectionStore.LoadAsync(_lifetime.Token);
-            var selected = ViewModel.SelectedModel;
-            var efforts = ViewModel.SelectedReasoningLevel?.Id;
-            var tiers = ViewModel.SelectedServiceTier?.Id;
-            var results = await Task.WhenAll(connections.Select(async saved =>
+            var connections = await Task.Run(() => _apiConnectionStore.LoadAsync(_lifetime.Token), _lifetime.Token);
+            var results = await Task.WhenAll(connections.Select(saved => Task.Run(async () =>
             {
                 try
                 {
@@ -47,7 +44,13 @@ public sealed partial class MainWindow
                     return (Saved: saved, Models: models, Error: (string?)null);
                 }
                 catch (Exception exception) { return (Saved: saved, Models: (IReadOnlyList<ApiModel>)[], Error: exception is OperationCanceledException ? "Catalog refresh timed out or was cancelled." : exception.Message); }
-            }));
+            }, _lifetime.Token)));
+            // Restore the current selection, not one captured before a slow request.
+            while (ViewModel.IsRunning) await Task.Delay(250, _lifetime.Token);
+            _lifetime.Token.ThrowIfCancellationRequested();
+            var selected = ViewModel.SelectedModel;
+            var efforts = ViewModel.SelectedReasoningLevel?.Id;
+            var tiers = ViewModel.SelectedServiceTier?.Id;
             _applyingProviderModels = true;
             try
             {

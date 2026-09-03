@@ -56,6 +56,10 @@ public sealed partial class MainWindow : Window
     private string _lastPermissionMode = "ask";
     private bool _isClosing;
     private bool _providerConfigurationRefreshPending;
+    private Task? _startupTask;
+    private Task? _skillWarmTask;
+    private Task? _usageRefreshTask;
+    private string? _usageProviderId;
 
     public MainWindow() : this(usePreviewData: false)
     {
@@ -98,11 +102,22 @@ public sealed partial class MainWindow : Window
 
     private async void MainWindow_OnOpened(object? sender, EventArgs e)
     {
-        await InitializePersistenceAsync();
-        _ = WarmSkillCatalogAsync();
-        await RefreshWorkingTreeAsync();
-        await ConnectCodexAsync();
-        await RefreshApiConnectionsAsync();
+        _startupTask = InitializeWorkspaceServicesAsync();
+        await _startupTask;
+    }
+
+    private async Task InitializeWorkspaceServicesAsync()
+    {
+        try
+        {
+            await InitializePersistenceAsync();
+            _lifetime.Token.ThrowIfCancellationRequested();
+            _skillWarmTask = Task.Run(WarmSkillCatalogAsync, _lifetime.Token);
+            // A slow GitHub check must not hold model discovery behind it.
+            await Task.WhenAll(RefreshWorkingTreeAsync(), ConnectCodexAsync(), RefreshApiConnectionsAsync());
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (Exception exception) { ViewModel.AddActivity("STARTUP", CleanError(exception), "#E2A84A"); }
     }
 
     private async Task InitializePersistenceAsync()
@@ -178,6 +193,11 @@ public sealed partial class MainWindow : Window
         _workingTreeWindow = null;
         _lifetime.Cancel();
         if (_apiTurnTask is not null) await _apiTurnTask;
+        if (_startupTask is not null) await _startupTask;
+        if (_skillWarmTask is not null)
+        {
+            try { await _skillWarmTask; } catch (OperationCanceledException) { }
+        }
         _workspaceSwitch?.Cancel();
         _workspaceSwitch?.Dispose();
         _workspaceSwitch = null;
@@ -240,9 +260,14 @@ public sealed partial class MainWindow : Window
     private void SessionModelSetting_OnChanged(object? sender, SelectionChangedEventArgs e)
     {
         if (_applyingProviderModels) return;
-        if (ViewModel.SelectedModel?.ProviderId.StartsWith("api-", StringComparison.Ordinal) == true)
-            ViewModel.ApplyApiUsage(null, null, null, FindSelectedApiModel()?.Descriptor.ContextWindow);
-        else _ = RefreshUsageAsync();
+        var providerId = ViewModel.SelectedModel?.ProviderId;
+        if (_usageProviderId != providerId)
+        {
+            _usageProviderId = providerId;
+            if (providerId?.StartsWith("api-", StringComparison.Ordinal) == true)
+                ViewModel.ApplyApiUsage(null, null, null, FindSelectedApiModel()?.Descriptor.ContextWindow);
+            else _ = RefreshUsageAsync();
+        }
         QueueSessionModelSettingsPersistence();
     }
 
@@ -1327,15 +1352,15 @@ public sealed partial class MainWindow : Window
         {
             var workspacePath = expectedWorkspacePath ?? ViewModel.WorkspacePath;
             var token = cancellationToken.CanBeCanceled ? cancellationToken : _lifetime.Token;
-            var snapshot = await _git.ReadStatusAsync(workspacePath, token);
+            var snapshot = await Task.Run(() => _git.ReadStatusAsync(workspacePath, token), token);
             if (!string.Equals(workspacePath, ViewModel.WorkspacePath, StringComparison.OrdinalIgnoreCase)) return;
             ViewModel.ApplyWorkingTree(snapshot);
             var remote = snapshot.RepositoryRoot is { } root
-                ? await _git.GetRemoteUrlAsync(root, token)
+                ? await Task.Run(() => _git.GetRemoteUrlAsync(root, token), token)
                 : null;
             if (!string.Equals(workspacePath, ViewModel.WorkspacePath, StringComparison.OrdinalIgnoreCase)) return;
             ViewModel.ApplyRepositoryRemote(remote);
-            var github = await _github.GetConnectionStatusAsync(token);
+            var github = await Task.Run(() => _github.GetConnectionStatusAsync(token), token);
             if (!string.Equals(workspacePath, ViewModel.WorkspacePath, StringComparison.OrdinalIgnoreCase)) return;
             ViewModel.ApplyGitHubConnection(github.IsAuthenticated);
             ViewModel.SetRepositoryOperationStatus(snapshot.IsRepository
@@ -2588,11 +2613,14 @@ public sealed partial class MainWindow : Window
 
         await Dispatcher.UIThread.InvokeAsync(() =>
         {
+            if (_lifetime.IsCancellationRequested || ViewModel.IsRunning) return;
+            var restoreSavedModel = ViewModel.SelectedModel is null;
             _applyingProviderModels = true;
             try
             {
                 ViewModel.ApplyProviderModels(client.Id, models, "OpenAI Codex", client.Runtime.SourceLabel);
-                if (_activeSession is not null) ViewModel.ApplySessionModelSettings(_activeSession);
+                if (restoreSavedModel && _activeSession is not null) ViewModel.ApplySessionModelSettings(_activeSession);
+                _usageProviderId = ViewModel.SelectedModel?.ProviderId;
             }
             finally { _applyingProviderModels = false; }
         });
@@ -3068,7 +3096,14 @@ public sealed partial class MainWindow : Window
         ViewModel.ApplyResolvedDiffs(diffs);
     }
 
-    private async Task RefreshUsageAsync()
+    private Task RefreshUsageAsync()
+    {
+        // Model, reasoning and tier bindings can change together. Share one read.
+        if (_usageRefreshTask is { IsCompleted: false }) return _usageRefreshTask;
+        return _usageRefreshTask = RefreshUsageCoreAsync();
+    }
+
+    private async Task RefreshUsageCoreAsync()
     {
         if (_codex is null || ViewModel.SelectedModel?.ProviderId != _codex.Id)
         {

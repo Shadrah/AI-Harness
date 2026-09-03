@@ -90,9 +90,14 @@ public sealed class CodexAppServerClient : IModelProvider, IProviderTelemetry, I
             },
             cancellationToken);
 
-    public static async Task<CodexAppServerClient> StartAsync(
-        CancellationToken cancellationToken = default)
+    public static Task<CodexAppServerClient> StartAsync(
+        CancellationToken cancellationToken = default) =>
+        // Resolution, process startup and the JSON read pump must never capture the UI context.
+        Task.Run(() => StartCoreAsync(cancellationToken), cancellationToken);
+
+    private static async Task<CodexAppServerClient> StartCoreAsync(CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var runtime = CodexRuntimeResolver.Resolve();
         var process = new Process { StartInfo = CreateStartInfo(runtime) };
         if (!process.Start())
@@ -103,16 +108,24 @@ public sealed class CodexAppServerClient : IModelProvider, IProviderTelemetry, I
         var client = new CodexAppServerClient(process, runtime);
         client._readTask = client.ReadLoopAsync(client._shutdown.Token);
 
-        await client.CallAsync<JsonElement>(
-            "initialize",
-            new
-            {
-                clientInfo = new { name = "harness", title = "Harness", version = "0.1.0" },
-                capabilities = new { experimentalApi = true }
-            },
-            cancellationToken);
-        await client.NotifyAsync("initialized", new { }, cancellationToken);
-        return client;
+        try
+        {
+            await client.CallAsync<JsonElement>(
+                "initialize",
+                new
+                {
+                    clientInfo = new { name = "harness", title = "Harness", version = "0.1.0" },
+                    capabilities = new { experimentalApi = true }
+                },
+                cancellationToken);
+            await client.NotifyAsync("initialized", new { }, cancellationToken);
+            return client;
+        }
+        catch
+        {
+            await client.DisposeAsync();
+            throw;
+        }
     }
 
     public async IAsyncEnumerable<ModelDescriptor> GetModelsAsync(
@@ -488,7 +501,7 @@ public sealed class CodexAppServerClient : IModelProvider, IProviderTelemetry, I
         try
         {
             await WriteAsync(new { jsonrpc = "2.0", id, method, @params = parameters }, cancellationToken);
-            var result = await completion.Task.WaitAsync(cancellationToken);
+            var result = await completion.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
             return result.Deserialize<T>(JsonOptions)
                 ?? throw new InvalidOperationException($"Codex returned no result for {method}.");
         }

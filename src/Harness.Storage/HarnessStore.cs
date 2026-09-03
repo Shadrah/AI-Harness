@@ -10,6 +10,8 @@ public sealed class HarnessStore : IAsyncDisposable
 {
     private const int SchemaVersion = 4;
     private readonly string _connectionString;
+    // SQLite async calls still execute synchronously. Gate awaits force-yield
+    // without capturing the caller's context so all database work stays off the UI.
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     public HarnessStore(string databasePath)
@@ -36,7 +38,7 @@ public sealed class HarnessStore : IAsyncDisposable
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(DatabasePath)!);
-        await _gate.WaitAsync(cancellationToken);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         try
         {
             await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -113,6 +115,9 @@ public sealed class HarnessStore : IAsyncDisposable
                     payload_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+
+                CREATE INDEX IF NOT EXISTS ix_provider_events_session_method_created
+                    ON provider_events(session_id, method, created_at DESC);
 
                 CREATE TABLE IF NOT EXISTS app_settings (
                     key TEXT PRIMARY KEY,
@@ -207,7 +212,7 @@ public sealed class HarnessStore : IAsyncDisposable
     public async Task<HarnessApplicationSettings> LoadApplicationSettingsAsync(
         CancellationToken cancellationToken = default)
     {
-        await _gate.WaitAsync(cancellationToken);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         try
         {
             await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -228,7 +233,7 @@ public sealed class HarnessStore : IAsyncDisposable
     public async Task<IReadOnlyList<StoredProject>> ListProjectsAsync(
         CancellationToken cancellationToken = default)
     {
-        await _gate.WaitAsync(cancellationToken);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         try
         {
             await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -252,7 +257,7 @@ public sealed class HarnessStore : IAsyncDisposable
         HarnessApplicationSettings settings,
         CancellationToken cancellationToken = default)
     {
-        await _gate.WaitAsync(cancellationToken);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         try
         {
             await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -280,7 +285,7 @@ public sealed class HarnessStore : IAsyncDisposable
     {
         var materialized = entries.ToArray();
         if (materialized.Length == 0) return;
-        await _gate.WaitAsync(cancellationToken);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         try
         {
             await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -359,7 +364,7 @@ public sealed class HarnessStore : IAsyncDisposable
 
             foreach (var batch in skills.Chunk(batchSize))
             {
-                await _gate.WaitAsync(cancellationToken);
+                await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
                 try
                 {
                     await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -439,7 +444,7 @@ public sealed class HarnessStore : IAsyncDisposable
         bool preserveExistingForDiscoveryOnly,
         CancellationToken cancellationToken)
     {
-        await _gate.WaitAsync(cancellationToken);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         try
         {
             await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -482,7 +487,7 @@ public sealed class HarnessStore : IAsyncDisposable
 
     private async Task RefreshSkillSourceCountAsync(string repository, CancellationToken cancellationToken)
     {
-        await _gate.WaitAsync(cancellationToken);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         try
         {
             await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -512,7 +517,7 @@ public sealed class HarnessStore : IAsyncDisposable
     public async Task<IReadOnlyList<SkillCatalogSource>> ListSkillSourcesAsync(
         CancellationToken cancellationToken = default)
     {
-        await _gate.WaitAsync(cancellationToken);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         try
         {
             await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -548,7 +553,7 @@ public sealed class HarnessStore : IAsyncDisposable
         string repository,
         CancellationToken cancellationToken = default)
     {
-        await _gate.WaitAsync(cancellationToken);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         try
         {
             await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -577,7 +582,7 @@ public sealed class HarnessStore : IAsyncDisposable
         string? compatibilityProvider = null,
         CancellationToken cancellationToken = default)
     {
-        await _gate.WaitAsync(cancellationToken);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         try
         {
             await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -628,7 +633,7 @@ public sealed class HarnessStore : IAsyncDisposable
         InstalledSkill skill,
         CancellationToken cancellationToken = default)
     {
-        await _gate.WaitAsync(cancellationToken);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         try
         {
             await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -674,7 +679,7 @@ public sealed class HarnessStore : IAsyncDisposable
     public async Task<IReadOnlyList<InstalledSkill>> ListInstalledSkillsAsync(
         CancellationToken cancellationToken = default)
     {
-        await _gate.WaitAsync(cancellationToken);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         try
         {
             await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -759,7 +764,7 @@ public sealed class HarnessStore : IAsyncDisposable
         if (File.Exists(storedSource)) File.Delete(pendingSource);
         else File.Move(pendingSource, storedSource);
 
-        await _gate.WaitAsync(cancellationToken);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         try
         {
             await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -837,7 +842,7 @@ public sealed class HarnessStore : IAsyncDisposable
         string sessionId,
         CancellationToken cancellationToken = default)
     {
-        await _gate.WaitAsync(cancellationToken);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         try
         {
             await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -866,7 +871,7 @@ public sealed class HarnessStore : IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         var fullPath = Path.GetFullPath(sourcePath);
-        await _gate.WaitAsync(cancellationToken);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         try
         {
             await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -894,7 +899,7 @@ public sealed class HarnessStore : IAsyncDisposable
         string method,
         CancellationToken cancellationToken = default)
     {
-        await _gate.WaitAsync(cancellationToken);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         try
         {
             await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -915,7 +920,7 @@ public sealed class HarnessStore : IAsyncDisposable
         string method,
         CancellationToken cancellationToken = default)
     {
-        await _gate.WaitAsync(cancellationToken);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         try
         {
             await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -940,7 +945,7 @@ public sealed class HarnessStore : IAsyncDisposable
         var normalizedPath = NormalizePath(fullPath);
         var now = DateTimeOffset.UtcNow;
 
-        await _gate.WaitAsync(cancellationToken);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         try
         {
             await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -998,7 +1003,7 @@ public sealed class HarnessStore : IAsyncDisposable
         string sessionId,
         CancellationToken cancellationToken = default)
     {
-        await _gate.WaitAsync(cancellationToken);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         try
         {
             await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -1020,7 +1025,7 @@ public sealed class HarnessStore : IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         var session = NewSession(projectId, title, DateTimeOffset.UtcNow);
-        await _gate.WaitAsync(cancellationToken);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         try
         {
             await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -1044,7 +1049,7 @@ public sealed class HarnessStore : IAsyncDisposable
             throw new ArgumentException("A session title is required.", nameof(title));
         }
 
-        await _gate.WaitAsync(cancellationToken);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         try
         {
             await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -1070,7 +1075,7 @@ public sealed class HarnessStore : IAsyncDisposable
         string sessionId,
         CancellationToken cancellationToken = default)
     {
-        await _gate.WaitAsync(cancellationToken);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         try
         {
             await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -1150,7 +1155,7 @@ public sealed class HarnessStore : IAsyncDisposable
             }
         }
 
-        await _gate.WaitAsync(cancellationToken);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         try
         {
             await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -1212,7 +1217,7 @@ public sealed class HarnessStore : IAsyncDisposable
         string attachmentId,
         CancellationToken cancellationToken = default)
     {
-        await _gate.WaitAsync(cancellationToken);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         try
         {
             await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -1261,7 +1266,7 @@ public sealed class HarnessStore : IAsyncDisposable
         string? serviceTier,
         CancellationToken cancellationToken = default)
     {
-        await _gate.WaitAsync(cancellationToken);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         try
         {
             await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -1299,7 +1304,7 @@ public sealed class HarnessStore : IAsyncDisposable
         string? serviceTier,
         CancellationToken cancellationToken = default)
     {
-        await _gate.WaitAsync(cancellationToken);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         try
         {
             await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -1336,7 +1341,7 @@ public sealed class HarnessStore : IAsyncDisposable
         StoredMessage message,
         CancellationToken cancellationToken = default)
     {
-        await _gate.WaitAsync(cancellationToken);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         try
         {
             await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -1384,7 +1389,7 @@ public sealed class HarnessStore : IAsyncDisposable
         string payloadJson,
         CancellationToken cancellationToken = default)
     {
-        await _gate.WaitAsync(cancellationToken);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         try
         {
             await using var connection = await OpenConnectionAsync(cancellationToken);

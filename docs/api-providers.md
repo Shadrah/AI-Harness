@@ -88,6 +88,14 @@ consumer subscriptions are not silently treated as API credits either.
 
 ## Checks
 
+`dotnet run --project tools/Harness.ApiCheck -c Release -- --startup-check`
+
+Uses an isolated SQLite fixture to verify that lock contention does not block the
+calling thread, event restoration uses its index, and a large model catalog is
+published in one collection notification. `--startup-profile` separately performs
+read-only timing queries against the local store, printing only aggregate counts,
+query plans and timings, never message contents or credentials.
+
 `dotnet run --project tools/Harness.ApiCheck -c Release`
 
 This uses synthetic in-memory HTTP responses, never real credentials or model

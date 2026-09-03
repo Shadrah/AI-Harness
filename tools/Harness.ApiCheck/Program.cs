@@ -12,6 +12,17 @@ using Harness.App.Views;
 using Harness.Core.Models;
 using Harness.Providers.Api;
 
+if (args.Contains("--startup-profile", StringComparer.Ordinal))
+{
+    await StartupProfile.RunAsync();
+    return;
+}
+if (args.Contains("--startup-check", StringComparer.Ordinal))
+{
+    await StartupProfile.CheckAsync();
+    return;
+}
+
 // No real credentials, provider requests, or paid model turns are used by this check.
 static void Check(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
 static JsonObject Obj(string json) => JsonNode.Parse(json)!.AsObject();
