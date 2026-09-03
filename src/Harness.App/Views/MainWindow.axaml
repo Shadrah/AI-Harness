@@ -262,6 +262,7 @@
                         Width="220"
                         VerticalAlignment="Bottom"
                         ItemsSource="{Binding Models}"
+                        IsEnabled="{Binding !IsRunning}"
                         SelectedItem="{Binding SelectedModel, Mode=TwoWay}"
                         SelectionChanged="SessionModelSetting_OnChanged"
                         ToolTip.Tip="Model supplied by the connected runtime">
@@ -276,9 +277,10 @@
                         Width="92"
                         VerticalAlignment="Bottom"
                         ItemsSource="{Binding ReasoningLevels}"
+                        IsEnabled="{Binding !IsRunning}"
                         SelectedItem="{Binding SelectedReasoningLevel, Mode=TwoWay}"
                         SelectionChanged="SessionModelSetting_OnChanged"
-                        ToolTip.Tip="Reasoning levels advertised by this model">
+                        ToolTip.Tip="Provider-reported or explicitly configured reasoning levels">
                 <ComboBox.ItemTemplate>
                   <DataTemplate x:DataType="vm:ReasoningLevelOption">
                     <TextBlock Text="{Binding DisplayName}" />
@@ -291,9 +293,10 @@
                         VerticalAlignment="Bottom"
                         IsVisible="{Binding HasServiceTiers}"
                         ItemsSource="{Binding ServiceTiers}"
+                        IsEnabled="{Binding !IsRunning}"
                         SelectedItem="{Binding SelectedServiceTier, Mode=TwoWay}"
                         SelectionChanged="SessionModelSetting_OnChanged"
-                        ToolTip.Tip="Service tiers advertised by this model">
+                        ToolTip.Tip="Provider-reported or explicitly configured service tiers">
                 <ComboBox.ItemTemplate>
                   <DataTemplate x:DataType="vm:ServiceTierOption">
                     <TextBlock Text="{Binding DisplayName}" />

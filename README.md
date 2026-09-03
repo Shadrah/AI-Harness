@@ -27,6 +27,13 @@ desktop codebase.
 
 ## Current milestone
 
+Direct API connections are now available in **Settings → Providers** for OpenAI,
+Anthropic, Gemini, xAI, Mistral, DeepSeek, OpenRouter, and local compatible servers.
+This first slice includes native streaming, client workspace tools, explicit
+approvals, attachments, and durable continuation. It is not yet full provider
+feature parity or live-account certified. See [API provider coverage and setup](docs/api-providers.md)
+for discovery limits, credential handling, and remaining work.
+
 The repository now contains a compiled desktop shell and the first canonical
 capability/content contracts:
 

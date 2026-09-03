@@ -39,6 +39,11 @@ public sealed partial class SettingsWindow : Window
     {
     }
 
+    public SettingsWindow(bool usePreviewData) : this()
+    {
+        if (usePreviewData) Opened -= SettingsWindow_OnOpened;
+    }
+
     public SettingsWindow(
         HarnessApplicationSettings settings,
         string workspacePath,
@@ -50,7 +55,8 @@ public sealed partial class SettingsWindow : Window
         HarnessStore? store = null,
         IReadOnlyList<SkillInstallTarget>? skillTargets = null,
         IReadOnlyList<SkillCompatibilityOption>? compatibilityTargets = null,
-        bool openSkillsOnLaunch = false)
+        bool openSkillsOnLaunch = false,
+        Func<Task>? apiConnectionsChanged = null)
     {
         InitializeComponent();
         _save = save;
@@ -61,8 +67,11 @@ public sealed partial class SettingsWindow : Window
         _store = store;
         _skillTargets = skillTargets ?? [];
         _openSkillsOnLaunch = openSkillsOnLaunch;
+        _apiConnectionsChanged = apiConnectionsChanged;
         DataContext = new SettingsWindowViewModel(settings, workspacePath);
         ViewModel.SetCompatibilityTargets(compatibilityTargets ?? []);
+        ApiProviderPicker.ItemsSource = Harness.Providers.Api.ApiProviderDefinition.All;
+        ApiProviderPicker.SelectedIndex = 0;
         Opened += SettingsWindow_OnOpened;
         Closed += (_, _) => _lifetime.Cancel();
     }
@@ -78,6 +87,7 @@ public sealed partial class SettingsWindow : Window
     private async void SettingsWindow_OnOpened(object? sender, EventArgs e)
     {
         if (_openSkillsOnLaunch) ShowSkills();
+        await LoadApiConnectionsAsync();
         await LoadSkillCatalogAsync();
         await RefreshGitHubAsync();
     }

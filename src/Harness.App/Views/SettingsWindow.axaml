@@ -60,11 +60,39 @@
         </StackPanel>
       </TabItem>
       <TabItem Header="PROVIDERS">
-        <StackPanel Margin="24,8" Spacing="16" MaxWidth="620">
+        <ScrollViewer><StackPanel Margin="24,8" Spacing="16" MaxWidth="850">
           <TextBlock Text="Providers" FontSize="22" FontWeight="SemiBold"/>
-          <TextBlock Text="OpenAI Codex is connected through the Harness-managed runtime. Model versions, reasoning levels, service tiers, and capabilities come from the provider catalog—not from this screen." TextWrapping="Wrap"/>
-          <TextBlock Text="Additional provider adapters will appear here when installed." Classes="muted"/>
-        </StackPanel>
+          <TextBlock Text="Codex subscription access remains separate from API connections. API requests use the provider's billing and quotas, not your chat subscription. Claude.ai subscriptions cannot be connected to third-party harnesses." Classes="muted" TextWrapping="Wrap"/>
+          <Border x:Name="ApiConnectionPanel" Classes="panel" Padding="16"><StackPanel Spacing="10">
+            <TextBlock Text="API CONNECTIONS" Classes="micro" Foreground="#65C7D0"/>
+            <ComboBox x:Name="ApiSavedConnections" HorizontalAlignment="Stretch" PlaceholderText="Choose a saved connection" SelectionChanged="ApiSavedConnection_OnChanged"/>
+            <Grid ColumnDefinitions="*,12,*">
+              <ComboBox x:Name="ApiProviderPicker" HorizontalAlignment="Stretch" SelectionChanged="ApiProvider_OnChanged"/>
+              <TextBox x:Name="ApiConnectionName" Grid.Column="2" Watermark="Connection name"/>
+            </Grid>
+            <TextBox x:Name="ApiEndpoint" Watermark="API base URL, including /v1/ where required"/>
+            <TextBox x:Name="ApiKey" PasswordChar="●" Watermark="API key · leave blank to keep the saved key"/>
+            <TextBlock Text="Keys are stored in Windows Credential Manager, never in workspace files. Connect checks the catalog only; it does not make a billable generation request. Local examples: LM Studio port 1234, Ollama port 11434 with /v1/." Classes="muted" TextWrapping="Wrap"/>
+            <WrapPanel Orientation="Horizontal">
+              <Button Content="CONNECT / REFRESH" Classes="primary" Margin="0,0,8,0" Click="ApiConnect_OnClick"/>
+              <Button Content="NEW CONNECTION" Margin="0,0,8,0" Click="ApiNew_OnClick"/>
+              <Button Content="DISCONNECT" Click="ApiDisconnect_OnClick"/>
+            </WrapPanel>
+            <TextBlock x:Name="ApiConnectionStatus" Text="No API connection selected." TextWrapping="Wrap" Classes="muted"/>
+          </StackPanel></Border>
+          <Border x:Name="ApiModelPanel" Classes="panel" Padding="16"><StackPanel Spacing="10">
+            <TextBlock Text="MODEL CAPABILITIES" Classes="micro" Foreground="#65C7D0"/>
+            <TextBlock Text="Model IDs come from your endpoint. Some catalogs do not publish capabilities or allowed reasoning values. Only configure overrides below when you have verified them for the selected model. Blank options leave the provider default unchanged." TextWrapping="Wrap" Classes="muted"/>
+            <ComboBox x:Name="ApiModelPicker" HorizontalAlignment="Stretch" PlaceholderText="Connect to load models" SelectionChanged="ApiModel_OnChanged"/>
+            <TextBlock x:Name="ApiModelMetadataStatus" TextWrapping="Wrap" Classes="muted"/>
+            <WrapPanel><CheckBox x:Name="ApiModelTools" Content="Workspace tools" Margin="0,0,20,0"/><CheckBox x:Name="ApiModelImages" Content="Image input"/></WrapPanel>
+            <TextBox x:Name="ApiModelContext" Watermark="Context limit in tokens · blank if unknown"/>
+            <TextBox x:Name="ApiModelReasoning" Watermark="Verified reasoning values, comma-separated · blank for provider default"/>
+            <TextBox x:Name="ApiModelTiers" Watermark="Verified service-tier values, comma-separated · blank for provider default"/>
+            <WrapPanel><Button Content="SAVE MODEL OVERRIDE" Margin="0,0,8,0" Click="ApiSaveModel_OnClick"/><Button Content="USE PROVIDER METADATA" Click="ApiResetModel_OnClick"/></WrapPanel>
+            <TextBlock Text="This first API adapter supports streamed text, text/image attachments, and client tools. Video/audio, provider-hosted tools, image generation, and native compaction are not enabled yet. Approve for me falls back to asking for every API write or command; commands have no OS sandbox." Classes="muted" TextWrapping="Wrap"/>
+          </StackPanel></Border>
+        </StackPanel></ScrollViewer>
       </TabItem>
       <TabItem Header="SKILLS">
         <Grid Margin="20,8" RowDefinitions="Auto,12,Auto,8,Auto,8,Auto,10,*">

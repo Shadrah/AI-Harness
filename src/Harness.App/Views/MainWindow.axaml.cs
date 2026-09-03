@@ -102,6 +102,7 @@ public sealed partial class MainWindow : Window
         _ = WarmSkillCatalogAsync();
         await RefreshWorkingTreeAsync();
         await ConnectCodexAsync();
+        await RefreshApiConnectionsAsync();
     }
 
     private async Task InitializePersistenceAsync()
@@ -176,6 +177,7 @@ public sealed partial class MainWindow : Window
         _workingTreeWindow?.Close();
         _workingTreeWindow = null;
         _lifetime.Cancel();
+        if (_apiTurnTask is not null) await _apiTurnTask;
         _workspaceSwitch?.Cancel();
         _workspaceSwitch?.Dispose();
         _workspaceSwitch = null;
@@ -237,12 +239,16 @@ public sealed partial class MainWindow : Window
 
     private void SessionModelSetting_OnChanged(object? sender, SelectionChangedEventArgs e)
     {
+        if (_applyingProviderModels) return;
+        if (ViewModel.SelectedModel?.ProviderId.StartsWith("api-", StringComparison.Ordinal) == true)
+            ViewModel.ApplyApiUsage(null, null, null, FindSelectedApiModel()?.Descriptor.ContextWindow);
+        else _ = RefreshUsageAsync();
         QueueSessionModelSettingsPersistence();
     }
 
     private void QueueSessionModelSettingsPersistence()
     {
-        if (_isClosing) return;
+        if (_isClosing || _applyingProviderModels) return;
         if (_activeSession is { ProviderId.Length: > 0 } session
             && ViewModel.SelectedModel is { } model
             && !string.Equals(session.ProviderId, model.ProviderId, StringComparison.OrdinalIgnoreCase))
@@ -319,7 +325,8 @@ public sealed partial class MainWindow : Window
             _store,
             BuildSkillInstallTargets(),
             BuildSkillCompatibilityTargets(),
-            openSkills);
+            openSkills,
+            RefreshApiConnectionsAsync);
         _settingsWindow.Closed += (_, _) => _settingsWindow = null;
         _settingsWindow.Show(this);
     }
@@ -634,6 +641,12 @@ public sealed partial class MainWindow : Window
         if (!ViewModel.IsRunning)
         {
             await SendPromptAsync();
+            return;
+        }
+
+        if (_apiTurnCancellation is not null)
+        {
+            _apiTurnCancellation.Cancel();
             return;
         }
 
@@ -1976,6 +1989,13 @@ public sealed partial class MainWindow : Window
     private async Task SendPromptAsync()
     {
         var model = ViewModel.SelectedModel;
+        if (model?.ProviderId.StartsWith("api-", StringComparison.Ordinal) == true)
+        {
+            if (_apiTurnCancellation is not null) return;
+            _apiTurnTask = SendApiPromptAsync();
+            await _apiTurnTask;
+            return;
+        }
         if (_codex is null || model is null || !ViewModel.CanSend)
         {
             return;
@@ -2174,14 +2194,23 @@ public sealed partial class MainWindow : Window
     {
         await foreach (var notification in client.Notifications(cancellationToken))
         {
+            if (!ShouldRouteCodexNotification(notification)) continue;
             PersistProviderEvent(notification);
             if (TryQueueUiDelta(notification)) continue;
             await Dispatcher.UIThread.InvokeAsync(() =>
             {
                 FlushPendingUiDeltas();
-                HandleNotification(notification);
+                if (ShouldRouteCodexNotification(notification)) HandleNotification(notification);
             });
         }
+    }
+
+    private bool ShouldRouteCodexNotification(CodexNotification notification)
+    {
+        if (notification.Method.StartsWith("account/", StringComparison.Ordinal)) return true;
+        if (ViewModel.SelectedModel?.ProviderId.StartsWith("api-", StringComparison.Ordinal) == true) return false;
+        var reportedThread = GetNullableString(notification.Parameters, "threadId");
+        return reportedThread is null || string.Equals(reportedThread, _threadId, StringComparison.Ordinal);
     }
 
     private bool TryQueueUiDelta(CodexNotification notification)
@@ -2211,6 +2240,7 @@ public sealed partial class MainWindow : Window
             pending = [.. _pendingUiDeltas.Values];
             _pendingUiDeltas.Clear();
         }
+        if (ViewModel.SelectedModel?.ProviderId.StartsWith("api-", StringComparison.Ordinal) == true) return;
         foreach (var delta in pending)
         {
             switch (delta.Method)
@@ -2240,6 +2270,11 @@ public sealed partial class MainWindow : Window
     {
         await foreach (var request in client.ServerRequests(cancellationToken))
         {
+            if (ViewModel.SelectedModel?.ProviderId.StartsWith("api-", StringComparison.Ordinal) == true)
+            {
+                await client.RejectServerRequestAsync(request, "The active session uses another provider.", cancellationToken);
+                continue;
+            }
             if (request.Method is not (
                 "item/commandExecution/requestApproval"
                 or "item/fileChange/requestApproval"
@@ -2539,7 +2574,7 @@ public sealed partial class MainWindow : Window
 
     private async Task ReloadModelsAsync()
     {
-        if (_codex is null)
+        if (_codex is null || ViewModel.IsRunning)
         {
             return;
         }
@@ -2553,11 +2588,13 @@ public sealed partial class MainWindow : Window
 
         await Dispatcher.UIThread.InvokeAsync(() =>
         {
-            ViewModel.ApplyModels(models, client.Runtime.SourceLabel);
-            if (_activeSession is not null)
+            _applyingProviderModels = true;
+            try
             {
-                ViewModel.ApplySessionModelSettings(_activeSession);
+                ViewModel.ApplyProviderModels(client.Id, models, "OpenAI Codex", client.Runtime.SourceLabel);
+                if (_activeSession is not null) ViewModel.ApplySessionModelSettings(_activeSession);
             }
+            finally { _applyingProviderModels = false; }
         });
     }
 
@@ -2664,6 +2701,7 @@ public sealed partial class MainWindow : Window
     {
         if (_store is not null
             && _activeSession is not null
+            && ViewModel.SelectedModel?.ProviderId == "openai-codex"
             && !notification.Method.EndsWith("Delta", StringComparison.OrdinalIgnoreCase))
         {
             TrackPersistence(_store.AppendProviderEventAsync(
@@ -3032,7 +3070,7 @@ public sealed partial class MainWindow : Window
 
     private async Task RefreshUsageAsync()
     {
-        if (_codex is null)
+        if (_codex is null || ViewModel.SelectedModel?.ProviderId != _codex.Id)
         {
             return;
         }
@@ -3042,7 +3080,10 @@ public sealed partial class MainWindow : Window
             var usage = await _codex.GetUsageAsync(_lifetime.Token);
             if (usage is not null)
             {
-                await Dispatcher.UIThread.InvokeAsync(() => ViewModel.ApplyUsage(usage));
+                await Dispatcher.UIThread.InvokeAsync(() =>
+                {
+                    if (ViewModel.SelectedModel?.ProviderId == _codex.Id) ViewModel.ApplyUsage(usage);
+                });
             }
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
@@ -3051,7 +3092,9 @@ public sealed partial class MainWindow : Window
         catch (Exception exception)
         {
             await Dispatcher.UIThread.InvokeAsync(() =>
-                ViewModel.SetUsageUnavailable(CleanError(exception)));
+            {
+                if (ViewModel.SelectedModel?.ProviderId == _codex.Id) ViewModel.SetUsageUnavailable(CleanError(exception));
+            });
         }
     }
 

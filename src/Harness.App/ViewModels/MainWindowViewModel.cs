@@ -120,6 +120,8 @@ public sealed class MainWindowViewModel : ObservableObject
         private set => SetProperty(ref _turnActivityStatus, value);
     }
 
+    public void SetTurnActivity(string status) => TurnActivityStatus = status;
+
     public TaskItem? SelectedTask
     {
         get => _selectedTask;
@@ -447,6 +449,54 @@ public sealed class MainWindowViewModel : ObservableObject
             Models.Count > 0 ? "#65C7D0" : "#E2A84A"));
     }
 
+    public void ApplyProviderModels(string providerId, IReadOnlyList<ModelDescriptor> descriptors, string providerName, string source)
+    {
+        var previous = SelectedModel;
+        var effort = SelectedReasoningLevel?.Id;
+        var tier = SelectedServiceTier?.Id;
+        foreach (var item in Models.Where(item => item.ProviderId == providerId).ToArray()) Models.Remove(item);
+        foreach (var descriptor in descriptors)
+        {
+            var option = descriptor;
+            if (providerId.StartsWith("api-", StringComparison.Ordinal)) option = descriptor with
+            {
+                ReasoningLevels = descriptor.ReasoningLevels is { Count: > 0 } levels
+                    ? new[] { new ReasoningLevelDescriptor("", "Provider default", IsDefault: true) }.Concat(levels).ToArray() : [],
+                ServiceTiers = descriptor.ServiceTiers is { Count: > 0 } tiers
+                    ? new[] { new ServiceTierDescriptor(null, "Provider default", IsDefault: true) }.Concat(tiers).ToArray() : []
+            };
+            Models.Add(ModelOption.FromDescriptor(option, source, providerName));
+        }
+        SelectedModel = previous is null ? Models.FirstOrDefault(model => model.IsDefault) ?? Models.FirstOrDefault()
+            : Models.FirstOrDefault(model => model.ProviderId == previous.ProviderId && model.ModelName == previous.ModelName);
+        if (SelectedModel is not null && previous is not null)
+        {
+            SelectedReasoningLevel = ReasoningLevels.FirstOrDefault(level => level.Id == effort) ?? SelectedReasoningLevel;
+            SelectedServiceTier = ServiceTiers.FirstOrDefault(level => level.Id == tier) ?? SelectedServiceTier;
+        }
+        ShowRuntimeSetup = Models.Count == 0;
+        ConnectionStatus = Models.Count > 0 ? "PROVIDERS CONNECTED" : "NO MODELS CONNECTED";
+    }
+
+    public void ApplyApiUsage(long? input, long? output, long? cumulative, int? limit)
+    {
+        UsageWindows.Clear();
+        UsageStatus = "API · TOKEN USAGE";
+        UsageDetail = input is null ? "No usage reported yet. Subscription limits and account balance are not exposed by this API."
+            : $"Last request: {input:N0} input · {(output is null ? "unknown" : output.Value.ToString("N0"))} output tokens. Account quota not reported.";
+        ShowAuthenticationAction = false;
+        _activeContextTokens = input; _cumulativeTokens = cumulative; _contextWindowTokens = limit;
+        RaisePropertyChanged(nameof(TokenStatus)); RaisePropertyChanged(nameof(ContextUsagePercent));
+        RaisePropertyChanged(nameof(ContextWindowStatus)); RaisePropertyChanged(nameof(HasContextWindow));
+    }
+
+    public void SetApiSettingsSubmitted()
+    {
+        _effectiveReasoning = "SUBMITTED · NOT ECHOED";
+        _effectiveServiceTier = "SUBMITTED · NOT ECHOED";
+        RaisePropertyChanged(nameof(ModelSettingsStatus));
+    }
+
     public void ApplyWorkspaceSnapshot(WorkspaceSessionSnapshot snapshot)
     {
         _workspacePath = snapshot.Project.RootPath;
@@ -619,8 +669,7 @@ public sealed class MainWindowViewModel : ObservableObject
         SelectedModel = Models.FirstOrDefault(model =>
             string.Equals(model.ModelName, session.ModelId, StringComparison.OrdinalIgnoreCase)
             && (string.IsNullOrWhiteSpace(session.ProviderId)
-                || string.Equals(model.ProviderId, session.ProviderId, StringComparison.OrdinalIgnoreCase)))
-            ?? SelectedModel;
+                || string.Equals(model.ProviderId, session.ProviderId, StringComparison.OrdinalIgnoreCase)));
         SelectedReasoningLevel = ReasoningLevels.FirstOrDefault(level =>
             string.Equals(level.Id, session.ReasoningEffort, StringComparison.OrdinalIgnoreCase))
             ?? SelectedReasoningLevel;
@@ -672,9 +721,8 @@ public sealed class MainWindowViewModel : ObservableObject
 
     public void SetConnectionFailure(string detail)
     {
-        Models.Clear();
-        SelectedModel = null;
-        ConnectionStatus = "CODEX OFFLINE";
+        ApplyProviderModels("openai-codex", [], "OpenAI Codex", "OFFLINE");
+        ConnectionStatus = Models.Count == 0 ? "CODEX OFFLINE" : "PROVIDERS CONNECTED · CODEX OFFLINE";
         UsageStatus = "UNAVAILABLE";
         UsageDetail = detail;
         ShowRuntimeSetup = true;
@@ -1017,7 +1065,7 @@ public sealed class MainWindowViewModel : ObservableObject
 
     private ChatMessageItem? BuildTurnReport(string? error)
     {
-        if (_executionItems.Count == 0 && ChangedFiles.Count == 0) return null;
+        if (error is null && _executionItems.Count == 0 && ChangedFiles.Count == 0) return null;
         var commands = ExecutionItems.Where(item => item.Kind is "COMMAND" or "OUTPUT").ToArray();
         var tools = ExecutionItems.Count(item => item.Kind is "TOOL" or "WEB");
         var failures = ExecutionItems.Where(item =>
@@ -1043,7 +1091,7 @@ public sealed class MainWindowViewModel : ObservableObject
         if (commands.Length > 0 && failures.Length == 0)
         {
             lines.Add(string.Empty);
-            lines.Add($"Verification completed · {commands.Length} command{(commands.Length == 1 ? string.Empty : "s")}");
+            lines.Add($"Executed {commands.Length} command{(commands.Length == 1 ? string.Empty : "s")}. See Activity for details.");
         }
         if (failures.Length > 0)
         {
@@ -1516,7 +1564,8 @@ public sealed record ModelOption(
 {
     public static ModelOption FromDescriptor(
         ModelDescriptor descriptor,
-        string runtimeSource = "CODEX RUNTIME")
+        string runtimeSource = "CODEX RUNTIME",
+        string? providerName = null)
     {
         var capabilities = Enum.GetValues<ModelCapability>()
             .Where(capability => capability != ModelCapability.None && descriptor.Supports(capability))
@@ -1538,10 +1587,10 @@ public sealed record ModelOption(
             .ToArray() ?? [];
 
         return new ModelOption(
-            $"{FormatProviderName(descriptor.ProviderId)} · {descriptor.DisplayName}",
+            $"{providerName ?? FormatProviderName(descriptor.ProviderId)} · {descriptor.DisplayName}",
             descriptor.ModelId,
             descriptor.ProviderId,
-            $"{FormatProviderName(descriptor.ProviderId).ToUpperInvariant()} · {runtimeSource}",
+            $"{(providerName ?? FormatProviderName(descriptor.ProviderId)).ToUpperInvariant()} · {runtimeSource}",
             capabilities,
             reasoning,
             serviceTiers,
