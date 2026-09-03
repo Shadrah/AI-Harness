@@ -11,6 +11,8 @@ public sealed record ImagePart(
 
 public sealed record FilePart(
     string Path,
-    string? MediaType = null) : ContentPart;
+    string? MediaType = null,
+    string? DisplayName = null,
+    string? ContentId = null) : ContentPart;
 
 public sealed record UserTurn(IReadOnlyList<ContentPart> Content);

@@ -165,7 +165,13 @@
                             <TextBlock Grid.Column="3" Text="{Binding Status}" Classes="micro" FontSize="8" Foreground="{Binding Color}" />
                             <TextBlock Grid.Column="5" Text="{Binding Time}" Classes="muted mono" FontSize="9" />
                           </Grid>
-                          <TextBlock Text="{Binding Text}" TextWrapping="Wrap" FontSize="13" LineHeight="20" FontFamily="{Binding FontFamily}" />
+                          <controls:ChatMessageTextBlock MessageText="{Binding Text}"
+                                                         TextWrapping="Wrap"
+                                                         FontSize="13"
+                                                         LineHeight="20"
+                                                         FontFamily="{Binding FontFamily}"
+                                                         SelectionBrush="#65C7D0"
+                                                         SelectionForegroundBrush="#11151B" />
                           <ItemsControl ItemsSource="{Binding Images}">
                             <ItemsControl.ItemsPanel>
                               <ItemsPanelTemplate>

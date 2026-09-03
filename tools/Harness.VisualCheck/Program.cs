@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Documents;
 using Avalonia.Headless;
 using Avalonia.Input;
 using Avalonia.Interactivity;
@@ -7,6 +8,7 @@ using Avalonia.Threading;
 using System.Diagnostics;
 using System.Text.Json;
 using Harness.App;
+using Harness.App.Controls;
 using Harness.App.ViewModels;
 using Harness.App.Views;
 using Harness.Core.Models;
@@ -869,6 +871,32 @@ AppBuilder.Configure<App>()
         UseHeadlessDrawing = false
     })
     .SetupWithoutStarting();
+
+var selectableMessage = new ChatMessageTextBlock
+{
+    MessageText = "Select only this text."
+};
+selectableMessage.SelectionStart = 7;
+selectableMessage.SelectionEnd = 11;
+if (selectableMessage.SelectedText != "only")
+{
+    throw new InvalidOperationException("Chat message text could not be selectively copied.");
+}
+selectableMessage.MessageText =
+    "Read [Codex documentation](https://developers.openai.com/codex) or https://github.com/openai/codex/issues/123.";
+var renderedLinks = selectableMessage.Inlines?
+    .OfType<InlineUIContainer>()
+    .Select(inline => inline.Child)
+    .OfType<HyperlinkButton>()
+    .ToArray() ?? [];
+if (renderedLinks.Length != 2
+    || renderedLinks[0].Content?.ToString() != "Codex documentation"
+    || renderedLinks[0].NavigateUri?.AbsoluteUri != "https://developers.openai.com/codex"
+    || renderedLinks[1].NavigateUri?.AbsoluteUri != "https://github.com/openai/codex/issues/123"
+    || renderedLinks[1].Content?.ToString()?.Contains("https://", StringComparison.OrdinalIgnoreCase) == true)
+{
+    throw new InvalidOperationException("Chat links were not shortened into normal clickable hyperlinks.");
+}
 
 var window = new MainWindow(usePreviewData: true)
 {

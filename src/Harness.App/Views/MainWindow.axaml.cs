@@ -39,6 +39,9 @@ public sealed partial class MainWindow : Window
     private StoredImportSource? _activeImportSource;
     private bool _importContextApplied;
     private const string ImportContextAppliedEvent = "harness/importContextBriefV2Applied";
+    private const string ContextFilesAppliedEvent = "harness/contextFilesAppliedV1";
+    private readonly HashSet<string> _appliedContextContentIds = new(StringComparer.OrdinalIgnoreCase);
+    private string? _appliedContextThreadId;
     private long _compactionAttempt;
     private CancellationTokenSource? _workspaceSwitch;
     private long _workspaceSwitchVersion;
@@ -459,11 +462,48 @@ public sealed partial class MainWindow : Window
 
     private async Task LoadImportStateAsync(string sessionId)
     {
+        _appliedContextContentIds.Clear();
+        _appliedContextThreadId = null;
         if (_store is null)
         {
             _activeImportSource = null;
             _importContextApplied = false;
             return;
+        }
+        var latestContextPayload = await _store.GetLatestProviderEventPayloadAsync(
+            sessionId,
+            ContextFilesAppliedEvent,
+            _lifetime.Token);
+        if (!string.IsNullOrWhiteSpace(latestContextPayload))
+        {
+            try
+            {
+                using var contextEvent = JsonDocument.Parse(latestContextPayload);
+                var root = contextEvent.RootElement;
+                if (root.TryGetProperty("threadId", out var threadIdElement)
+                    && threadIdElement.ValueKind == JsonValueKind.String)
+                {
+                    _appliedContextThreadId = threadIdElement.GetString();
+                }
+                if (root.TryGetProperty("contentIds", out var contentIdsElement)
+                    && contentIdsElement.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var contentId in contentIdsElement.EnumerateArray())
+                    {
+                        if (contentId.ValueKind == JsonValueKind.String
+                            && contentId.GetString() is { Length: > 0 } value)
+                        {
+                            _appliedContextContentIds.Add(value);
+                        }
+                    }
+                }
+            }
+            catch (JsonException exception)
+            {
+                ViewModel.AddActivity("CONTEXT", $"Stored attachment state could not be read: {CleanError(exception)}", "#E2A84A");
+                _appliedContextContentIds.Clear();
+                _appliedContextThreadId = null;
+            }
         }
         _activeImportSource = await _store.GetImportSourceAsync(sessionId, _lifetime.Token);
         _importContextApplied = _activeImportSource is not null
@@ -903,6 +943,8 @@ public sealed partial class MainWindow : Window
             _activeSession = session;
             _activeImportSource = null;
             _importContextApplied = false;
+            _appliedContextContentIds.Clear();
+            _appliedContextThreadId = null;
             _threadId = null;
             ViewModel.AddStoredSession(session);
         }
@@ -1940,7 +1982,11 @@ public sealed partial class MainWindow : Window
         }
 
         var turnAttachments = ViewModel.TurnAttachments
-            .Select(attachment => new FilePart(attachment.FullPath, attachment.MediaType))
+            .Select(attachment => new FilePart(
+                attachment.FullPath,
+                attachment.MediaType,
+                attachment.DisplayName,
+                attachment.Id))
             .ToArray();
         var requestedEffort = ViewModel.SelectedReasoningLevel?.Id;
         var requestedTier = ViewModel.SelectedServiceTier?.Id;
@@ -1966,9 +2012,7 @@ public sealed partial class MainWindow : Window
             }
         }
 
-        var contextFiles = ViewModel.ContextFiles
-            .Select(file => new FilePart(file.StoredPath, file.MediaType))
-            .ToList();
+        var attachedContextFiles = ViewModel.ContextFiles.ToArray();
         var prompt = ViewModel.BeginTurn();
         var providerPrompt = importedContext is null
             ? prompt
@@ -1976,7 +2020,7 @@ public sealed partial class MainWindow : Window
         NameSessionFromFirstPrompt(prompt);
         ViewModel.AddActivity(
             "MODEL",
-            $"Requested {model.ModelName} · reasoning {requestedEffort ?? "provider default"} · tier {requestedTierLabel} · turn files {turnAttachments.Length} · context {contextFiles.Count}",
+            $"Requested {model.ModelName} · reasoning {requestedEffort ?? "provider default"} · tier {requestedTierLabel} · turn files {turnAttachments.Length} · context {attachedContextFiles.Length}",
             "#65C7D0");
         if (importedContext is not null)
         {
@@ -2016,6 +2060,18 @@ public sealed partial class MainWindow : Window
                         requestedTier));
                 }
             }
+            var contextStateMatchesThread = string.Equals(
+                _appliedContextThreadId,
+                _threadId,
+                StringComparison.Ordinal);
+            var pendingContextFiles = attachedContextFiles
+                .Where(file => !contextStateMatchesThread || !_appliedContextContentIds.Contains(file.Sha256))
+                .Select(file => new FilePart(
+                    file.StoredPath,
+                    file.MediaType,
+                    file.DisplayName,
+                    file.Sha256))
+                .ToArray();
             await _codex.StartTurnAsync(
                 _threadId,
                 providerPrompt,
@@ -2024,8 +2080,36 @@ public sealed partial class MainWindow : Window
                 requestedTier,
                 ViewModel.SelectedPermissionMode.Id,
                 turnAttachments,
-                contextFiles,
+                pendingContextFiles,
                 _lifetime.Token);
+            if (pendingContextFiles.Length > 0 && _store is not null && _activeSession is not null)
+            {
+                if (!contextStateMatchesThread)
+                {
+                    _appliedContextContentIds.Clear();
+                }
+                foreach (var file in pendingContextFiles)
+                {
+                    if (file.ContentId is { Length: > 0 } contentId)
+                    {
+                        _appliedContextContentIds.Add(contentId);
+                    }
+                }
+                _appliedContextThreadId = _threadId;
+                TrackPersistence(_store.AppendProviderEventAsync(
+                    _activeSession.Id,
+                    ContextFilesAppliedEvent,
+                    JsonSerializer.Serialize(new
+                    {
+                        threadId = _appliedContextThreadId,
+                        contentIds = _appliedContextContentIds.Order(StringComparer.OrdinalIgnoreCase).ToArray(),
+                        appliedAt = DateTimeOffset.UtcNow
+                    })));
+                ViewModel.AddActivity(
+                    "CONTEXT",
+                    $"Delivered {pendingContextFiles.Length} attached file{(pendingContextFiles.Length == 1 ? string.Empty : "s")} to the provider thread",
+                    "#65C7D0");
+            }
             if (importedContext is not null && _store is not null && _activeSession is not null)
             {
                 if (_activeImportSource is not null) _importContextApplied = true;

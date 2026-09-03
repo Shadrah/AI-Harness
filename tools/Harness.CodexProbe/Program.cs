@@ -1,6 +1,37 @@
+using System.Text.Json;
+using Harness.Core.Models;
 using Harness.Providers.Codex;
 
 using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+if (args.Contains("--attachment-check", StringComparer.OrdinalIgnoreCase))
+{
+    var marker = $"harness-context-marker-{Guid.NewGuid():N}";
+    var path = Path.Combine(Path.GetTempPath(), $"{marker}.md");
+    try
+    {
+        await File.WriteAllTextAsync(path, $"# Context fixture\n\n{marker}", timeout.Token);
+        var input = new List<object>();
+        await CodexAppServerClient.AppendFileInputAsync(
+            input,
+            new FilePart(path, "text/plain", "project-context.md", marker),
+            "persistent context",
+            timeout.Token);
+        var payload = JsonSerializer.Serialize(input);
+        if (input.Count != 2
+            || !payload.Contains("project-context.md", StringComparison.Ordinal)
+            || !payload.Contains(marker, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Attached file content was not included in the provider input.");
+        }
+
+        Console.WriteLine("Attachment input check passed: filename and file content are present.");
+    }
+    finally
+    {
+        if (File.Exists(path)) File.Delete(path);
+    }
+    return;
+}
 if (args.Contains("--install", StringComparer.OrdinalIgnoreCase))
 {
     timeout.CancelAfter(TimeSpan.FromMinutes(5));

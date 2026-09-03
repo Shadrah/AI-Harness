@@ -70,6 +70,22 @@
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="BorderThickness" Value="0" />
     </Style>
+    <Style Selector="HyperlinkButton.chat-link">
+      <Setter Property="MinHeight" Value="0" />
+      <Setter Property="Padding" Value="1,0" />
+      <Setter Property="Margin" Value="0" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Foreground" Value="#65C7D0" />
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="FontWeight" Value="Normal" />
+      <Setter Property="Cursor" Value="Hand" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style Selector="HyperlinkButton.chat-link:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="TextElement.Foreground" Value="#91E3EA" />
+    </Style>
     <Style Selector="Button.icon-button">
       <Setter Property="Width" Value="34" />
       <Setter Property="Height" Value="30" />

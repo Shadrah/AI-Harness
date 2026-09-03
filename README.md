@@ -69,7 +69,8 @@ capability/content contracts:
   provider, model, reasoning effort, and service tier;
 - session creation, selection, renaming, and confirmed deletion from the task rail;
 - persistent session context files copied into Harness-owned content-addressed
-  storage and delivered to Codex turns as native file mentions;
+  storage; text is delivered as actual model input, images use native vision
+  input, and references retain their original filenames;
 - a Skills Library inside Settings with a bookshelf shortcut, repository-level
   GitHub tree indexes beyond code-search limits, progressively cached searchable
   descriptions, topic/source/status/connected-model filtering, collision-safe
@@ -82,6 +83,8 @@ capability/content contracts:
   and removals, hunk headers, and per-file added/removed totals;
 - chat-native composer behavior (`Enter` sends; `Ctrl+Enter` or `Shift+Enter`
   inserts a line break) and explicit UTF-8 provider transport;
+- selectively copyable chat text with normal clickable hyperlinks, Markdown
+  labels, concise raw-URL summaries, and full destinations available as tooltips;
 - an auditable runtime resolver that prefers Harness-bundled or Harness-managed
   runtimes and never binds to another desktop harness;
 - honest unavailable states whenever a provider has not reported context or

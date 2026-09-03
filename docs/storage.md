@@ -34,6 +34,14 @@ an unreferenced Harness-owned blob is deleted when its final attachment is
 removed. Original user files are never deleted. Files are currently limited to
 25 MB each.
 
+Provider delivery is tracked by content hash and provider thread. Text snapshots
+are inserted into model input the first time they are needed by a thread instead
+of relying on mention metadata alone; images are sent through native image input.
+Later turns reuse the provider thread's context, while newly attached content is
+delivered incrementally. Text snapshots longer than 512 Ki characters include
+their first 512 Ki characters plus the retained snapshot path for tool-assisted
+inspection of the remainder.
+
 Provider credentials, browser cookies, access tokens, and device-login secrets
 do not belong in this database. Connection credentials remain in the provider's
 supported credential boundary or the operating-system credential vault.

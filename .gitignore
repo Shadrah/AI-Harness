@@ -6,3 +6,6 @@
 .vs/
 .idea/
 /.artifacts/
+
+# Local credentials must never be committed.
+/Github Personal Access Token.md

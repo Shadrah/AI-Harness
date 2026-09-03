@@ -11,6 +11,17 @@ namespace Harness.Providers.Codex;
 
 public sealed class CodexAppServerClient : IModelProvider, IProviderTelemetry, IAsyncDisposable
 {
+    private const int MaximumInlineTextCharacters = 512 * 1024;
+    private static readonly HashSet<string> TextFileExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".txt", ".md", ".markdown", ".cs", ".fs", ".fsx", ".vb", ".js", ".mjs", ".cjs",
+        ".ts", ".tsx", ".jsx", ".json", ".jsonl", ".xml", ".yaml", ".yml", ".toml", ".ini",
+        ".cfg", ".conf", ".py", ".rs", ".go", ".java", ".kt", ".kts", ".cpp", ".cc", ".c",
+        ".h", ".hpp", ".css", ".scss", ".sass", ".less", ".html", ".htm", ".sql", ".sh",
+        ".bash", ".zsh", ".ps1", ".psm1", ".cmd", ".bat", ".gradle", ".properties", ".env",
+        ".gitignore", ".gitattributes", ".editorconfig", ".sln", ".csproj", ".fsproj", ".vbproj"
+    };
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = true
@@ -207,38 +218,11 @@ public sealed class CodexAppServerClient : IModelProvider, IProviderTelemetry, I
         var input = new List<object> { new { type = "text", text = prompt } };
         foreach (var attachment in turnAttachments ?? [])
         {
-            if (attachment.MediaType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) == true)
-            {
-                input.Add(new
-                {
-                    type = "localImage",
-                    path = Path.GetFullPath(attachment.Path),
-                    detail = "auto"
-                });
-            }
-            else if (attachment.MediaType?.StartsWith("video/", StringComparison.OrdinalIgnoreCase) == true)
-            {
-                throw new NotSupportedException(
-                    "The connected Codex app-server protocol does not define native video input.");
-            }
-            else
-            {
-                input.Add(new
-                {
-                    type = "mention",
-                    name = Path.GetFileName(attachment.Path),
-                    path = Path.GetFullPath(attachment.Path)
-                });
-            }
+            await AppendFileInputAsync(input, attachment, "turn attachment", cancellationToken);
         }
         foreach (var contextFile in contextFiles ?? [])
         {
-            input.Add(new
-            {
-                type = "mention",
-                name = Path.GetFileName(contextFile.Path),
-                path = Path.GetFullPath(contextFile.Path)
-            });
+            await AppendFileInputAsync(input, contextFile, "persistent context", cancellationToken);
         }
 
         var runtimePolicy = ResolveRuntimePolicy(permissionMode);
@@ -265,6 +249,120 @@ public sealed class CodexAppServerClient : IModelProvider, IProviderTelemetry, I
             cancellationToken);
         return response.Turn.Id;
     }
+
+    internal static async Task AppendFileInputAsync(
+        List<object> input,
+        FilePart file,
+        string role,
+        CancellationToken cancellationToken)
+    {
+        var fullPath = Path.GetFullPath(file.Path);
+        if (!File.Exists(fullPath))
+        {
+            throw new FileNotFoundException($"The attached {role} file is no longer available.", fullPath);
+        }
+
+        var displayName = NormalizeAttachmentName(file.DisplayName, fullPath);
+        if (file.MediaType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            input.Add(new
+            {
+                type = "text",
+                text = $"Harness attached {role} image: {displayName}"
+            });
+            input.Add(new
+            {
+                type = "localImage",
+                path = fullPath,
+                detail = "auto"
+            });
+            return;
+        }
+
+        if (file.MediaType?.StartsWith("video/", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            throw new NotSupportedException(
+                "The connected Codex app-server protocol does not define native video input.");
+        }
+
+        input.Add(new
+        {
+            type = "mention",
+            name = displayName,
+            path = fullPath
+        });
+
+        if (IsTextFile(file, fullPath))
+        {
+            var snapshot = await ReadTextSnapshotAsync(fullPath, cancellationToken);
+            var omitted = snapshot.WasTruncated
+                ? $"\n\n[Harness included the first {snapshot.Text.Length:N0} characters. "
+                  + $"The complete snapshot remains available at {fullPath}.]"
+                : string.Empty;
+            input.Add(new
+            {
+                type = "text",
+                text = $"""
+                    # Harness attached {role}: {displayName}
+                    The following is the file content from the Harness-owned snapshot at {fullPath}.
+                    --- BEGIN ATTACHED FILE: {displayName} ---
+                    {snapshot.Text}{omitted}
+                    --- END ATTACHED FILE: {displayName} ---
+                    """
+            });
+            return;
+        }
+
+        input.Add(new
+        {
+            type = "text",
+            text = $"Harness attached the non-text {role} file {displayName} at {fullPath}. "
+                 + "Inspect that exact file with the available workspace tools before answering when its contents are relevant."
+        });
+    }
+
+    private static bool IsTextFile(FilePart file, string fullPath) =>
+        file.MediaType?.StartsWith("text/", StringComparison.OrdinalIgnoreCase) == true
+        || file.MediaType is "application/json" or "application/xml" or "application/yaml"
+        || TextFileExtensions.Contains(Path.GetExtension(fullPath));
+
+    private static string NormalizeAttachmentName(string? requestedName, string fullPath)
+    {
+        var name = string.IsNullOrWhiteSpace(requestedName)
+            ? Path.GetFileName(fullPath)
+            : Path.GetFileName(requestedName);
+        var normalized = new string(name.Where(character => !char.IsControl(character)).ToArray()).Trim();
+        return normalized.Length == 0 ? Path.GetFileName(fullPath) : normalized;
+    }
+
+    private static async Task<TextFileSnapshot> ReadTextSnapshotAsync(
+        string fullPath,
+        CancellationToken cancellationToken)
+    {
+        await using var stream = new FileStream(
+            fullPath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            64 * 1024,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        using var reader = new StreamReader(stream, Encoding.UTF8, true, 64 * 1024, leaveOpen: false);
+        var buffer = new char[MaximumInlineTextCharacters + 1];
+        var length = 0;
+        while (length < buffer.Length)
+        {
+            var read = await reader.ReadAsync(buffer.AsMemory(length, buffer.Length - length), cancellationToken);
+            if (read == 0) break;
+            length += read;
+        }
+
+        var wasTruncated = length > MaximumInlineTextCharacters;
+        return new TextFileSnapshot(
+            new string(buffer, 0, Math.Min(length, MaximumInlineTextCharacters)),
+            wasTruncated);
+    }
+
+    private sealed record TextFileSnapshot(string Text, bool WasTruncated);
 
     private static CodexRuntimePolicy ResolveRuntimePolicy(string? permissionMode) =>
         permissionMode?.Trim().ToLowerInvariant() switch

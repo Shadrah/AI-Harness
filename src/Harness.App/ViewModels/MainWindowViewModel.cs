@@ -1258,7 +1258,8 @@ public sealed class MainWindowViewModel : ObservableObject
             "AGENTS.md",
             "E:\\Dev Projects\\AI Harness\\AGENTS.md",
             "text/plain",
-            1840));
+            1840,
+            "preview-context-sha256"));
         RaisePropertyChanged(nameof(HasContextFiles));
         RaisePropertyChanged(nameof(ContextStatus));
         ApplyWorkingTree(new WorkingTreeSnapshot(
@@ -1269,7 +1270,8 @@ public sealed class MainWindowViewModel : ObservableObject
         Messages.Add(ChatMessageItem.User(
             "Build this as a standalone GUI—not Electron. Keep the compactness of tmux."));
         var previewAssistant = ChatMessageItem.Assistant(
-            "The product boundary is a cross-platform C# desktop application with capability-driven providers.");
+            "The product boundary is a cross-platform C# desktop application with capability-driven providers. "
+            + "Review the [Codex documentation](https://developers.openai.com/codex) for the provider contract.");
         previewAssistant.SetStatus("COMPLETED");
         Messages.Add(previewAssistant);
         StartExecutionItem(
@@ -1456,7 +1458,8 @@ public sealed record ContextFileItem(
     string DisplayName,
     string StoredPath,
     string? MediaType,
-    long ByteLength)
+    long ByteLength,
+    string Sha256)
 {
     public string SizeText => ByteLength switch
     {
@@ -1470,7 +1473,8 @@ public sealed record ContextFileItem(
         attachment.DisplayName,
         attachment.StoredPath,
         attachment.MediaType,
-        attachment.ByteLength);
+        attachment.ByteLength,
+        attachment.Sha256);
 }
 
 public sealed record WorkingTreeFileItem(
