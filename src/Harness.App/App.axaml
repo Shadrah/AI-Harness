@@ -8,6 +8,7 @@
 
     <Style Selector="Window">
       <Setter Property="Background" Value="#11151B" />
+      <Setter Property="Icon" Value="/Assets/Harness.ico" />
       <Setter Property="FontFamily" Value="Inter" />
       <Setter Property="FontSize" Value="13" />
       <Setter Property="Foreground" Value="#D8DEE8" />

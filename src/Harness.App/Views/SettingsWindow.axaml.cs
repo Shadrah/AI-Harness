@@ -4,7 +4,9 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
 using Harness.App.ViewModels;
+using Harness.App.Services;
 using Harness.Core.Models;
+using Harness.Providers.Codex;
 using Harness.Storage;
 using Harness.Workspace;
 
@@ -35,7 +37,11 @@ public sealed partial class SettingsWindow : Window
         null,
         [],
         [],
-        false)
+        false,
+        null,
+        null,
+        null,
+        null)
     {
     }
 
@@ -56,7 +62,10 @@ public sealed partial class SettingsWindow : Window
         IReadOnlyList<SkillInstallTarget>? skillTargets = null,
         IReadOnlyList<SkillCompatibilityOption>? compatibilityTargets = null,
         bool openSkillsOnLaunch = false,
-        Func<Task>? apiConnectionsChanged = null)
+        Func<Task>? apiConnectionsChanged = null,
+        Func<CancellationToken, Task<SubscriptionConnectionSnapshot>>? readCodexConnection = null,
+        Func<CancellationToken, Task<CodexDeviceCodeLoginStart>>? beginCodexSignIn = null,
+        Func<CancellationToken, Task>? signOutCodex = null)
     {
         InitializeComponent();
         _save = save;
@@ -68,8 +77,12 @@ public sealed partial class SettingsWindow : Window
         _skillTargets = skillTargets ?? [];
         _openSkillsOnLaunch = openSkillsOnLaunch;
         _apiConnectionsChanged = apiConnectionsChanged;
+        _readCodexConnection = readCodexConnection;
+        _beginCodexSignIn = beginCodexSignIn;
+        _signOutCodex = signOutCodex;
         DataContext = new SettingsWindowViewModel(settings, workspacePath);
         ViewModel.SetCompatibilityTargets(compatibilityTargets ?? []);
+        ViewModel.SetModelPreferences(compatibilityTargets ?? []);
         ApiProviderPicker.ItemsSource = Harness.Providers.Api.ApiProviderDefinition.All;
         ApiProviderPicker.SelectedIndex = 0;
         Opened += SettingsWindow_OnOpened;
@@ -86,10 +99,14 @@ public sealed partial class SettingsWindow : Window
 
     private async void SettingsWindow_OnOpened(object? sender, EventArgs e)
     {
-        if (_openSkillsOnLaunch) ShowSkills();
-        await LoadApiConnectionsAsync();
-        await LoadSkillCatalogAsync();
-        await RefreshGitHubAsync();
+        await RunAsync("Loading settings…", async () =>
+        {
+            if (_openSkillsOnLaunch) ShowSkills();
+            await LoadApiConnectionsAsync();
+            await RefreshCodexConnectionAsync();
+            await LoadSkillCatalogAsync();
+            await RefreshGitHubAsync();
+        });
     }
 
     private async void Save_OnClick(object? sender, RoutedEventArgs e)
@@ -102,6 +119,23 @@ public sealed partial class SettingsWindow : Window
     }
 
     private void Close_OnClick(object? sender, RoutedEventArgs e) => Close();
+
+    private async void OpenDiagnostics_OnClick(object? sender, RoutedEventArgs e)
+    {
+        await RunAsync("Opening diagnostics…", async () =>
+        {
+            await Task.Run(() =>
+            {
+                Directory.CreateDirectory(CrashDiagnosticsService.Shared.DiagnosticsDirectory);
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = CrashDiagnosticsService.Shared.DiagnosticsDirectory,
+                    UseShellExecute = true
+                });
+            });
+            ViewModel.Status = "Diagnostics folder opened";
+        });
+    }
 
     private async void ImportConversation_OnClick(object? sender, RoutedEventArgs e)
     {
@@ -390,20 +424,20 @@ public sealed partial class SettingsWindow : Window
     private async void SkillCategory_OnChanged(object? sender, SelectionChangedEventArgs e)
     {
         if (!IsLoaded || _loadingSkillCatalog) return;
-        await LoadSkillCatalogAsync();
+        await RunAsync("Filtering the local skill catalog…", LoadSkillCatalogAsync);
     }
 
     private async void SkillFilter_OnChanged(object? sender, SelectionChangedEventArgs e)
     {
         if (!IsLoaded || _loadingSkillCatalog) return;
-        await LoadSkillCatalogAsync();
+        await RunAsync("Filtering the local skill catalog…", LoadSkillCatalogAsync);
     }
 
     private async void SkillTopic_OnClick(object? sender, RoutedEventArgs e)
     {
         if (sender is not Button { Tag: string category }) return;
         ViewModel.SelectedSkillCategory = category;
-        await LoadSkillCatalogAsync();
+        await RunAsync("Filtering the local skill catalog…", LoadSkillCatalogAsync);
     }
 
     private async Task SearchSkillsAsync()

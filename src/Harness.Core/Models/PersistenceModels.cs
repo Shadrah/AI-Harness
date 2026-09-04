@@ -61,7 +61,10 @@ public sealed record HarnessApplicationSettings(
     string GitAuthorName = "",
     string GitAuthorEmail = "",
     string DefaultGitBranch = "main",
-    string PermissionMode = "ask");
+    string PermissionMode = "ask",
+    IReadOnlyList<string>? HiddenModelIds = null,
+    IReadOnlyList<string>? FavoriteModelIds = null,
+    IReadOnlyList<string>? ModelOrder = null);
 
 public sealed record ImportMessage(
     string Role,

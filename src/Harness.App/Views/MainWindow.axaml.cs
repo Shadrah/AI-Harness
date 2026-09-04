@@ -10,6 +10,7 @@ using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Harness.App.ViewModels;
+using Harness.App.Services;
 using Harness.Core.Models;
 using Harness.Providers.Codex;
 using Harness.Storage;
@@ -60,6 +61,7 @@ public sealed partial class MainWindow : Window
     private Task? _skillWarmTask;
     private Task? _usageRefreshTask;
     private string? _usageProviderId;
+    private Task<CrashRecoveryNotice?>? _diagnosticsStartupTask;
 
     public MainWindow() : this(usePreviewData: false)
     {
@@ -110,6 +112,8 @@ public sealed partial class MainWindow : Window
     {
         try
         {
+            _diagnosticsStartupTask = CrashDiagnosticsService.Shared.StartSessionAsync();
+            _ = ObserveCrashRecoveryAsync(_diagnosticsStartupTask);
             await InitializePersistenceAsync();
             _lifetime.Token.ThrowIfCancellationRequested();
             _skillWarmTask = Task.Run(WarmSkillCatalogAsync, _lifetime.Token);
@@ -118,6 +122,21 @@ public sealed partial class MainWindow : Window
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
         catch (Exception exception) { ViewModel.AddActivity("STARTUP", CleanError(exception), "#E2A84A"); }
+    }
+
+    private async Task ObserveCrashRecoveryAsync(Task<CrashRecoveryNotice?> recoveryTask)
+    {
+        try
+        {
+            var recovery = await recoveryTask;
+            if (recovery is null || _lifetime.IsCancellationRequested) return;
+            ViewModel.SetRecoveryNotice(recovery.RecoveredSessionCount);
+            ViewModel.AddActivity("RECOVERY", "Recovered from an unexpected shutdown; sanitized diagnostics retained.", "#E2A84A");
+        }
+        catch (Exception exception)
+        {
+            ViewModel.AddActivity("DIAGNOSTICS", CleanError(exception), "#E2A84A");
+        }
     }
 
     private async Task InitializePersistenceAsync()
@@ -185,6 +204,7 @@ public sealed partial class MainWindow : Window
     private async void MainWindow_OnClosed(object? sender, EventArgs e)
     {
         _isClosing = true;
+        _browserWindow?.Close();
         _settingsWindow?.Close();
         _settingsWindow = null;
         _executionWindow?.Close();
@@ -212,11 +232,36 @@ public sealed partial class MainWindow : Window
             await _store.DisposeAsync();
             _store = null;
         }
+        if (_diagnosticsStartupTask is not null)
+        {
+            try { await _diagnosticsStartupTask; } catch { }
+            await CrashDiagnosticsService.Shared.CompleteSessionAsync();
+        }
         _lifetime.Dispose();
     }
 
+    private async void OpenRecoveryDiagnostics_OnClick(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            await Task.Run(() => Process.Start(new ProcessStartInfo
+            {
+                FileName = CrashDiagnosticsService.Shared.DiagnosticsDirectory,
+                UseShellExecute = true
+            }));
+        }
+        catch (Exception exception)
+        {
+            ViewModel.AddActivity("DIAGNOSTICS", CleanError(exception), "#E2A84A");
+        }
+    }
+
+    private void DismissRecoveryNotice_OnClick(object? sender, RoutedEventArgs e) =>
+        ViewModel.DismissRecoveryNotice();
+
     private void ViewModel_OnConversationRestored(object? sender, EventArgs e)
     {
+        if (_browserWindow is not null && _browserWindow.SessionId != _activeSession?.Id) _browserWindow.Close();
         QueueSessionModelSettingsPersistence();
         var version = Interlocked.Increment(ref _conversationRestoreVersion);
         Dispatcher.UIThread.Post(() =>
@@ -351,7 +396,10 @@ public sealed partial class MainWindow : Window
             BuildSkillInstallTargets(),
             BuildSkillCompatibilityTargets(),
             openSkills,
-            RefreshApiConnectionsAsync);
+            RefreshApiConnectionsAsync,
+            ReadCodexConnectionAsync,
+            BeginCodexSignInAsync,
+            SignOutCodexAsync);
         _settingsWindow.Closed += (_, _) => _settingsWindow = null;
         _settingsWindow.Show(this);
     }
@@ -368,7 +416,7 @@ public sealed partial class MainWindow : Window
     }
 
     private IReadOnlyList<SkillCompatibilityOption> BuildSkillCompatibilityTargets() =>
-        ViewModel.Models.Select(model => new SkillCompatibilityOption(
+        ViewModel.ReportedModels.Select(model => new SkillCompatibilityOption(
             $"openai-codex:{model.ModelName}",
             "openai-codex",
             model.ModelName,
@@ -683,6 +731,7 @@ public sealed partial class MainWindow : Window
         try
         {
             ViewModel.AddActivity("MODEL", "Stopping active turn", "#E2A84A");
+            _browserTurnCancellation?.Cancel();
             await _codex.InterruptTurnAsync(_threadId, _lifetime.Token);
         }
         catch (Exception exception)
@@ -1234,65 +1283,61 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private async Task ShowDeviceCodeDialogAsync(CodexDeviceCodeLoginStart login)
+    private async Task<SubscriptionConnectionSnapshot> ReadCodexConnectionAsync(
+        CancellationToken cancellationToken)
     {
-        var copy = new Button { Content = "COPY CODE" };
-        var open = new Button { Content = "OPEN SIGN-IN PAGE", Classes = { "primary" } };
-        var close = new Button { Content = "CLOSE" };
-        var dialog = new Window
+        var client = _codex;
+        if (client is null)
         {
-            Title = "Connect OpenAI",
-            Width = 520,
-            SizeToContent = SizeToContent.Height,
-            CanResize = false,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Content = new StackPanel
+            return SubscriptionConnectionSnapshot.Unavailable(
+                "The OpenAI Codex runtime is not running. Harness will retry it in the background.");
+        }
+
+        var account = await client.GetAccountAsync(cancellationToken: cancellationToken);
+        var models = ViewModel.Models
+            .Where(model => string.Equals(model.ProviderId, client.Id, StringComparison.Ordinal))
+            .Select(model => model.DisplayName)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var accountLabel = account.IsAuthenticated
+            ? account.AccountType switch
             {
-                Margin = new Thickness(20),
-                Spacing = 14,
-                Children =
-                {
-                    new TextBlock
-                    {
-                        Text = "CONNECT OPENAI",
-                        Foreground = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#65C7D0")),
-                        FontWeight = Avalonia.Media.FontWeight.SemiBold
-                    },
-                    new TextBlock
-                    {
-                        Text = "Sign in on the OpenAI page, then enter this one-time code:",
-                        TextWrapping = TextWrapping.Wrap
-                    },
-                    new TextBlock
-                    {
-                        Text = login.UserCode,
-                        FontFamily = "Cascadia Mono, JetBrains Mono, Consolas",
-                        FontSize = 26,
-                        FontWeight = Avalonia.Media.FontWeight.SemiBold,
-                        Foreground = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#D8DEE8"))
-                    },
-                    new StackPanel
-                    {
-                        Orientation = Avalonia.Layout.Orientation.Horizontal,
-                        HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
-                        Spacing = 8,
-                        Children = { close, copy, open }
-                    }
-                }
+                "chatgpt" when !string.IsNullOrWhiteSpace(account.Email) =>
+                    $"{account.Email} · {FormatProviderValue(account.PlanType)}",
+                "apiKey" => "Authenticated with an OpenAI API key",
+                _ => $"Connected · {FormatProviderValue(account.AccountType)}"
             }
-        };
-        copy.Click += async (_, _) =>
-        {
-            if (Clipboard is not null)
-            {
-                await Clipboard.SetTextAsync(login.UserCode);
-            }
-        };
-        open.Click += async (_, _) =>
-            await Launcher.LaunchUriAsync(new Uri(login.VerificationUrl));
-        close.Click += (_, _) => dialog.Close();
-        await dialog.ShowDialog(this);
+            : account.RequiresOpenAiAuth ? "Not signed in" : "No OpenAI account required";
+        var detail = $"{client.Runtime.SourceLabel} · {(account.IsAuthenticated ? "CONNECTED" : "SIGNED OUT")}";
+        return new SubscriptionConnectionSnapshot(true, account.IsAuthenticated, accountLabel, detail, models);
     }
+
+    private Task<CodexDeviceCodeLoginStart> BeginCodexSignInAsync(CancellationToken cancellationToken) =>
+        _codex?.StartChatGptDeviceCodeLoginAsync(cancellationToken)
+        ?? Task.FromException<CodexDeviceCodeLoginStart>(
+            new InvalidOperationException("The OpenAI Codex runtime is not available."));
+
+    private async Task SignOutCodexAsync(CancellationToken cancellationToken)
+    {
+        if (ViewModel.IsRunning)
+        {
+            throw new InvalidOperationException("Finish or stop the active task before signing out.");
+        }
+
+        var client = _codex ?? throw new InvalidOperationException("The OpenAI Codex runtime is not available.");
+        await client.SignOutAsync(cancellationToken);
+        _threadId = null;
+        ViewModel.ApplyProviderModels(client.Id, [], "OpenAI Codex", "SIGNED OUT");
+        ViewModel.SetUsageUnavailable("Signed out. Sign in again from Settings → Providers to use OpenAI models.");
+    }
+
+    private static string FormatProviderValue(string? value) => string.IsNullOrWhiteSpace(value)
+        ? "DETAIL NOT REPORTED"
+        : value.Replace('_', ' ').ToUpperInvariant();
+
+    private Task ShowDeviceCodeDialogAsync(CodexDeviceCodeLoginStart login) =>
+        OpenAiDeviceCodeDialog.ShowAsync(this, login);
 
     private async void InstallRuntime_OnClick(object? sender, RoutedEventArgs e)
     {
@@ -2013,6 +2058,11 @@ public sealed partial class MainWindow : Window
 
     private async Task SendPromptAsync()
     {
+        if (_openingBrowser)
+        {
+            ViewModel.AddActivity("BROWSER", "Finish connecting the browser before sending this turn.", "#E2A84A");
+            return;
+        }
         var model = ViewModel.SelectedModel;
         if (model?.ProviderId.StartsWith("api-", StringComparison.Ordinal) == true)
         {
@@ -2082,9 +2132,11 @@ public sealed partial class MainWindow : Window
                     ViewModel.WorkspacePath,
                     model.ModelName,
                     ViewModel.SelectedPermissionMode.Id,
-                    _applicationSettings.PersonalInstructions,
+                    BuildBrowserInstructions(),
                     _lifetime.Token);
                 _providerConfigurationRefreshPending = false;
+                if (_activeSession is not null && _store is not null)
+                    TrackPersistence(_store.AppendProviderEventAsync(_activeSession.Id, "harness/browserTools/v1", JsonSerializer.Serialize(new { threadId = _threadId })));
                 if (_store is not null && _activeSession is not null)
                 {
                     _activeSession = _activeSession with
@@ -2117,7 +2169,11 @@ public sealed partial class MainWindow : Window
                     file.DisplayName,
                     file.Sha256))
                 .ToArray();
-            await _codex.StartTurnAsync(
+            _browserTurnCancellation?.Cancel();
+            _browserTurnCancellation?.Dispose();
+            _browserTurnCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+            _browserCodexTurnId = null;
+            _browserCodexTurnId = await _codex.StartTurnAsync(
                 _threadId,
                 providerPrompt,
                 model.ModelName,
@@ -2295,6 +2351,11 @@ public sealed partial class MainWindow : Window
     {
         await foreach (var request in client.ServerRequests(cancellationToken))
         {
+            if (request.Method == "item/tool/call")
+            {
+                await HandleBrowserToolAsync(client, request, cancellationToken);
+                continue;
+            }
             if (ViewModel.SelectedModel?.ProviderId.StartsWith("api-", StringComparison.Ordinal) == true)
             {
                 await client.RejectServerRequestAsync(request, "The active session uses another provider.", cancellationToken);
@@ -2466,6 +2527,9 @@ public sealed partial class MainWindow : Window
         var parameters = notification.Parameters;
         switch (notification.Method)
         {
+            case "turn/started":
+                if (parameters.TryGetProperty("turn", out var startedTurn)) _browserCodexTurnId = GetNullableString(startedTurn, "id");
+                break;
             case "item/agentMessage/delta":
                 if (TryGetString(parameters, "delta", out var delta))
                 {
@@ -2528,6 +2592,8 @@ public sealed partial class MainWindow : Window
                 break;
 
             case "turn/completed":
+                _browserTurnCancellation?.Cancel();
+                _browserCodexTurnId = null;
                 _ = CompleteTurnAsync(parameters);
                 break;
 
@@ -2549,8 +2615,7 @@ public sealed partial class MainWindow : Window
                 if (parameters.TryGetProperty("success", out var success)
                     && success.ValueKind == JsonValueKind.True)
                 {
-                    _ = RefreshUsageAsync();
-                    _ = ReloadModelsAsync();
+                    _ = RefreshCodexAfterLoginAsync();
                 }
                 else
                 {
@@ -2558,10 +2623,20 @@ public sealed partial class MainWindow : Window
                 }
                 break;
 
+            case "account/updated":
+                if (_settingsWindow is not null) _ = _settingsWindow.RefreshCodexConnectionAsync();
+                break;
+
             case "account/rateLimits/updated":
                 _ = RefreshUsageAsync();
                 break;
         }
+    }
+
+    private async Task RefreshCodexAfterLoginAsync()
+    {
+        await Task.WhenAll(RefreshUsageAsync(), ReloadModelsAsync());
+        if (_settingsWindow is not null) await _settingsWindow.RefreshCodexConnectionAsync();
     }
 
     private void ApplyTokenUsage(JsonElement parameters)
@@ -2651,7 +2726,7 @@ public sealed partial class MainWindow : Window
                 ViewModel.WorkspacePath,
                 _activeSession.ModelId,
                 ViewModel.SelectedPermissionMode.Id,
-                _applicationSettings.PersonalInstructions,
+                BuildBrowserInstructions(),
                 _lifetime.Token);
             ViewModel.AddActivity("SESSION", "Provider thread resumed", "#65C7D0");
         }
@@ -2685,7 +2760,7 @@ public sealed partial class MainWindow : Window
                 ViewModel.WorkspacePath,
                 _activeSession.ModelId,
                 ViewModel.SelectedPermissionMode.Id,
-                _applicationSettings.PersonalInstructions,
+                BuildBrowserInstructions(),
                 _lifetime.Token);
             _providerConfigurationRefreshPending = false;
             ViewModel.AddActivity(

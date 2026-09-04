@@ -32,6 +32,9 @@ public sealed class SettingsWindowViewModel : ObservableObject
     private string _selectedSkillSort = "Recently indexed";
     private SkillCompatibilityOption _selectedSkillCompatibility = SkillCompatibilityOption.All;
     private SkillCatalogItem? _selectedSkill;
+    private readonly HashSet<string> _storedHiddenModels;
+    private readonly HashSet<string> _storedFavoriteModels;
+    private readonly List<string> _storedModelOrder;
 
     public SettingsWindowViewModel(HarnessApplicationSettings settings, string workspacePath)
     {
@@ -45,6 +48,9 @@ public sealed class SettingsWindowViewModel : ObservableObject
         _gitAuthorEmail = settings.GitAuthorEmail;
         _defaultGitBranch = string.IsNullOrWhiteSpace(settings.DefaultGitBranch) ? "main" : settings.DefaultGitBranch;
         _selectedPermissionMode = PermissionModeOption.Resolve(settings.PermissionMode);
+        _storedHiddenModels = (settings.HiddenModelIds ?? []).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        _storedFavoriteModels = (settings.FavoriteModelIds ?? []).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        _storedModelOrder = (settings.ModelOrder ?? []).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         WorkspacePath = workspacePath;
     }
 
@@ -66,9 +72,11 @@ public sealed class SettingsWindowViewModel : ObservableObject
     public string DefaultGitBranch { get => _defaultGitBranch; set => SetProperty(ref _defaultGitBranch, value); }
     public IReadOnlyList<PermissionModeOption> PermissionModes { get; } = PermissionModeOption.All;
     public PermissionModeOption SelectedPermissionMode { get => _selectedPermissionMode; set => SetProperty(ref _selectedPermissionMode, value); }
-    public ObservableCollection<SkillCatalogItem> Skills { get; } = [];
-    public ObservableCollection<SkillSourceItem> SkillSourceLedger { get; } = [];
-    public ObservableCollection<string> SkillSources { get; } = ["All sources"];
+    public BatchObservableCollection<SkillCatalogItem> Skills { get; } = [];
+    public BatchObservableCollection<ModelPreferenceItem> ModelPreferences { get; } = [];
+    public bool HasModelPreferences => ModelPreferences.Count > 0;
+    public BatchObservableCollection<SkillSourceItem> SkillSourceLedger { get; } = [];
+    public BatchObservableCollection<string> SkillSources { get; } = ["All sources"];
     public ObservableCollection<SkillCompatibilityOption> SkillCompatibilityOptions { get; } = [SkillCompatibilityOption.All];
     public IReadOnlyList<string> SkillCategories { get; } =
     [
@@ -113,6 +121,42 @@ public sealed class SettingsWindowViewModel : ObservableObject
             ?? SkillCompatibilityOption.All;
     }
 
+    public void SetModelPreferences(IEnumerable<SkillCompatibilityOption> targets)
+    {
+        var order = _storedModelOrder.Select((key, index) => (key, index))
+            .ToDictionary(item => item.key, item => item.index, StringComparer.OrdinalIgnoreCase);
+        var preferences = targets
+            .Where(target => !target.IsAll)
+            .GroupBy(target => MainWindowViewModel.ModelPreferenceKey(target.ProviderId, target.ModelId), StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .Select(target =>
+            {
+                var key = MainWindowViewModel.ModelPreferenceKey(target.ProviderId, target.ModelId);
+                return new ModelPreferenceItem(
+                    key,
+                    target.ProviderId,
+                    target.ModelId,
+                    target.DisplayName,
+                    !_storedHiddenModels.Contains(key),
+                    _storedFavoriteModels.Contains(key));
+            })
+            .OrderByDescending(item => item.IsFavorite)
+            .ThenBy(item => order.GetValueOrDefault(item.Key, int.MaxValue))
+            .ThenBy(item => item.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        ModelPreferences.ReplaceAll(preferences);
+        RaisePropertyChanged(nameof(HasModelPreferences));
+    }
+
+    public void MoveModel(ModelPreferenceItem item, int direction)
+    {
+        var index = ModelPreferences.IndexOf(item);
+        var destination = index + direction;
+        if (index < 0 || destination < 0 || destination >= ModelPreferences.Count) return;
+        if (ModelPreferences[destination].IsFavorite != item.IsFavorite) return;
+        ModelPreferences.Move(index, destination);
+    }
+
     public void ReplaceSkills(
         IEnumerable<SkillCatalogEntry> entries,
         IReadOnlyList<InstalledSkill> installed,
@@ -141,19 +185,15 @@ public sealed class SettingsWindowViewModel : ObservableObject
             "Source" => filtered.OrderBy(item => item.Repository, StringComparer.OrdinalIgnoreCase).ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase),
             _ => filtered.OrderByDescending(item => item.Entry.RefreshedAt).ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
         };
-        Skills.Clear();
-        foreach (var item in filtered) Skills.Add(item);
+        Skills.ReplaceAll(filtered);
         SelectedSkill = Skills.FirstOrDefault(item => item.Entry.Id == selectedId) ?? Skills.FirstOrDefault();
         SkillResultSummary = $"{Skills.Count:N0} MATCH{(Skills.Count == 1 ? string.Empty : "ES")}";
         if (sources is not null)
         {
-            SkillSourceLedger.Clear();
-            foreach (var source in sources) SkillSourceLedger.Add(new SkillSourceItem(source));
+            SkillSourceLedger.ReplaceAll(sources.Select(source => new SkillSourceItem(source)));
             var currentSource = SelectedSkillSource;
-            SkillSources.Clear();
-            SkillSources.Add("All sources");
-            foreach (var repository in sources.Select(source => source.Repository).Distinct(StringComparer.OrdinalIgnoreCase))
-                SkillSources.Add(repository);
+            SkillSources.ReplaceAll(new[] { "All sources" }.Concat(
+                sources.Select(source => source.Repository).Distinct(StringComparer.OrdinalIgnoreCase)));
             SelectedSkillSource = SkillSources.Contains(currentSource) ? currentSource : "All sources";
             SkillReportedSummary = $"{sources.Sum(source => (long)source.ReportedSkillCount):N0} REPORTED";
             SkillSourceSummary = $"{sources.Count:N0} SOURCE{(sources.Count == 1 ? string.Empty : "S")} · {sources.Sum(source => (long)source.IndexedSkillCount):N0} CATALOGED · {sources.Sum(source => (long)source.DescribedSkillCount):N0} DESCRIBED";
@@ -163,18 +203,74 @@ public sealed class SettingsWindowViewModel : ObservableObject
             : "Showing cached descriptions from indexed sources. Search narrows GitHub directly; packages download only after Install is confirmed.";
     }
 
-    public HarnessApplicationSettings ToSettings() => new(
-        RestoreLastWorkspace,
-        ShowActivityTrace,
-        ShowUsageInspector,
-        ShowContextInspector,
-        ShowTurnDiffInspector,
-        PersonalInstructions?.Trim() ?? "",
-        WorkspacePath,
-        GitAuthorName?.Trim() ?? "",
-        GitAuthorEmail?.Trim() ?? "",
-        string.IsNullOrWhiteSpace(DefaultGitBranch) ? "main" : DefaultGitBranch.Trim(),
-        SelectedPermissionMode.Id);
+    public HarnessApplicationSettings ToSettings()
+    {
+        if (ModelPreferences.Count > 0 && ModelPreferences.All(item => !item.IsEnabled))
+            throw new InvalidOperationException("Keep at least one connected model visible. Sign out of a provider to remove its account instead.");
+        var known = ModelPreferences.Select(item => item.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var hidden = _storedHiddenModels.Where(key => !known.Contains(key))
+            .Concat(ModelPreferences.Where(item => !item.IsEnabled).Select(item => item.Key))
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var favorites = _storedFavoriteModels.Where(key => !known.Contains(key))
+            .Concat(ModelPreferences.Where(item => item.IsFavorite).Select(item => item.Key))
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var order = _storedModelOrder.Where(key => !known.Contains(key))
+            .Concat(ModelPreferences.Select(item => item.Key))
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        return new HarnessApplicationSettings(
+            RestoreLastWorkspace,
+            ShowActivityTrace,
+            ShowUsageInspector,
+            ShowContextInspector,
+            ShowTurnDiffInspector,
+            PersonalInstructions?.Trim() ?? "",
+            WorkspacePath,
+            GitAuthorName?.Trim() ?? "",
+            GitAuthorEmail?.Trim() ?? "",
+            string.IsNullOrWhiteSpace(DefaultGitBranch) ? "main" : DefaultGitBranch.Trim(),
+            SelectedPermissionMode.Id,
+            hidden,
+            favorites,
+            order);
+    }
+}
+
+public sealed class ModelPreferenceItem : ObservableObject
+{
+    private bool _isEnabled;
+    private bool _isFavorite;
+
+    public ModelPreferenceItem(
+        string key,
+        string providerId,
+        string modelId,
+        string displayName,
+        bool isEnabled,
+        bool isFavorite)
+    {
+        Key = key;
+        ProviderId = providerId;
+        ModelId = modelId;
+        DisplayName = displayName;
+        _isEnabled = isEnabled;
+        _isFavorite = isFavorite;
+    }
+
+    public string Key { get; }
+    public string ProviderId { get; }
+    public string ModelId { get; }
+    public string DisplayName { get; }
+    public string ProviderLabel => ProviderId.Replace('-', ' ').Replace('_', ' ').ToUpperInvariant();
+    public bool IsEnabled { get => _isEnabled; set => SetProperty(ref _isEnabled, value); }
+    public bool IsFavorite
+    {
+        get => _isFavorite;
+        set
+        {
+            if (SetProperty(ref _isFavorite, value)) RaisePropertyChanged(nameof(FavoriteGlyph));
+        }
+    }
+    public string FavoriteGlyph => IsFavorite ? "★" : "☆";
 }
 
 public sealed record SkillCatalogItem(

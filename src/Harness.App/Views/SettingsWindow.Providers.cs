@@ -1,8 +1,10 @@
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Harness.App.Services;
+using Harness.App.ViewModels;
 using Harness.Core.Models;
 using Harness.Providers.Api;
+using Harness.Providers.Codex;
 
 namespace Harness.App.Views;
 
@@ -14,6 +16,90 @@ public sealed partial class SettingsWindow
     private IReadOnlyList<ApiModel> _apiModels = [];
     private string? _editingApiConnection;
     private bool _apiBusy;
+    private readonly Func<CancellationToken, Task<SubscriptionConnectionSnapshot>>? _readCodexConnection;
+    private readonly Func<CancellationToken, Task<CodexDeviceCodeLoginStart>>? _beginCodexSignIn;
+    private readonly Func<CancellationToken, Task>? _signOutCodex;
+    private bool _codexBusy;
+
+    public async Task RefreshCodexConnectionAsync()
+    {
+        if (_codexBusy) return;
+        _codexBusy = true;
+        CodexConnectionPanel.IsEnabled = false;
+        CodexAccountStatus.Text = "Checking account…";
+        try
+        {
+            var snapshot = _readCodexConnection is null
+                ? SubscriptionConnectionSnapshot.Unavailable("Open Harness normally to inspect the connected account.")
+                : await _readCodexConnection(_lifetime.Token);
+            CodexAccountStatus.Text = snapshot.AccountLabel;
+            CodexRuntimeStatus.Text = snapshot.Detail;
+            CodexModelCount.Text = $"MODELS · {snapshot.Models.Count:N0} REPORTED";
+            CodexModelList.Text = snapshot.Models.Count == 0
+                ? snapshot.IsAuthenticated ? "The provider did not report any available models." : "Sign in to discover available models."
+                : string.Join("  ·  ", snapshot.Models);
+            CodexSignInButton.IsVisible = snapshot.RuntimeAvailable && !snapshot.IsAuthenticated;
+            CodexSignOutButton.IsVisible = snapshot.RuntimeAvailable && snapshot.IsAuthenticated;
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            CodexAccountStatus.Text = "Connection unavailable";
+            CodexRuntimeStatus.Text = exception.Message.Replace("\r", " ").Replace("\n", " ");
+            CodexModelCount.Text = "MODELS · UNAVAILABLE";
+            CodexModelList.Text = "Harness could not read the provider catalog.";
+            CodexSignInButton.IsVisible = false;
+            CodexSignOutButton.IsVisible = false;
+        }
+        finally
+        {
+            _codexBusy = false;
+            CodexConnectionPanel.IsEnabled = true;
+        }
+    }
+
+    private async void CodexRefresh_OnClick(object? sender, RoutedEventArgs e) =>
+        await RefreshCodexConnectionAsync();
+
+    private async void CodexSignIn_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (_codexBusy || _beginCodexSignIn is null) return;
+        await RunAsync("Opening OpenAI sign-in…", async () =>
+        {
+            var login = await _beginCodexSignIn(_lifetime.Token);
+            await Launcher.LaunchUriAsync(new Uri(login.VerificationUrl));
+            await OpenAiDeviceCodeDialog.ShowAsync(this, login);
+            await RefreshCodexConnectionAsync();
+        });
+    }
+
+    private async void CodexSignOut_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (_codexBusy || _signOutCodex is null) return;
+        await RunAsync("Signing out of OpenAI…", async () =>
+        {
+            await _signOutCodex(_lifetime.Token);
+            await RefreshCodexConnectionAsync();
+            ViewModel.Status = "Signed out of OpenAI. Local workspaces and chats were preserved.";
+        });
+    }
+
+    private void ModelFavorite_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: ModelPreferenceItem item }) item.IsFavorite = !item.IsFavorite;
+    }
+
+    private void ModelMoveUp_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: ModelPreferenceItem item }) ViewModel.MoveModel(item, -1);
+    }
+
+    private void ModelMoveDown_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: ModelPreferenceItem item }) ViewModel.MoveModel(item, 1);
+    }
 
     private async Task LoadApiConnectionsAsync()
     {
@@ -153,4 +239,15 @@ public sealed partial class SettingsWindow
         catch (Exception exception) { ApiConnectionStatus.Text = exception.Message; }
         finally { _apiBusy = false; ApiConnectionPanel.IsEnabled = true; ApiModelPanel.IsEnabled = true; }
     }
+}
+
+public sealed record SubscriptionConnectionSnapshot(
+    bool RuntimeAvailable,
+    bool IsAuthenticated,
+    string AccountLabel,
+    string Detail,
+    IReadOnlyList<string> Models)
+{
+    public static SubscriptionConnectionSnapshot Unavailable(string detail) =>
+        new(false, false, "Runtime unavailable", detail, []);
 }

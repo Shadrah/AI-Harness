@@ -50,7 +50,15 @@ internal static class StartupProfile
         if (changes != 1 || models.Count != 5000) throw new InvalidOperationException("Catalog publication was not batched.");
         models.ReplaceAll(Enumerable.Range(0, 5000));
         if (changes != 1) throw new InvalidOperationException("An unchanged catalog caused redundant UI invalidation.");
-        Console.WriteLine($"Startup checks passed: locked database write returned to caller in {await timing.Task:F1} ms; indexed restoration; 5,000 models published in one notification. Isolated fixture only.");
+        var settings = new Harness.App.ViewModels.SettingsWindowViewModel(new Harness.Core.Models.HarnessApplicationSettings(), root);
+        var skillChanges = 0;
+        settings.Skills.CollectionChanged += (_, _) => skillChanges++;
+        settings.ReplaceSkills(Enumerable.Range(0, 5000).Select(index => new Harness.Core.Models.SkillCatalogEntry(
+            index.ToString(), "Skill " + index, "Fixture", "Testing", "fixture/repository", "skills/" + index + "/SKILL.md",
+            "revision", "https://example.invalid", "Portable Agent Skill", "Unreviewed", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "{}")), []);
+        if (skillChanges != 1 || settings.Skills.Count != 5000)
+            throw new InvalidOperationException("Settings published a large skill catalog item by item.");
+        Console.WriteLine($"Startup checks passed: locked database write returned to caller in {await timing.Task:F1} ms; indexed restoration; 5,000 models and 5,000 skills each published in one notification. Isolated fixture only.");
     }
 
     // Read-only: reports counts, sizes, plans and timings, never conversation text or credentials.

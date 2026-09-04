@@ -7,6 +7,7 @@ using Avalonia.Controls;
 using Avalonia.Headless;
 using Avalonia.Threading;
 using Harness.App;
+using Harness.App.Services;
 using Harness.App.ViewModels;
 using Harness.App.Views;
 using Harness.Core.Models;
@@ -138,6 +139,72 @@ Check((await runner.ExecuteAsync(new("call", "read_file", """{"path":".git/confi
 await runner.ExecuteAsync(new("call", "run_command", """{"command":"this command must never start"}"""), default);
 Check(approvalCount == 2, "Command bypassed approval.");
 
+var alphaKey = MainWindowViewModel.ModelPreferenceKey("openai-codex", "alpha");
+var betaKey = MainWindowViewModel.ModelPreferenceKey("openai-codex", "beta");
+var gammaKey = MainWindowViewModel.ModelPreferenceKey("api-fixture", "gamma");
+var preferenceSettings = new HarnessApplicationSettings(
+    HiddenModelIds: [betaKey, "disconnected::hidden"],
+    FavoriteModelIds: [gammaKey, "disconnected::favorite"],
+    ModelOrder: [gammaKey, alphaKey, betaKey, "disconnected::ordered"]);
+var modelPreferenceProbe = new MainWindowViewModel();
+modelPreferenceProbe.ApplyApplicationSettings(preferenceSettings);
+modelPreferenceProbe.ApplyProviderModels("openai-codex",
+    [new("openai-codex", "alpha", "Alpha", ModelCapability.Text), new("openai-codex", "beta", "Beta", ModelCapability.Text)],
+    "OpenAI Codex", "FIXTURE");
+modelPreferenceProbe.ApplyProviderModels("api-fixture",
+    [new("api-fixture", "gamma", "Gamma", ModelCapability.Text)], "Fixture API", "FIXTURE");
+Check(modelPreferenceProbe.Models.Select(model => model.ModelName).SequenceEqual(["gamma", "alpha"])
+      && modelPreferenceProbe.ReportedModels.Count == 3,
+    "Hidden or favorite model preferences were not applied to the composer catalog.");
+var preferenceEditor = new SettingsWindowViewModel(preferenceSettings, testRoot);
+preferenceEditor.SetModelPreferences([
+    new(alphaKey, "openai-codex", "alpha", "OpenAI Codex · Alpha"),
+    new(betaKey, "openai-codex", "beta", "OpenAI Codex · Beta"),
+    new(gammaKey, "api-fixture", "gamma", "Fixture API · Gamma")]);
+preferenceEditor.ModelPreferences.Single(item => item.Key == alphaKey).IsEnabled = false;
+var savedPreferences = preferenceEditor.ToSettings();
+var savedHidden = savedPreferences.HiddenModelIds ?? [];
+var savedFavorites = savedPreferences.FavoriteModelIds ?? [];
+var savedOrder = savedPreferences.ModelOrder ?? [];
+Check(savedHidden.Contains(alphaKey)
+      && savedHidden.Contains(betaKey)
+      && savedHidden.Contains("disconnected::hidden")
+      && savedFavorites.Contains("disconnected::favorite")
+      && savedOrder.Contains("disconnected::ordered"),
+    "Saving current model preferences discarded hidden-provider settings or new choices.");
+var diagnosticsRoot = Path.Combine(testRoot, "diagnostics");
+var diagnostics = new CrashDiagnosticsService(diagnosticsRoot);
+var diagnosticPath = await diagnostics.WriteNonfatalReportAsync(
+    new InvalidOperationException("secret-ghp_fixture E:\\private\\workspace\\prompt.txt"),
+    "fixture");
+Check(diagnosticPath is not null && File.Exists(diagnosticPath), "Sanitized diagnostic report was not created.");
+var diagnosticJson = await File.ReadAllTextAsync(diagnosticPath!);
+Check(diagnosticJson.Contains("System.InvalidOperationException", StringComparison.Ordinal)
+      && !diagnosticJson.Contains("secret-ghp_fixture", StringComparison.Ordinal)
+      && !diagnosticJson.Contains("private", StringComparison.OrdinalIgnoreCase)
+      && !diagnosticJson.Contains("prompt.txt", StringComparison.OrdinalIgnoreCase),
+    "Diagnostic report omitted the failure type or retained sensitive exception content.");
+var pendingDiagnostics = Path.Combine(diagnosticsRoot, "pending");
+Directory.CreateDirectory(pendingDiagnostics);
+await File.WriteAllTextAsync(Path.Combine(pendingDiagnostics, "stale.json"), JsonSerializer.Serialize(new
+{
+    SessionId = "stale-fixture",
+    ProcessId = int.MaxValue,
+    ProcessStartedUtc = DateTimeOffset.UtcNow.AddMinutes(-10),
+    StartedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-10),
+    ProductVersion = "fixture"
+}));
+var recovery = await diagnostics.StartSessionAsync();
+Check(recovery is { RecoveredSessionCount: 1 } && File.Exists(recovery.ReportPath),
+    "Stale session marker did not produce a crash-recovery notice and report.");
+Check(Directory.EnumerateFiles(Path.Combine(diagnosticsRoot, "pending"), "*.json").Count() == 1,
+    "Active session marker was not created.");
+await diagnostics.CompleteSessionAsync();
+Check(!Directory.EnumerateFiles(Path.Combine(diagnosticsRoot, "pending"), "*.json").Any(),
+    "Clean shutdown left a crash-recovery marker behind.");
+await using var settingsStore = new Harness.Storage.HarnessStore(Path.Combine(testRoot, "settings-lifecycle.db"));
+await settingsStore.InitializeAsync();
+
 // Headless UI runs on a dedicated, stable thread after async fixture checks finish.
 Exception? uiFailure = null;
 var uiThread = new Thread(() =>
@@ -156,6 +223,11 @@ var uiThread = new Thread(() =>
         vm.PromptText = "fixture"; vm.BeginTurn(); vm.CompleteTurn("Fixture API failure");
         Check(vm.Messages.Any(message => message.Text.Contains("Fixture API failure", StringComparison.Ordinal)), "API error hidden from chat.");
         var settings = new SettingsWindow(usePreviewData: true) { Width = 1300, Height = 850 };
+        ((SettingsWindowViewModel)settings.DataContext!).SetModelPreferences([
+            new("openai-codex::codex-fixture", "openai-codex", "codex-fixture", "OpenAI Codex · Codex Fixture"),
+            new($"{anthropic.Id}::{discovered.Descriptor.ModelId}", anthropic.Id, discovered.Descriptor.ModelId, $"Anthropic API · {discovered.Descriptor.DisplayName}"),
+            new("openai-api::gpt-fixture", "openai-api", "gpt-fixture", "OpenAI API · GPT Fixture")
+        ]);
         settings.Show();
         settings.FindControl<TabControl>("SettingsTabs")!.SelectedIndex = 4;
         settings.FindControl<ComboBox>("ApiProviderPicker")!.SelectedItem = ApiProviderDefinition.All.Single(provider => provider.Id == "anthropic-api");
@@ -164,7 +236,23 @@ var uiThread = new Thread(() =>
         using var frame = settings.CaptureRenderedFrame() ?? throw new Exception("Provider settings frame unavailable.");
         frame.Save(Path.Combine(Environment.CurrentDirectory, ".artifacts", "api-providers.png"));
         Check(settings.FindControl<TextBox>("ApiKey")!.PasswordChar != '\0', "API key input is not masked.");
+        Check(settings.FindControl<Border>("CodexConnectionPanel") is not null
+            && settings.FindControl<Button>("CodexSignInButton") is not null
+            && settings.FindControl<Button>("CodexSignOutButton") is not null,
+            "Subscription connection management is missing from Providers settings.");
         settings.Close();
+
+        // Reproduce the production failure: Opened starts asynchronous catalog I/O, then closing
+        // cancels it. Cancellation from an async-void UI event must never escape the dispatcher.
+        var lifecycle = new SettingsWindow(new HarnessApplicationSettings(), testRoot,
+            _ => Task.CompletedTask, _ => Task.CompletedTask, _ => Task.CompletedTask,
+            () => Task.CompletedTask, () => Task.CompletedTask, settingsStore, [], [], false);
+        lifecycle.Show();
+        DispatcherTimer.RunOnce(lifecycle.Close, TimeSpan.FromMilliseconds(1));
+        using var pump = new CancellationTokenSource();
+        DispatcherTimer.RunOnce(pump.Cancel, TimeSpan.FromMilliseconds(400));
+        try { Dispatcher.UIThread.MainLoop(pump.Token); }
+        catch (OperationCanceledException) { }
     }
     catch (Exception exception) { uiFailure = exception; }
 });

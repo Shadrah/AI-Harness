@@ -960,6 +960,18 @@ using var frame = window.CaptureRenderedFrame()
     ?? throw new InvalidOperationException("Avalonia did not produce a rendered frame.");
 frame.Save(outputPath);
 
+((MainWindowViewModel)window.DataContext!).SetRecoveryNotice(1);
+Dispatcher.UIThread.RunJobs();
+var recoveryPath = Path.Combine(
+    Path.GetDirectoryName(Path.GetFullPath(outputPath))!,
+    $"{Path.GetFileNameWithoutExtension(outputPath)}-recovery{Path.GetExtension(outputPath)}");
+using (var recoveryFrame = window.CaptureRenderedFrame()
+    ?? throw new InvalidOperationException("Avalonia did not render the crash-recovery notice."))
+{
+    recoveryFrame.Save(recoveryPath);
+}
+((MainWindowViewModel)window.DataContext!).DismissRecoveryNotice();
+
 var modelPicker = window.FindControl<ComboBox>("ModelPicker")
     ?? throw new InvalidOperationException("Model picker was not created.");
 modelPicker.IsDropDownOpen = true;
@@ -1151,6 +1163,8 @@ _ = settingsWindow.FindControl<Button>("GitHubRefreshButton")
 settingsTabs.SelectedIndex = 7;
 _ = settingsWindow.FindControl<ComboBox>("SettingsPermissionModePicker")
     ?? throw new InvalidOperationException("Advanced settings did not expose the persistent permission mode.");
+_ = settingsWindow.FindControl<Button>("OpenDiagnosticsButton")
+    ?? throw new InvalidOperationException("Advanced settings did not expose crash diagnostics.");
 var advancedSettingsPath = Path.Combine(
     Path.GetDirectoryName(Path.GetFullPath(outputPath))!,
     $"{Path.GetFileNameWithoutExtension(outputPath)}-advanced{Path.GetExtension(outputPath)}");

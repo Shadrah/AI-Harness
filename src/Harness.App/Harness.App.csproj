@@ -4,9 +4,11 @@
     <TargetFramework>net8.0</TargetFramework>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\Harness.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
+    <AvaloniaResource Include="Assets\Harness.ico" />
     <ProjectReference Include="..\Harness.Core\Harness.Core.csproj" />
     <ProjectReference Include="..\Harness.Providers.Codex\Harness.Providers.Codex.csproj" />
     <ProjectReference Include="..\Harness.Providers.Api\Harness.Providers.Api.csproj" />
@@ -16,5 +18,12 @@
     <PackageReference Include="Avalonia.Desktop" Version="11.3.9" />
     <PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.9" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.9" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3800.47" PrivateAssets="all" />
   </ItemGroup>
+  <!-- Avalonia owns the window. Do not pull WPF/WinForms into the native Core host. -->
+  <Target Name="RemoveUnusedWebViewWrappers" BeforeTargets="ResolveAssemblyReferences">
+    <ItemGroup>
+      <Reference Remove="@(Reference)" Condition="'%(Filename)' == 'Microsoft.Web.WebView2.Wpf' Or '%(Filename)' == 'Microsoft.Web.WebView2.WinForms'" />
+    </ItemGroup>
+  </Target>
 </Project>

@@ -1,0 +1,19 @@
+<UserControl
+    x:Class="Harness.App.Controls.HarnessMark"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Width="22"
+    Height="22"
+    IsHitTestVisible="False">
+  <Border
+      CornerRadius="3"
+      BorderBrush="#65C7D0"
+      BorderThickness="1">
+    <TextBlock
+        Text="H"
+        HorizontalAlignment="Center"
+        VerticalAlignment="Center"
+        FontWeight="Bold"
+        Foreground="#65C7D0" />
+  </Border>
+</UserControl>

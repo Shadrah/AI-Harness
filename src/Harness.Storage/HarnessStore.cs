@@ -1260,7 +1260,7 @@ public sealed class HarnessStore : IAsyncDisposable
     public async Task UpdateSessionConnectionAsync(
         string sessionId,
         string providerId,
-        string providerThreadId,
+        string? providerThreadId,
         string modelId,
         string? reasoningEffort,
         string? serviceTier,
@@ -1282,7 +1282,7 @@ public sealed class HarnessStore : IAsyncDisposable
                 WHERE id = $sessionId;
                 """;
             command.Parameters.AddWithValue("$providerId", providerId);
-            command.Parameters.AddWithValue("$providerThreadId", providerThreadId);
+            command.Parameters.AddWithValue("$providerThreadId", (object?)providerThreadId ?? DBNull.Value);
             command.Parameters.AddWithValue("$modelId", modelId);
             command.Parameters.AddWithValue("$reasoningEffort", (object?)reasoningEffort ?? DBNull.Value);
             command.Parameters.AddWithValue("$serviceTier", (object?)serviceTier ?? DBNull.Value);

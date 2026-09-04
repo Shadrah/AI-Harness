@@ -49,6 +49,10 @@ public sealed class MainWindowViewModel : ObservableObject
     private WorkspaceItem? _selectedWorkspace;
     private PermissionModeOption _selectedPermissionMode = PermissionModeOption.All[0];
     private string _turnActivityStatus = "READY";
+    private string _recoveryNotice = "";
+    private bool _showRecoveryNotice;
+    private readonly Dictionary<string, IReadOnlyList<ModelOption>> _reportedProviderModels = [];
+    private HarnessApplicationSettings _applicationSettings = new();
 
     public MainWindowViewModel(bool previewData = false)
     {
@@ -76,6 +80,7 @@ public sealed class MainWindowViewModel : ObservableObject
     public string WorkspaceName => new DirectoryInfo(WorkspacePath).Name;
     public string WorkspaceSummary => WorkspacePath;
     public BatchObservableCollection<ModelOption> Models { get; } = [];
+    public IReadOnlyList<ModelOption> ReportedModels => _reportedProviderModels.Values.SelectMany(models => models).ToArray();
     public ObservableCollection<CapabilityItem> Capabilities { get; } = [];
     public ObservableCollection<UsageWindowItem> UsageWindows { get; } = [];
     public ObservableCollection<WorkspaceItem> Workspaces { get; } = [];
@@ -121,6 +126,18 @@ public sealed class MainWindowViewModel : ObservableObject
     }
 
     public void SetTurnActivity(string status) => TurnActivityStatus = status;
+    public string RecoveryNotice { get => _recoveryNotice; private set => SetProperty(ref _recoveryNotice, value); }
+    public bool ShowRecoveryNotice { get => _showRecoveryNotice; private set => SetProperty(ref _showRecoveryNotice, value); }
+
+    public void SetRecoveryNotice(int recoveredSessionCount)
+    {
+        RecoveryNotice = recoveredSessionCount == 1
+            ? "Harness recovered after an unexpected shutdown. Saved workspaces and persisted chat history remain available; a privacy-safe diagnostic was retained."
+            : $"Harness recovered {recoveredSessionCount} interrupted sessions. Saved workspaces and persisted chat history remain available; privacy-safe diagnostics were retained.";
+        ShowRecoveryNotice = true;
+    }
+
+    public void DismissRecoveryNotice() => ShowRecoveryNotice = false;
 
     public TaskItem? SelectedTask
     {
@@ -227,11 +244,13 @@ public sealed class MainWindowViewModel : ObservableObject
 
     public void ApplyApplicationSettings(HarnessApplicationSettings settings)
     {
+        _applicationSettings = settings;
         ShowActivityTrace = settings.ShowActivityTrace;
         ShowUsageInspector = settings.ShowUsageInspector;
         ShowContextInspector = settings.ShowContextInspector;
         ShowTurnDiffInspector = settings.ShowTurnDiffInspector;
         SelectedPermissionMode = PermissionModeOption.Resolve(settings.PermissionMode);
+        if (_reportedProviderModels.Count > 0) RebuildVisibleModels();
     }
 
     public ModelOption? SelectedModel
@@ -432,21 +451,14 @@ public sealed class MainWindowViewModel : ObservableObject
         IReadOnlyList<ModelDescriptor> descriptors,
         string runtimeSource = "CODEX RUNTIME")
     {
-        Models.Clear();
-        foreach (var descriptor in descriptors)
-        {
-            Models.Add(ModelOption.FromDescriptor(descriptor, runtimeSource));
-        }
-
-        SelectedModel = Models.FirstOrDefault(model => model.IsDefault) ?? Models.FirstOrDefault();
-        ShowRuntimeSetup = Models.Count == 0;
-        ConnectionStatus = Models.Count > 0 ? "CODEX CONNECTED" : "NO MODELS REPORTED";
+        _reportedProviderModels.Clear();
+        ApplyProviderModels("openai-codex", descriptors, "OpenAI Codex", runtimeSource);
         Activity.Add(ActivityItem.Now(
             "RUNTIME",
-            Models.Count > 0
-                ? $"Loaded {Models.Count} models from Codex"
+            descriptors.Count > 0
+                ? $"Loaded {descriptors.Count} models from Codex"
                 : "Codex returned an empty model catalog",
-            Models.Count > 0 ? "#65C7D0" : "#E2A84A"));
+            descriptors.Count > 0 ? "#65C7D0" : "#E2A84A"));
     }
 
     public void ApplyProviderModels(string providerId, IReadOnlyList<ModelDescriptor> descriptors, string providerName, string source)
@@ -454,7 +466,7 @@ public sealed class MainWindowViewModel : ObservableObject
         var previous = SelectedModel;
         var effort = SelectedReasoningLevel?.Id;
         var tier = SelectedServiceTier?.Id;
-        var replacement = Models.Where(item => item.ProviderId != providerId).ToList();
+        var reported = new List<ModelOption>(descriptors.Count);
         foreach (var descriptor in descriptors)
         {
             var option = descriptor;
@@ -465,19 +477,50 @@ public sealed class MainWindowViewModel : ObservableObject
                 ServiceTiers = descriptor.ServiceTiers is { Count: > 0 } tiers
                     ? new[] { new ServiceTierDescriptor(null, "Provider default", IsDefault: true) }.Concat(tiers).ToArray() : []
             };
-            replacement.Add(ModelOption.FromDescriptor(option, source, providerName));
+            reported.Add(ModelOption.FromDescriptor(option, source, providerName));
         }
-        Models.ReplaceAll(replacement);
-        SelectedModel = previous is null ? Models.FirstOrDefault(model => model.IsDefault) ?? Models.FirstOrDefault()
-            : Models.FirstOrDefault(model => model.ProviderId == previous.ProviderId && model.ModelName == previous.ModelName);
+        if (reported.Count == 0) _reportedProviderModels.Remove(providerId);
+        else _reportedProviderModels[providerId] = reported;
+        RebuildVisibleModels(previous);
         if (SelectedModel is not null && previous is not null)
         {
             SelectedReasoningLevel = ReasoningLevels.FirstOrDefault(level => level.Id == effort) ?? SelectedReasoningLevel;
             SelectedServiceTier = ServiceTiers.FirstOrDefault(level => level.Id == tier) ?? SelectedServiceTier;
         }
-        ShowRuntimeSetup = Models.Count == 0;
-        ConnectionStatus = Models.Count > 0 ? "PROVIDERS CONNECTED" : "NO MODELS CONNECTED";
     }
+
+    private void RebuildVisibleModels(ModelOption? preferred = null)
+    {
+        preferred ??= SelectedModel;
+        var hidden = (_applicationSettings.HiddenModelIds ?? []).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var favorites = (_applicationSettings.FavoriteModelIds ?? []).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var explicitOrder = (_applicationSettings.ModelOrder ?? [])
+            .Select((key, index) => (key, index))
+            .GroupBy(item => item.key, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First().index, StringComparer.OrdinalIgnoreCase);
+        var reported = ReportedModels;
+        var reportedOrder = reported.Select((model, index) => (Key: ModelPreferenceKey(model.ProviderId, model.ModelName), index))
+            .ToDictionary(item => item.Key, item => item.index, StringComparer.OrdinalIgnoreCase);
+        var visible = reported
+            .Where(model => !hidden.Contains(ModelPreferenceKey(model.ProviderId, model.ModelName)))
+            .OrderByDescending(model => favorites.Contains(ModelPreferenceKey(model.ProviderId, model.ModelName)))
+            .ThenBy(model => explicitOrder.GetValueOrDefault(ModelPreferenceKey(model.ProviderId, model.ModelName), int.MaxValue))
+            .ThenBy(model => reportedOrder[ModelPreferenceKey(model.ProviderId, model.ModelName)])
+            .ToArray();
+        Models.ReplaceAll(visible);
+        SelectedModel = preferred is null
+            ? Models.FirstOrDefault(model => model.IsDefault) ?? Models.FirstOrDefault()
+            : Models.FirstOrDefault(model => model.ProviderId == preferred.ProviderId && model.ModelName == preferred.ModelName)
+              ?? Models.FirstOrDefault(model => model.IsDefault)
+              ?? Models.FirstOrDefault();
+        RaisePropertyChanged(nameof(ReportedModels));
+        ShowRuntimeSetup = reported.Count == 0;
+        ConnectionStatus = reported.Count == 0
+            ? "NO MODELS CONNECTED"
+            : Models.Count == 0 ? "ALL MODELS HIDDEN" : "PROVIDERS CONNECTED";
+    }
+
+    public static string ModelPreferenceKey(string providerId, string modelId) => $"{providerId}::{modelId}";
 
     public void ApplyApiUsage(long? input, long? output, long? cumulative, int? limit)
     {

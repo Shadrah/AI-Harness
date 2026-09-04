@@ -10,6 +10,9 @@ desktop codebase.
 
 ## Product principles
 
+- **Responsiveness first.** The UI thread is reserved for UI work. Provider,
+  storage, and background processing must not interrupt typing, navigation,
+  scrolling, or window interaction—even as projects and histories grow.
 - **Compact, not austere.** A dense workspace with projects, tasks, execution
   trace, conversation, context, model controls, diff, and terminal surfaces.
 - **Capability-complete.** Text, vision, tools, reasoning, audio, image
@@ -55,6 +58,13 @@ capability/content contracts:
 - a Codex app-server adapter for model discovery and authenticated rate-limit
   snapshots without starting a model turn;
 - explicit ChatGPT subscription sign-in through the Codex runtime;
+- persistent subscription connection management in Settings, including the real
+  account identity, plan, runtime source, complete reported model list, refresh,
+  sign-in, and sign-out without removing local projects or chats;
+- provider-neutral model-picker preferences for visibility, favorites, and
+  ordering, retained across catalog refreshes, restarts, and provider reconnects;
+- unclean-shutdown recovery with a visible next-launch notice and bounded,
+  privacy-safe diagnostics that exclude prompts, credentials, commands, and paths;
 - real Codex thread/turn startup, streamed assistant messages, activity events,
   and token-usage updates;
 - active-context tracking from the provider's latest input footprint (kept
@@ -150,7 +160,9 @@ Read [the architecture](docs/architecture.md), [the interface direction](docs/in
 plan is tracked in [the product roadmap](docs/roadmap.md), with local persistence
 documented in [storage](docs/storage.md). The complete product contract is defined
 in [product completeness](docs/product-completeness.md), including the searchable,
-provider-aware [Skills Library](docs/skills-library.md).
+provider-aware [Skills Library](docs/skills-library.md). The Windows
+[reference browser](docs/reference-browser.md) provides browser-scoped agent
+control and real image observations without another harness or Electron.
 
 ## License
 

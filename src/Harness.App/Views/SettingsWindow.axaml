@@ -63,6 +63,66 @@
         <ScrollViewer><StackPanel Margin="24,8" Spacing="16" MaxWidth="850">
           <TextBlock Text="Providers" FontSize="22" FontWeight="SemiBold"/>
           <TextBlock Text="Codex subscription access remains separate from API connections. API requests use the provider's billing and quotas, not your chat subscription. Claude.ai subscriptions cannot be connected to third-party harnesses." Classes="muted" TextWrapping="Wrap"/>
+          <Border x:Name="CodexConnectionPanel" Classes="panel" Padding="16">
+            <StackPanel Spacing="12">
+              <Grid ColumnDefinitions="*,Auto">
+                <StackPanel Spacing="4">
+                  <TextBlock Text="SUBSCRIPTION RUNTIME" Classes="micro" Foreground="#65C7D0"/>
+                  <TextBlock Text="OpenAI Codex" FontSize="16" FontWeight="SemiBold"/>
+                  <TextBlock x:Name="CodexAccountStatus" Text="Checking account…" TextWrapping="Wrap"/>
+                  <TextBlock x:Name="CodexRuntimeStatus" Classes="muted" TextWrapping="Wrap"/>
+                </StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Top">
+                  <Button x:Name="CodexSignInButton" Content="SIGN IN" Classes="primary" Click="CodexSignIn_OnClick"/>
+                  <Button x:Name="CodexSignOutButton" Content="SIGN OUT" IsVisible="False" Click="CodexSignOut_OnClick"/>
+                  <Button Content="REFRESH" Click="CodexRefresh_OnClick"/>
+                </StackPanel>
+              </Grid>
+              <Border Background="#11151B" BorderBrush="#29313C" BorderThickness="1" CornerRadius="4" Padding="11,9">
+                <StackPanel Spacing="5">
+                  <TextBlock x:Name="CodexModelCount" Text="MODELS · CHECKING" Classes="micro"/>
+                  <TextBlock x:Name="CodexModelList" Classes="muted mono" FontSize="10" TextWrapping="Wrap" Text="No models reported yet."/>
+                </StackPanel>
+              </Border>
+              <TextBlock Text="Harness keeps this sign-in until OpenAI expires it or you sign out here. Signing out removes provider authentication but preserves local projects and chat history." Classes="muted" FontSize="11" TextWrapping="Wrap"/>
+            </StackPanel>
+          </Border>
+          <Border x:Name="ModelPreferencePanel" Classes="panel" Padding="16">
+            <StackPanel Spacing="11">
+              <StackPanel Spacing="4">
+                <TextBlock Text="MODEL PICKER" Classes="micro" Foreground="#65C7D0"/>
+                <TextBlock Text="Choose which reported models appear beneath the composer. Favorites are pinned first; arrows set order within each group." Classes="muted" TextWrapping="Wrap"/>
+              </StackPanel>
+              <Border Background="#11151B" BorderBrush="#29313C" BorderThickness="1" CornerRadius="4">
+                <Grid>
+                  <TextBlock Margin="12,11"
+                             Text="No connected provider has reported models yet. Connect or refresh a provider above."
+                             Classes="muted"
+                             TextWrapping="Wrap"
+                             IsVisible="{Binding !HasModelPreferences}"/>
+                  <ScrollViewer MaxHeight="270" VerticalScrollBarVisibility="Auto" IsVisible="{Binding HasModelPreferences}">
+                    <ItemsControl ItemsSource="{Binding ModelPreferences}">
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="vm:ModelPreferenceItem">
+                          <Grid MinHeight="42" Margin="10,2" ColumnDefinitions="Auto,10,*,Auto,4,Auto,4,Auto">
+                            <CheckBox IsChecked="{Binding IsEnabled, Mode=TwoWay}" VerticalAlignment="Center" ToolTip.Tip="Show this model in the composer"/>
+                            <StackPanel Grid.Column="2" VerticalAlignment="Center" Spacing="2">
+                              <TextBlock Text="{Binding DisplayName}" TextTrimming="CharacterEllipsis"/>
+                              <TextBlock Text="{Binding ModelId}" Classes="muted mono" FontSize="9"/>
+                            </StackPanel>
+                            <Button Grid.Column="3" Width="32" Padding="0" Content="{Binding FavoriteGlyph}" Tag="{Binding}" Click="ModelFavorite_OnClick" ToolTip.Tip="Favorite model"/>
+                            <Button Grid.Column="5" Width="32" Padding="0" Content="↑" Tag="{Binding}" Click="ModelMoveUp_OnClick" ToolTip.Tip="Move model up"/>
+                            <Button Grid.Column="7" Width="32" Padding="0" Content="↓" Tag="{Binding}" Click="ModelMoveDown_OnClick" ToolTip.Tip="Move model down"/>
+                          </Grid>
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                  </ScrollViewer>
+                </Grid>
+              </Border>
+              <TextBlock Text="Save changes to update the composer. Preferences survive provider disconnects and catalog refreshes." Classes="muted" FontSize="11" TextWrapping="Wrap"/>
+            </StackPanel>
+          </Border>
           <Border x:Name="ApiConnectionPanel" Classes="panel" Padding="16"><StackPanel Spacing="10">
             <TextBlock Text="API CONNECTIONS" Classes="micro" Foreground="#65C7D0"/>
             <ComboBox x:Name="ApiSavedConnections" HorizontalAlignment="Stretch" PlaceholderText="Choose a saved connection" SelectionChanged="ApiSavedConnection_OnChanged"/>
@@ -260,6 +320,14 @@
               </ComboBox>
               <TextBlock Text="{Binding SelectedPermissionMode.Description}" Classes="muted" TextWrapping="Wrap"/>
               <TextBlock Text="Approve for me uses the provider's safeguarded automatic reviewer. Full access disables command approval and the workspace sandbox for the active provider thread." Classes="muted" TextWrapping="Wrap"/>
+            </StackPanel>
+          </Border>
+          <Border Classes="panel" Padding="16">
+            <StackPanel Spacing="10">
+              <TextBlock Text="CRASH RECOVERY &amp; DIAGNOSTICS" Classes="micro" Foreground="#65C7D0"/>
+              <TextBlock Text="Harness detects interrupted sessions on the next launch and keeps up to 20 diagnostic reports. Reports contain exception types, HRESULTs, method names, app/runtime versions, and OS architecture only." TextWrapping="Wrap"/>
+              <TextBlock Text="Prompts, model responses, credentials, environment variables, command lines, workspace paths, filenames, and source lines are never included." Classes="muted" TextWrapping="Wrap"/>
+              <Button x:Name="OpenDiagnosticsButton" Content="OPEN DIAGNOSTICS FOLDER" HorizontalAlignment="Left" Click="OpenDiagnostics_OnClick"/>
             </StackPanel>
           </Border>
         </StackPanel>

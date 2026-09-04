@@ -54,6 +54,8 @@ if (args.Contains("--release-check", StringComparer.OrdinalIgnoreCase))
 await using var client = await CodexAppServerClient.StartAsync(timeout.Token);
 Console.WriteLine($"Runtime: {client.Runtime.SourceLabel} · {client.Runtime.ExecutablePath}");
 Console.WriteLine($"Code tools: {(client.Runtime.CodeToolsAvailable ? "ready" : "missing")}");
+var account = await client.GetAccountAsync(cancellationToken: timeout.Token);
+Console.WriteLine($"Account: {(account.IsAuthenticated ? account.AccountType : "signed-out")}; plan={account.PlanType ?? "not reported"}");
 
 var models = new List<string>();
 await foreach (var model in client.GetModelsAsync(timeout.Token))

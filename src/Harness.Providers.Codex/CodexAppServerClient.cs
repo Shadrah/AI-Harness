@@ -186,7 +186,8 @@ public sealed class CodexAppServerClient : IModelProvider, IProviderTelemetry, I
                 approvalsReviewer = runtimePolicy.ApprovalsReviewer,
                 sandbox = runtimePolicy.Sandbox,
                 developerInstructions = NullIfWhiteSpace(developerInstructions),
-                ephemeral = false
+                ephemeral = false,
+                dynamicTools = Harness.Core.Browser.BrowserTools.CodexDefinitions
             },
             cancellationToken);
         return response.Thread.Id;
@@ -437,6 +438,25 @@ public sealed class CodexAppServerClient : IModelProvider, IProviderTelemetry, I
             new { type = "chatgptDeviceCode" },
             cancellationToken);
 
+    public async Task<CodexAccountInfo> GetAccountAsync(
+        bool refreshToken = false,
+        CancellationToken cancellationToken = default)
+    {
+        var response = await CallAsync<GetAccountResponse>(
+            "account/read",
+            new { refreshToken },
+            cancellationToken);
+        return new CodexAccountInfo(
+            response.Account is not null,
+            response.RequiresOpenaiAuth,
+            response.Account?.Type,
+            response.Account?.Email,
+            response.Account?.PlanType);
+    }
+
+    public async Task SignOutAsync(CancellationToken cancellationToken = default) =>
+        _ = await CallAsync<JsonElement>("account/logout", null!, cancellationToken);
+
     public async IAsyncEnumerable<ProviderUsageSnapshot> WatchUsageAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
@@ -552,7 +572,7 @@ public sealed class CodexAppServerClient : IModelProvider, IProviderTelemetry, I
                     }
                     else
                     {
-                        _notifications.Writer.TryWrite(new CodexNotification(method, parameters));
+                        _notifications.Writer.TryWrite(new CodexNotification(method, SummarizeBrowserNotification(method, parameters)));
                     }
 
                     continue;
@@ -588,6 +608,27 @@ public sealed class CodexAppServerClient : IModelProvider, IProviderTelemetry, I
                 completion.TrySetException(failure);
             }
         }
+    }
+
+    public static JsonElement SummarizeBrowserNotification(string method, JsonElement parameters)
+    {
+        if (method != "item/completed" || !parameters.TryGetProperty("item", out var item)
+            || !item.TryGetProperty("tool", out var tool) || tool.GetString() != Harness.Core.Browser.BrowserTools.Name)
+            return parameters;
+        // Images already went to the model through the tool response. Never serialize them a
+        // second time into UI activity or SQLite event logs (which also causes UI stalls).
+        string? Value(JsonElement element, string key) => element.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+        return JsonSerializer.SerializeToElement(new
+        {
+            threadId = Value(parameters, "threadId"), turnId = Value(parameters, "turnId"),
+            item = new
+            {
+                id = Value(item, "id"), type = "dynamicToolCall", tool = Harness.Core.Browser.BrowserTools.Name,
+                status = Value(item, "status"),
+                result = item.TryGetProperty("success", out var success) && success.ValueKind == JsonValueKind.True
+                    ? "Browser observation delivered to model." : "Browser action did not succeed. See the browser activity entry."
+            }
+        });
     }
 
     private static ProcessStartInfo CreateStartInfo(CodexRuntimeInfo runtime)
@@ -722,6 +763,8 @@ public sealed class CodexAppServerClient : IModelProvider, IProviderTelemetry, I
         long? WindowDurationMins,
         long? ResetsAt);
     private sealed record CreditsSnapshot(string? Balance, bool HasCredits, bool Unlimited);
+    private sealed record GetAccountResponse(CodexAccount? Account, bool RequiresOpenaiAuth);
+    private sealed record CodexAccount(string Type, string? Email, string? PlanType);
     private sealed record ThreadStartResponse(ThreadReference Thread);
     private sealed record ThreadResumeResponse(ThreadReference Thread);
     private sealed record TurnStartResponse(TurnReference Turn);
@@ -744,3 +787,9 @@ public sealed record CodexDeviceCodeLoginStart(
     string VerificationUrl,
     string UserCode,
     string LoginId);
+public sealed record CodexAccountInfo(
+    bool IsAuthenticated,
+    bool RequiresOpenAiAuth,
+    string? AccountType,
+    string? Email,
+    string? PlanType);
