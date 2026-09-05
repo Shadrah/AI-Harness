@@ -4,6 +4,7 @@
     xmlns="https://github.com/avaloniaui"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:vm="using:Harness.App.ViewModels"
+    xmlns:services="using:Harness.App.Services"
     Title="Harness — Settings"
     Width="1480" Height="880" MinWidth="1120" MinHeight="700"
     WindowStartupLocation="CenterOwner">
@@ -19,10 +20,38 @@
       <TabItem Header="WORKSPACE">
         <ScrollViewer><StackPanel Margin="24,8" Spacing="18" MaxWidth="620">
           <StackPanel Spacing="4"><TextBlock Text="Workspace surface" FontSize="22" FontWeight="SemiBold"/><TextBlock Text="Choose which live development signals stay visible while you work." Classes="muted"/></StackPanel>
-          <CheckBox Content="Show live usage" IsChecked="{Binding ShowUsageInspector}"/>
-          <CheckBox Content="Show attached context" IsChecked="{Binding ShowContextInspector}"/>
-          <CheckBox Content="Show turn diff shortcut" IsChecked="{Binding ShowTurnDiffInspector}"/>
-          <TextBlock Text="Working tree remains available as a separate module because it is active development state." Classes="muted" TextWrapping="Wrap"/>
+          <Border Classes="panel" Padding="16">
+            <StackPanel Spacing="10">
+              <TextBlock Text="WORKBENCH SIGNALS" Classes="micro" Foreground="#65C7D0"/>
+              <CheckBox Content="Show live usage" IsChecked="{Binding ShowUsageInspector}"/>
+              <CheckBox Content="Show attached context" IsChecked="{Binding ShowContextInspector}"/>
+              <CheckBox Content="Show turn diff shortcut" IsChecked="{Binding ShowTurnDiffInspector}"/>
+              <TextBlock Text="Working tree remains available as a separate module because it is active development state." Classes="muted" TextWrapping="Wrap"/>
+            </StackPanel>
+          </Border>
+          <Border x:Name="PortableBackupPanel" Classes="panel" Padding="16">
+            <StackPanel Spacing="12">
+              <StackPanel Spacing="4">
+                <TextBlock Text="PORTABLE BACKUP" Classes="micro" Foreground="#65C7D0"/>
+                <TextBlock Text="Move Harness history and configuration without copying a project repository." FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap"/>
+              </StackPanel>
+              <Grid ColumnDefinitions="*,16,*">
+                <StackPanel Spacing="4">
+                  <TextBlock Text="INCLUDED" Classes="micro" FontSize="8"/>
+                  <TextBlock Text="Chats and tasks&#x0a;Settings and model preferences&#x0a;Context and import snapshots&#x0a;Skills catalog and installed skills&#x0a;API connection names and endpoints" Classes="muted" TextWrapping="Wrap" LineHeight="20"/>
+                </StackPanel>
+                <StackPanel Grid.Column="2" Spacing="4">
+                  <TextBlock Text="RECONNECT AFTER RESTORE" Classes="micro" FontSize="8"/>
+                  <TextBlock Text="API keys and account sign-ins&#x0a;GitHub authentication&#x0a;Project folders that moved" Classes="muted" TextWrapping="Wrap" LineHeight="20"/>
+                </StackPanel>
+              </Grid>
+              <TextBlock Text="Backup files contain your conversations and retained context. Store them as carefully as source code. Browser profiles, diagnostics, runtimes, and workspace source trees are excluded." Classes="muted" TextWrapping="Wrap"/>
+              <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button x:Name="ExportBackupButton" Content="EXPORT BACKUP…" Classes="primary" Click="ExportBackup_OnClick"/>
+                <Button x:Name="RestoreBackupButton" Content="RESTORE BACKUP…" Click="RestoreBackup_OnClick"/>
+              </StackPanel>
+            </StackPanel>
+          </Border>
         </StackPanel></ScrollViewer>
       </TabItem>
       <TabItem Header="IMPORTS">
@@ -65,18 +94,46 @@
           <TextBlock Text="Codex subscription access remains separate from API connections. API requests use the provider's billing and quotas, not your chat subscription. Claude.ai subscriptions cannot be connected to third-party harnesses." Classes="muted" TextWrapping="Wrap"/>
           <Border x:Name="CodexConnectionPanel" Classes="panel" Padding="16">
             <StackPanel Spacing="12">
-              <Grid ColumnDefinitions="*,Auto">
+              <Grid ColumnDefinitions="*,12,260">
                 <StackPanel Spacing="4">
                   <TextBlock Text="SUBSCRIPTION RUNTIME" Classes="micro" Foreground="#65C7D0"/>
-                  <TextBlock Text="OpenAI Codex" FontSize="16" FontWeight="SemiBold"/>
+                  <TextBlock Text="OpenAI Codex accounts" FontSize="16" FontWeight="SemiBold"/>
+                  <TextBlock Text="Each account keeps its own credentials, models, usage, and provider threads. Harness never combines their quotas." Classes="muted" TextWrapping="Wrap"/>
+                </StackPanel>
+                <StackPanel Grid.Column="2" Spacing="5">
+                  <TextBlock Text="ACCOUNT PROFILES" Classes="micro"/>
+                  <ComboBox x:Name="CodexIdentityPicker" HorizontalAlignment="Stretch" SelectionChanged="CodexIdentity_OnChanged">
+                    <ComboBox.ItemTemplate>
+                      <DataTemplate x:DataType="services:SubscriptionIdentity">
+                        <TextBlock Text="{Binding DisplayName}" TextTrimming="CharacterEllipsis"/>
+                      </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                  </ComboBox>
+                </StackPanel>
+              </Grid>
+              <Border Background="#11151B" BorderBrush="#29313C" BorderThickness="1" CornerRadius="4" Padding="12,10">
+                <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto">
+                  <StackPanel Spacing="3">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                      <TextBlock x:Name="CodexIdentityName" Text="OpenAI 1" FontWeight="SemiBold"/>
+                      <TextBlock x:Name="CodexIdentityActive" Text="ACTIVE" Classes="micro" Foreground="#65C7D0"/>
+                    </StackPanel>
                   <TextBlock x:Name="CodexAccountStatus" Text="Checking account…" TextWrapping="Wrap"/>
                   <TextBlock x:Name="CodexRuntimeStatus" Classes="muted" TextWrapping="Wrap"/>
-                </StackPanel>
-                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Top">
+                    <TextBlock x:Name="CodexIdentityUsage" Classes="muted mono" FontSize="9" TextWrapping="Wrap"/>
+                  </StackPanel>
+                  <WrapPanel Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Top">
+                  <Button x:Name="CodexUseIdentityButton" Content="USE ACCOUNT" Margin="0,0,8,0" Click="CodexUseIdentity_OnClick"/>
                   <Button x:Name="CodexSignInButton" Content="SIGN IN" Classes="primary" Click="CodexSignIn_OnClick"/>
-                  <Button x:Name="CodexSignOutButton" Content="SIGN OUT" IsVisible="False" Click="CodexSignOut_OnClick"/>
-                  <Button Content="REFRESH" Click="CodexRefresh_OnClick"/>
-                </StackPanel>
+                  <Button x:Name="CodexSignOutButton" Content="SIGN OUT" IsVisible="False" Margin="8,0,0,0" Click="CodexSignOut_OnClick"/>
+                  <Button Content="REFRESH" Margin="8,0,0,0" Click="CodexRefresh_OnClick"/>
+                  </WrapPanel>
+                </Grid>
+              </Border>
+              <Grid ColumnDefinitions="*,8,Auto,8,Auto">
+                <TextBox x:Name="CodexIdentityNameInput" Watermark="Account name, for example Work Plus"/>
+                <Button Grid.Column="2" Content="ADD ACCOUNT" Click="CodexAddIdentity_OnClick"/>
+                <Button x:Name="CodexRemoveIdentityButton" Grid.Column="4" Content="REMOVE PROFILE" Click="CodexRemoveIdentity_OnClick"/>
               </Grid>
               <Border Background="#11151B" BorderBrush="#29313C" BorderThickness="1" CornerRadius="4" Padding="11,9">
                 <StackPanel Spacing="5">
@@ -84,7 +141,17 @@
                   <TextBlock x:Name="CodexModelList" Classes="muted mono" FontSize="10" TextWrapping="Wrap" Text="No models reported yet."/>
                 </StackPanel>
               </Border>
-              <TextBlock Text="Harness keeps this sign-in until OpenAI expires it or you sign out here. Signing out removes provider authentication but preserves local projects and chat history." Classes="muted" FontSize="11" TextWrapping="Wrap"/>
+              <Border Background="#142026" BorderBrush="#29313C" BorderThickness="1" CornerRadius="4" Padding="11,9">
+                <Grid ColumnDefinitions="Auto,12,*,16,100">
+                  <CheckBox IsChecked="{Binding PromptForSubscriptionHandoff}" VerticalAlignment="Center"/>
+                  <StackPanel Grid.Column="2" Spacing="2">
+                    <TextBlock Text="Offer an account handoff before usage runs out"/>
+                    <TextBlock Text="The current turn finishes first. You always choose and confirm the destination account." Classes="muted" FontSize="10" TextWrapping="Wrap"/>
+                  </StackPanel>
+                  <NumericUpDown Grid.Column="4" Minimum="1" Maximum="25" Increment="1" FormatString="0'%'" Value="{Binding SubscriptionHandoffThresholdPercent}" VerticalAlignment="Center" ToolTip.Tip="Remaining 5-hour usage that triggers the prompt"/>
+                </Grid>
+              </Border>
+              <TextBlock Text="Adding an account creates an isolated provider profile and makes it active so you can sign in. Removing a profile only removes it from Harness; provider-owned credentials are not copied into Harness data or backups." Classes="muted" FontSize="11" TextWrapping="Wrap"/>
             </StackPanel>
           </Border>
           <Border x:Name="ModelPreferencePanel" Classes="panel" Padding="16">

@@ -43,12 +43,25 @@ public sealed record StoredAttachment(
     long ByteLength,
     DateTimeOffset CreatedAt);
 
+public sealed record StoredActivityEvent(
+    string Id,
+    string ProjectId,
+    string? SessionId,
+    string Kind,
+    string Title,
+    string Detail,
+    string Outcome,
+    string Color,
+    bool IsMilestone,
+    DateTimeOffset CreatedAt);
+
 public sealed record WorkspaceSessionSnapshot(
     StoredProject Project,
     IReadOnlyList<StoredSession> Sessions,
     StoredSession ActiveSession,
     IReadOnlyList<StoredMessage> Messages,
-    IReadOnlyList<StoredAttachment> Attachments);
+    IReadOnlyList<StoredAttachment> Attachments,
+    IReadOnlyList<StoredActivityEvent> ActivityEvents);
 
 public sealed record HarnessApplicationSettings(
     bool RestoreLastWorkspace = true,
@@ -64,7 +77,10 @@ public sealed record HarnessApplicationSettings(
     string PermissionMode = "ask",
     IReadOnlyList<string>? HiddenModelIds = null,
     IReadOnlyList<string>? FavoriteModelIds = null,
-    IReadOnlyList<string>? ModelOrder = null);
+    IReadOnlyList<string>? ModelOrder = null,
+    string? ActiveCodexIdentityId = null,
+    bool PromptForSubscriptionHandoff = true,
+    double SubscriptionHandoffThresholdPercent = 5);
 
 public sealed record ImportMessage(
     string Role,

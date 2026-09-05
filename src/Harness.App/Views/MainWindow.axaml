@@ -14,7 +14,8 @@
     ExtendClientAreaToDecorationsHint="True"
     ExtendClientAreaChromeHints="NoChrome"
     ExtendClientAreaTitleBarHeightHint="52"
-    WindowStartupLocation="CenterScreen">
+    WindowStartupLocation="CenterScreen"
+    KeyDown="MainWindow_OnKeyDown">
 
   <Grid RowDefinitions="52,*,30">
     <!-- Command strip -->
@@ -36,6 +37,9 @@
                 ToolTip.Tip="Drag to move · double-click to maximize" />
         <Button Grid.Column="4" Content="{Binding RunButtonLabel}" Classes="primary" VerticalAlignment="Center" Click="RunOrStop_OnClick" />
         <StackPanel Grid.Column="6" Orientation="Horizontal" Spacing="4">
+          <Button x:Name="TerminalButton" Classes="icon-button" Click="OpenTerminal_OnClick" ToolTip.Tip="Workspace terminal · Ctrl+`" AutomationProperties.Name="Open workspace terminal">
+            <Path Width="17" Height="15" Stretch="Uniform" Stroke="#D8DEE8" StrokeThickness="1.35" Data="M1,1.5 L16,1.5 L16,13.5 L1,13.5 Z M4,5 L7,7.5 L4,10 M9,10 L13,10"/>
+          </Button>
           <Button Classes="icon-button" Click="OpenBrowser_OnClick" ToolTip.Tip="Reference browser" AutomationProperties.Name="Open reference browser">
             <Path Width="17" Height="17" Stretch="Uniform" Stroke="#D8DEE8" StrokeThickness="1.4" Data="M8,0 A8,8 0 1 0 8,16 A8,8 0 1 0 8,0 M0,8 L16,8 M8,0 C3,4 3,12 8,16 M8,0 C13,4 13,12 8,16"/>
           </Button>
@@ -469,23 +473,42 @@
       </Border>
     </Grid>
 
-    <Border Grid.Row="1"
-            HorizontalAlignment="Center"
-            VerticalAlignment="Top"
-            MaxWidth="760"
-            Margin="18,12"
-            Padding="12,8"
-            Background="#201D18"
-            BorderBrush="#806735"
-            BorderThickness="1"
-            CornerRadius="5"
-            IsVisible="{Binding ShowRecoveryNotice}">
-      <Grid ColumnDefinitions="*,Auto,6,Auto">
-        <TextBlock Text="{Binding RecoveryNotice}" TextWrapping="Wrap" VerticalAlignment="Center" Foreground="#E9D8AE"/>
-        <Button Grid.Column="1" Content="OPEN DIAGNOSTICS" Click="OpenRecoveryDiagnostics_OnClick"/>
-        <Button Grid.Column="3" Content="×" Width="30" Padding="0" Click="DismissRecoveryNotice_OnClick" ToolTip.Tip="Dismiss"/>
-      </Grid>
-    </Border>
+    <StackPanel Grid.Row="1"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Top"
+                Width="760"
+                MaxWidth="760"
+                Margin="18,12"
+                Spacing="8">
+      <Border Padding="12,8"
+              Background="#201D18"
+              BorderBrush="#806735"
+              BorderThickness="1"
+              CornerRadius="5"
+              IsVisible="{Binding ShowRecoveryNotice}">
+        <Grid ColumnDefinitions="*,Auto,6,Auto">
+          <TextBlock Text="{Binding RecoveryNotice}" TextWrapping="Wrap" VerticalAlignment="Center" Foreground="#E9D8AE"/>
+          <Button Grid.Column="1" Content="OPEN DIAGNOSTICS" IsVisible="{Binding ShowRecoveryDiagnosticsAction}" Click="OpenRecoveryDiagnostics_OnClick"/>
+          <Button Grid.Column="3" Content="×" Width="30" Padding="0" Click="DismissRecoveryNotice_OnClick" ToolTip.Tip="Dismiss"/>
+        </Grid>
+      </Border>
+      <Border Padding="12,9"
+              Background="#142026"
+              BorderBrush="#3C8A94"
+              BorderThickness="1"
+              CornerRadius="5"
+              IsVisible="{Binding ShowSubscriptionHandoffNotice}">
+        <Grid ColumnDefinitions="Auto,10,*,12,Auto,6,Auto">
+          <Border Width="6" Height="28" CornerRadius="3" Background="#65C7D0" VerticalAlignment="Center"/>
+          <StackPanel Grid.Column="2" Spacing="2">
+            <TextBlock Text="ACCOUNT HANDOFF" Classes="micro" Foreground="#65C7D0"/>
+            <TextBlock Text="{Binding SubscriptionHandoffNotice}" TextWrapping="Wrap" VerticalAlignment="Center"/>
+          </StackPanel>
+          <Button Grid.Column="4" Content="CHOOSE ACCOUNT" Classes="primary" Click="SubscriptionHandoff_OnClick"/>
+          <Button Grid.Column="6" Content="×" Width="30" Padding="0" Click="DismissSubscriptionHandoff_OnClick" ToolTip.Tip="Dismiss until this usage window resets"/>
+        </Grid>
+      </Border>
+    </StackPanel>
 
     <!-- Status line -->
     <Border Grid.Row="2" BorderBrush="#29313C" BorderThickness="0,1,0,0" Background="#0D1116">

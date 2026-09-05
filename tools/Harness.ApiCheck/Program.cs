@@ -130,6 +130,35 @@ foreach (var endpoint in new[] { "http://example.com/v1/", "https://user:passwor
 
 var testRoot = Path.Combine(Environment.CurrentDirectory, ".artifacts", "api-check", Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(testRoot);
+var identityRoot = Path.Combine(testRoot, "identity-store");
+var identityStore = new SubscriptionIdentityStore(identityRoot);
+var primaryIdentities = await identityStore.LoadAsync();
+Check(primaryIdentities.Count == 1 && primaryIdentities[0].IsPrimary,
+    "Subscription identity store did not create the primary isolated profile metadata.");
+var addedIdentity = await identityStore.AddAsync("Second Plus");
+Check(addedIdentity.DisplayName == "Second Plus"
+      && !addedIdentity.IsPrimary
+      && addedIdentity.ProfileRoot.StartsWith(identityRoot, StringComparison.OrdinalIgnoreCase),
+    "Additional subscription profile was not isolated under Harness storage.");
+await identityStore.UpdateAsync(addedIdentity with
+{
+    Email = "fixture@example.com",
+    Plan = "plus",
+    LastFiveHourRemainingPercent = 82,
+    LastUsageAt = DateTimeOffset.UtcNow
+});
+var loadedIdentities = await identityStore.LoadAsync();
+Check(loadedIdentities.Count == 2
+      && loadedIdentities.Single(identity => identity.Id == addedIdentity.Id).LastFiveHourRemainingPercent == 82,
+    "Subscription account metadata or per-account usage was not retained.");
+var identityJson = await File.ReadAllTextAsync(Path.Combine(identityRoot, "subscription-identities.json"));
+Check(!identityJson.Contains("token", StringComparison.OrdinalIgnoreCase)
+      && !identityJson.Contains("password", StringComparison.OrdinalIgnoreCase),
+    "Credential material was written to Harness subscription metadata.");
+var unsafeIdentityRejected = false;
+try { await identityStore.UpdateAsync(addedIdentity with { ProfileRoot = Path.Combine(testRoot, "escape") }); }
+catch (InvalidDataException) { unsafeIdentityRejected = true; }
+Check(unsafeIdentityRejected, "A managed subscription profile escaped Harness storage.");
 var approvalCount = 0;
 var runner = new ApiWorkspaceTools(testRoot, (_, _, _) => { approvalCount++; return Task.FromResult(false); });
 var denied = await runner.ExecuteAsync(new("call", "write_file", """{"path":"a.txt","content":"unchanged"}"""), default);
@@ -202,6 +231,180 @@ Check(Directory.EnumerateFiles(Path.Combine(diagnosticsRoot, "pending"), "*.json
 await diagnostics.CompleteSessionAsync();
 Check(!Directory.EnumerateFiles(Path.Combine(diagnosticsRoot, "pending"), "*.json").Any(),
     "Clean shutdown left a crash-recovery marker behind.");
+
+var portableSourceRoot = Path.Combine(testRoot, "portable-source");
+var portableSourceDatabase = Path.Combine(portableSourceRoot, "data", "harness.db");
+var portableSourceApi = Path.Combine(portableSourceRoot, "api-connections.json");
+var portableArchive = Path.Combine(testRoot, "fixture.harness-backup");
+var portableWorkspaceRoot = Path.Combine(portableSourceRoot, "workspace-scope");
+string portableSessionId;
+await using (var portableSourceStore = new Harness.Storage.HarnessStore(portableSourceDatabase))
+{
+    await portableSourceStore.InitializeAsync();
+    var portableWorkspace = await portableSourceStore.OpenWorkspaceAsync(testRoot);
+    portableSessionId = portableWorkspace.ActiveSession.Id;
+    await portableSourceStore.SaveApplicationSettingsAsync(new HarnessApplicationSettings(PersonalInstructions: "portable fixture"));
+    await portableSourceStore.UpsertMessageAsync(new StoredMessage(
+        Guid.NewGuid().ToString("N"), portableSessionId, 0, "YOU", "Prompt", "portable message", "COMPLETED", "#8993A3", false, DateTimeOffset.UtcNow));
+    var contextSource = Path.Combine(portableSourceRoot, "context.txt");
+    Directory.CreateDirectory(portableSourceRoot);
+    await File.WriteAllTextAsync(contextSource, "portable context");
+    await portableSourceStore.AddAttachmentAsync(portableSessionId, contextSource);
+    var portableSkill = new SkillCatalogEntry(
+        "portable-skill", "portable-skill", "Portable backup fixture", "Testing", "fixture/skills",
+        "skills/portable-skill/SKILL.md", "fixture-revision", "https://example.invalid/portable-skill",
+        "Portable Agent Skill", "FIXTURE", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+    await portableSourceStore.UpsertSkillCatalogAsync([portableSkill]);
+    var portableSkillPath = Path.Combine(portableSourceRoot, "global-skills", "portable-skill-folder");
+    Directory.CreateDirectory(portableSkillPath);
+    await File.WriteAllTextAsync(Path.Combine(portableSkillPath, "SKILL.md"), "---\nname: portable-skill\n---\n");
+    await File.WriteAllTextAsync(Path.Combine(portableSkillPath, ".harness-source.json"), JsonSerializer.Serialize(new
+    {
+        catalogId = portableSkill.Id,
+        installedName = "portable-skill",
+        originalName = portableSkill.Name,
+        portableSkill.Repository,
+        portableSkill.SkillPath,
+        portableSkill.SourceRevision
+    }));
+    await portableSourceStore.SaveInstalledSkillAsync(new InstalledSkill(
+        "portable-skill-install", portableSkill.Id, portableSkill.Name, portableSkill.SourceRevision,
+        portableSkillPath, portableSkillPath, "GLOBAL", null, "openai-codex", null,
+        "fixture-content", true, DateTimeOffset.UtcNow));
+    var portableWorkspaceSkillPath = Path.Combine(portableWorkspaceRoot, ".agents", "skills", "portable-workspace-skill");
+    Directory.CreateDirectory(portableWorkspaceSkillPath);
+    await File.WriteAllTextAsync(Path.Combine(portableWorkspaceSkillPath, "SKILL.md"), "---\nname: portable-workspace-skill\n---\n");
+    await File.WriteAllTextAsync(Path.Combine(portableWorkspaceSkillPath, ".harness-source.json"), JsonSerializer.Serialize(new
+    {
+        catalogId = portableSkill.Id,
+        installedName = "portable-workspace-skill",
+        originalName = portableSkill.Name,
+        portableSkill.Repository,
+        portableSkill.SkillPath,
+        portableSkill.SourceRevision
+    }));
+    await portableSourceStore.SaveInstalledSkillAsync(new InstalledSkill(
+        "portable-workspace-skill-install", portableSkill.Id, portableSkill.Name, portableSkill.SourceRevision,
+        portableWorkspaceSkillPath, portableWorkspaceSkillPath, "WORKSPACE", portableWorkspaceRoot, "openai-codex", null,
+        "fixture-workspace-content", true, DateTimeOffset.UtcNow));
+    await File.WriteAllTextAsync(portableSourceApi, "[{\"name\":\"fixture endpoint metadata\"}]");
+    var export = await new PortableBackupService(
+        portableSourceStore,
+        portableSourceRoot,
+        portableSourceDatabase,
+        portableSourceApi).CreateAsync(portableArchive);
+    Check(export.PayloadCount >= 3 && export.ArchiveBytes > 0, "Portable backup omitted required payloads.");
+}
+
+var portableTargetRoot = Path.Combine(testRoot, "portable-target");
+var portableTargetDatabase = Path.Combine(portableTargetRoot, "data", "harness.db");
+var portableTargetApi = Path.Combine(portableTargetRoot, "api-connections.json");
+var portableTargetSkills = Path.Combine(portableTargetRoot, "global-skills");
+await using (var previousTargetStore = new Harness.Storage.HarnessStore(portableTargetDatabase))
+{
+    await previousTargetStore.InitializeAsync();
+    await previousTargetStore.SaveApplicationSettingsAsync(new HarnessApplicationSettings(PersonalInstructions: "replace me"));
+}
+var restoreService = new PortableBackupService(null, portableTargetRoot, portableTargetDatabase, portableTargetApi, portableTargetSkills);
+var staged = await restoreService.StageRestoreAsync(portableArchive);
+Check(restoreService.HasPendingRestore && staged.PayloadCount >= 3, "Portable restore was not staged after archive validation.");
+var applied = await restoreService.ApplyPendingRestoreAsync();
+Check(applied is not null && !restoreService.HasPendingRestore && File.Exists(portableTargetDatabase + ".before-restore"),
+    "Portable restore did not apply cleanly or retain the previous database.");
+await using (var restoredStore = new Harness.Storage.HarnessStore(portableTargetDatabase))
+{
+    await restoredStore.InitializeAsync();
+    var restoredSettings = await restoredStore.LoadApplicationSettingsAsync();
+    var restoredSession = await restoredStore.LoadSessionAsync(portableSessionId);
+    var restoredSkills = await restoredStore.ListInstalledSkillsAsync();
+    var restoredGlobalSkill = restoredSkills.Single(skill => skill.Scope == "GLOBAL");
+    var deferredWorkspaceSkill = restoredSkills.Single(skill => skill.Scope == "WORKSPACE");
+    Check(restoredSettings.PersonalInstructions == "portable fixture"
+          && restoredSession.Messages.Any(message => message.Text == "portable message")
+          && restoredSession.Attachments.Count == 1
+          && restoredSession.Attachments[0].StoredPath.StartsWith(Path.Combine(portableTargetRoot, "data"), StringComparison.OrdinalIgnoreCase)
+          && await File.ReadAllTextAsync(restoredSession.Attachments[0].StoredPath) == "portable context"
+          && restoredGlobalSkill.Enabled
+          && restoredGlobalSkill.InstallPath.StartsWith(portableTargetSkills, StringComparison.OrdinalIgnoreCase)
+          && File.Exists(Path.Combine(restoredGlobalSkill.InstallPath, "SKILL.md"))
+          && !deferredWorkspaceSkill.Enabled
+          && deferredWorkspaceSkill.InstallPath.StartsWith(Path.Combine(portableTargetRoot, "data", "deferred-skills"), StringComparison.OrdinalIgnoreCase),
+        "Portable restore lost settings, chat history, rebased context, or an installed skill.");
+    var activatedSkillWorkspace = Path.Combine(testRoot, "activated-skill-workspace");
+    Directory.CreateDirectory(activatedSkillWorkspace);
+    Check(await restoreService.ActivateDeferredWorkspaceSkillsAsync(
+              restoredStore, portableWorkspaceRoot, activatedSkillWorkspace) == 1,
+        "Relinking did not activate a deferred workspace skill.");
+    var activatedSkill = (await restoredStore.ListInstalledSkillsAsync()).Single(skill => skill.Scope == "WORKSPACE");
+    Check(activatedSkill.Enabled
+          && activatedSkill.WorkspacePath == Path.GetFullPath(activatedSkillWorkspace)
+          && File.Exists(Path.Combine(activatedSkill.InstallPath, "SKILL.md")),
+        "Deferred workspace skill was not restored into the user-selected project.");
+    var relocatedPath = Path.Combine(testRoot, "relocated-workspace");
+    Directory.CreateDirectory(relocatedPath);
+    var restoredProject = (await restoredStore.ListProjectsAsync()).Single();
+    await restoredStore.RelocateProjectAsync(restoredProject.Id, relocatedPath);
+    Check((await restoredStore.ListProjectsAsync()).Single().RootPath == Path.GetFullPath(relocatedPath)
+          && (await restoredStore.LoadSessionAsync(portableSessionId)).Messages.Any(message => message.Text == "portable message"),
+        "Relinking a restored workspace lost its project identity or chat history.");
+}
+Check(await File.ReadAllTextAsync(portableTargetApi) == "[{\"name\":\"fixture endpoint metadata\"}]",
+    "Portable restore lost credential-free API connection metadata.");
+
+var unsafeArchive = Path.Combine(testRoot, "unsafe.harness-backup");
+var unsafeBytes = Encoding.UTF8.GetBytes("x");
+var unsafePayload = new PortableBackupPayload(
+    "../escape.txt",
+    unsafeBytes.Length,
+    Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(unsafeBytes)).ToLowerInvariant());
+using (var unsafeFile = new FileStream(unsafeArchive, FileMode.CreateNew, FileAccess.Write))
+using (var unsafeZip = new System.IO.Compression.ZipArchive(unsafeFile, System.IO.Compression.ZipArchiveMode.Create))
+{
+    using (var payloadStream = unsafeZip.CreateEntry(unsafePayload.Path).Open()) payloadStream.Write(unsafeBytes);
+    using var manifestStream = unsafeZip.CreateEntry("manifest.json").Open();
+    JsonSerializer.Serialize(manifestStream, new PortableBackupManifest(
+        "harness.portable-backup.v1", DateTimeOffset.UtcNow, "fixture", Harness.Storage.HarnessStore.CurrentSchemaVersion,
+        [unsafePayload], []));
+}
+var unsafeRejected = false;
+try { await restoreService.StageRestoreAsync(unsafeArchive); }
+catch (InvalidDataException) { unsafeRejected = true; }
+Check(unsafeRejected && !restoreService.HasPendingRestore, "Restore accepted an archive path that escapes its staging directory.");
+
+var terminalOutput = new StringBuilder();
+var terminalOutputLock = new object();
+var terminalMarker = $"harness-terminal-{Guid.NewGuid():N}";
+await using (var terminal = await TerminalSession.StartAsync(testRoot))
+{
+    terminal.OutputReceived += (_, output) =>
+    {
+        lock (terminalOutputLock) terminalOutput.Append(output.Text);
+    };
+    await Task.Delay(TimeSpan.FromSeconds(1));
+    await terminal.SendAsync(OperatingSystem.IsWindows()
+        ? $"Write-Host ('{terminalMarker[..20]}' + '{terminalMarker[20..]}')"
+        : $"printf '%s\\n' '{terminalMarker}'");
+    using var terminalTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+    while (true)
+    {
+        lock (terminalOutputLock)
+        {
+            if (terminalOutput.ToString().Contains(terminalMarker, StringComparison.Ordinal)) break;
+        }
+        await Task.Delay(25, terminalTimeout.Token);
+    }
+}
+var terminalBuffer = new TerminalWindowViewModel(testRoot);
+terminalBuffer.CommandText = "Write-Host 'preserve me'";
+Check(terminalBuffer.TakeCommand() == ""
+      && terminalBuffer.CommandText == "Write-Host 'preserve me'",
+    "Terminal consumed a command before its shell was ready.");
+terminalBuffer.Enqueue(new TerminalOutputEventArgs("\u001b[31mred\u001b[0m\r\nready", TerminalOutputKind.StandardOutput));
+Check(terminalBuffer.FlushPendingOutput()
+      && terminalBuffer.OutputText == "red\nready"
+      && !terminalBuffer.OutputText.Contains('\u001b'),
+    "Terminal output sanitization did not preserve selectable text.");
+
 await using var settingsStore = new Harness.Storage.HarnessStore(Path.Combine(testRoot, "settings-lifecycle.db"));
 await settingsStore.InitializeAsync();
 
@@ -238,9 +441,46 @@ var uiThread = new Thread(() =>
         Check(settings.FindControl<TextBox>("ApiKey")!.PasswordChar != '\0', "API key input is not masked.");
         Check(settings.FindControl<Border>("CodexConnectionPanel") is not null
             && settings.FindControl<Button>("CodexSignInButton") is not null
-            && settings.FindControl<Button>("CodexSignOutButton") is not null,
+            && settings.FindControl<Button>("CodexSignOutButton") is not null
+            && settings.FindControl<ComboBox>("CodexIdentityPicker") is not null
+            && settings.FindControl<Button>("CodexUseIdentityButton") is not null,
             "Subscription connection management is missing from Providers settings.");
         settings.Close();
+
+        var handoff = new SubscriptionHandoffDialog(
+            primaryIdentities[0],
+            [loadedIdentities.Single(identity => identity.Id == addedIdentity.Id)]);
+        handoff.Show();
+        Dispatcher.UIThread.RunJobs();
+        AvaloniaHeadlessPlatform.ForceRenderTimerTick();
+        using var handoffFrame = handoff.CaptureRenderedFrame()
+            ?? throw new Exception("Account handoff frame unavailable.");
+        handoffFrame.Save(Path.Combine(Environment.CurrentDirectory, ".artifacts", "account-handoff.png"));
+        Check(handoff.FindControl<ListBox>("DestinationList")?.ItemCount == 1,
+            "Account handoff did not expose the available destination profile.");
+        handoff.Close();
+
+        var terminalWindow = new TerminalWindow(testRoot);
+        terminalWindow.Show();
+        var terminalUiMarker = $"terminal-ui-{Guid.NewGuid():N}";
+        DispatcherTimer.RunOnce(() =>
+        {
+            terminalWindow.FindControl<TextBox>("TerminalCommandBox")!.Text =
+                $"Write-Host ('{terminalUiMarker[..20]}' + '{terminalUiMarker[20..]}')";
+            terminalWindow.FindControl<Button>("TerminalRunButton")!.RaiseEvent(
+                new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+        }, TimeSpan.FromSeconds(1));
+        using (var terminalPump = new CancellationTokenSource())
+        {
+            DispatcherTimer.RunOnce(terminalPump.Cancel, TimeSpan.FromSeconds(5));
+            try { Dispatcher.UIThread.MainLoop(terminalPump.Token); }
+            catch (OperationCanceledException) { }
+        }
+        var renderedTerminalOutput = ((TerminalWindowViewModel)terminalWindow.DataContext!).OutputText;
+        Check(renderedTerminalOutput.Contains(terminalUiMarker, StringComparison.Ordinal),
+            $"Terminal window did not render PowerShell Write-Host output. Transcript: {renderedTerminalOutput}");
+        terminalWindow.Close();
+        Dispatcher.UIThread.RunJobs();
 
         // Reproduce the production failure: Opened starts asynchronous catalog I/O, then closing
         // cancels it. Cancellation from an async-void UI event must never escape the dispatcher.
@@ -258,7 +498,7 @@ var uiThread = new Thread(() =>
 });
 uiThread.Start(); uiThread.Join();
 if (uiFailure is not null) throw uiFailure;
-Console.WriteLine("API checks passed: four native wire formats, reasoning/tool replay, Unicode, usage, pagination, unknown capabilities, failure handling, credential routing, approval boundaries, catalog merging, and Providers UI. No live API calls made.");
+Console.WriteLine("API checks passed: four native wire formats, reasoning/tool replay, Unicode, usage, pagination, unknown capabilities, failure handling, credential routing, approval boundaries, catalog merging, isolated subscription profiles and handoff UI, portable backup round-trip, unsafe-archive rejection, delayed PowerShell Write-Host plus rendered terminal output, and Providers UI. No live API calls made.");
 
 sealed class FixtureHandler(string content, bool json = false, string[]? pages = null, HttpStatusCode status = HttpStatusCode.OK) : HttpMessageHandler
 {

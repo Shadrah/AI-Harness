@@ -8,7 +8,8 @@ namespace Harness.Storage;
 
 public sealed class HarnessStore : IAsyncDisposable
 {
-    private const int SchemaVersion = 4;
+    private const int SchemaVersion = 5;
+    public const int CurrentSchemaVersion = SchemaVersion;
     private readonly string _connectionString;
     // SQLite async calls still execute synchronously. Gate awaits force-yield
     // without capturing the caller's context so all database work stays off the UI.
@@ -119,6 +120,22 @@ public sealed class HarnessStore : IAsyncDisposable
                 CREATE INDEX IF NOT EXISTS ix_provider_events_session_method_created
                     ON provider_events(session_id, method, created_at DESC);
 
+                CREATE TABLE IF NOT EXISTS activity_events (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    session_id TEXT NULL REFERENCES sessions(id) ON DELETE SET NULL,
+                    kind TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    detail TEXT NOT NULL,
+                    outcome TEXT NOT NULL,
+                    color TEXT NOT NULL,
+                    is_milestone INTEGER NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS ix_activity_events_project_created
+                    ON activity_events(project_id, created_at DESC);
+
                 CREATE TABLE IF NOT EXISTS app_settings (
                     key TEXT PRIMARY KEY,
                     value_json TEXT NOT NULL,
@@ -187,7 +204,7 @@ public sealed class HarnessStore : IAsyncDisposable
                 CREATE INDEX IF NOT EXISTS ix_installed_skills_catalog
                     ON installed_skills(catalog_id, provider_id, scope);
 
-                UPDATE schema_info SET version = 4 WHERE version < 4;
+                UPDATE schema_info SET version = 5 WHERE version < 5;
                 """;
             await command.ExecuteNonQueryAsync(cancellationToken);
             await ClassifyLegacyInternalCodexImportsAsync(connection, cancellationToken);
@@ -219,10 +236,17 @@ public sealed class HarnessStore : IAsyncDisposable
             await using var command = connection.CreateCommand();
             command.CommandText = "SELECT value_json FROM app_settings WHERE key = 'application';";
             var json = await command.ExecuteScalarAsync(cancellationToken) as string;
-            return string.IsNullOrWhiteSpace(json)
-                ? new HarnessApplicationSettings()
-                : JsonSerializer.Deserialize<HarnessApplicationSettings>(json)
-                  ?? new HarnessApplicationSettings();
+            if (string.IsNullOrWhiteSpace(json)) return new HarnessApplicationSettings();
+            var settings = JsonSerializer.Deserialize<HarnessApplicationSettings>(json)
+                ?? new HarnessApplicationSettings();
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            if (!root.TryGetProperty(nameof(HarnessApplicationSettings.PromptForSubscriptionHandoff), out _))
+                settings = settings with { PromptForSubscriptionHandoff = true };
+            if (!root.TryGetProperty(nameof(HarnessApplicationSettings.SubscriptionHandoffThresholdPercent), out _)
+                || settings.SubscriptionHandoffThresholdPercent is < 1 or > 25)
+                settings = settings with { SubscriptionHandoffThresholdPercent = 5 };
+            return settings;
         }
         finally
         {
@@ -246,6 +270,39 @@ public sealed class HarnessStore : IAsyncDisposable
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken)) projects.Add(ReadProject(reader));
             return projects;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task RelocateProjectAsync(
+        string projectId,
+        string rootPath,
+        CancellationToken cancellationToken = default)
+    {
+        var fullPath = Path.GetFullPath(rootPath);
+        if (!Directory.Exists(fullPath)) throw new DirectoryNotFoundException("Choose an existing project folder.");
+        var normalized = NormalizePath(fullPath);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
+        try
+        {
+            await using var connection = await OpenConnectionAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                UPDATE projects
+                SET name = $name, root_path = $rootPath, normalized_root_path = $normalized, last_opened_at = $openedAt
+                WHERE id = $id
+                  AND NOT EXISTS(SELECT 1 FROM projects WHERE normalized_root_path = $normalized AND id <> $id);
+                """;
+            command.Parameters.AddWithValue("$name", new DirectoryInfo(fullPath).Name);
+            command.Parameters.AddWithValue("$rootPath", fullPath);
+            command.Parameters.AddWithValue("$normalized", normalized);
+            command.Parameters.AddWithValue("$openedAt", FormatTimestamp(DateTimeOffset.UtcNow));
+            command.Parameters.AddWithValue("$id", projectId);
+            if (await command.ExecuteNonQueryAsync(cancellationToken) != 1)
+                throw new InvalidOperationException("That folder already belongs to another Harness workspace, or the restored workspace no longer exists.");
         }
         finally
         {
@@ -277,6 +334,154 @@ public sealed class HarnessStore : IAsyncDisposable
         {
             _gate.Release();
         }
+    }
+
+    public async Task CreatePortableSnapshotAsync(
+        string destinationPath,
+        CancellationToken cancellationToken = default)
+    {
+        var destination = Path.GetFullPath(destinationPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
+        try
+        {
+            if (File.Exists(destination)) File.Delete(destination);
+            await using var source = await OpenConnectionAsync(cancellationToken);
+            await using var snapshot = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = destination,
+                Mode = SqliteOpenMode.ReadWriteCreate,
+                Pooling = false,
+                ForeignKeys = true
+            }.ToString());
+            await snapshot.OpenAsync(cancellationToken);
+            source.BackupDatabase(snapshot);
+            await MakeSnapshotPortableAsync(snapshot, Path.GetDirectoryName(DatabasePath)!, cancellationToken);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public static Task RebasePortableSnapshotAsync(
+        string databasePath,
+        string restoredDataDirectory,
+        string? portableContentDirectory = null,
+        CancellationToken cancellationToken = default) => Task.Run(async () =>
+        {
+            await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = Path.GetFullPath(databasePath),
+                Mode = SqliteOpenMode.ReadWrite,
+                Pooling = false,
+                ForeignKeys = true
+            }.ToString());
+            await connection.OpenAsync(cancellationToken);
+            await RewritePortablePathsAsync(
+                connection,
+                restoredDataDirectory,
+                makePortable: false,
+                cancellationToken,
+                portableContentDirectory);
+            await using var integrity = connection.CreateCommand();
+            integrity.CommandText = "PRAGMA quick_check;";
+            if (!string.Equals(await integrity.ExecuteScalarAsync(cancellationToken) as string, "ok", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("The restored Harness database failed its integrity check.");
+            await using var schema = connection.CreateCommand();
+            schema.CommandText = "SELECT MAX(version) FROM schema_info;";
+            var version = Convert.ToInt32(await schema.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
+            if (version > CurrentSchemaVersion)
+                throw new InvalidDataException($"The restored database schema {version} requires a newer Harness release.");
+        }, cancellationToken);
+
+    private static async Task MakeSnapshotPortableAsync(
+        SqliteConnection connection,
+        string sourceDataDirectory,
+        CancellationToken cancellationToken)
+    {
+        await RewritePortablePathsAsync(connection, sourceDataDirectory, makePortable: true, cancellationToken);
+        await using var removeExternalInstalls = connection.CreateCommand();
+        removeExternalInstalls.CommandText = "DELETE FROM installed_skills; PRAGMA journal_mode = DELETE;";
+        await removeExternalInstalls.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task RewritePortablePathsAsync(
+        SqliteConnection connection,
+        string dataDirectory,
+        bool makePortable,
+        CancellationToken cancellationToken,
+        string? portableContentDirectory = null)
+    {
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        foreach (var (table, root) in new[] { ("attachments", "attachments"), ("import_sources", "imports") })
+        {
+            var paths = new List<(string Id, string Path)>();
+            await using (var read = connection.CreateCommand())
+            {
+                read.Transaction = transaction;
+                read.CommandText = $"SELECT id, stored_path FROM {table};";
+                await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken)) paths.Add((reader.GetString(0), reader.GetString(1)));
+            }
+
+            foreach (var item in paths)
+            {
+                var rewritten = makePortable
+                    ? ToPortableDataPath(dataDirectory, root, item.Path)
+                    : FromPortableDataPath(dataDirectory, root, item.Path, portableContentDirectory);
+                await using var update = connection.CreateCommand();
+                update.Transaction = transaction;
+                update.CommandText = $"UPDATE {table} SET stored_path = $path WHERE id = $id;";
+                update.Parameters.AddWithValue("$path", rewritten);
+                update.Parameters.AddWithValue("$id", item.Id);
+                await update.ExecuteNonQueryAsync(cancellationToken);
+            }
+        }
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    private static string ToPortableDataPath(string dataDirectory, string requiredRoot, string storedPath)
+    {
+        var fullData = Path.GetFullPath(dataDirectory).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var fullStored = Path.GetFullPath(storedPath);
+        if (!File.Exists(fullStored))
+            throw new FileNotFoundException("Harness-owned content referenced by the database is missing.", fullStored);
+        if (!fullStored.StartsWith(fullData, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Harness-owned content was found outside the data directory and cannot be exported safely.");
+        var relative = Path.GetRelativePath(dataDirectory, fullStored).Replace('\\', '/');
+        if (!relative.StartsWith(requiredRoot + "/", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"A {requiredRoot} record points outside its managed archive area.");
+        return relative;
+    }
+
+    private static string FromPortableDataPath(
+        string dataDirectory,
+        string requiredRoot,
+        string storedPath,
+        string? portableContentDirectory)
+    {
+        if (Path.IsPathRooted(storedPath))
+            throw new InvalidOperationException("The backup database contains a non-portable managed-content path.");
+        var normalized = storedPath.Replace('\\', '/');
+        if (!normalized.StartsWith(requiredRoot + "/", StringComparison.OrdinalIgnoreCase)
+            || normalized.Split('/').Any(part => part is "" or "." or ".."))
+            throw new InvalidOperationException($"The backup database contains an invalid {requiredRoot} path.");
+        var target = Path.GetFullPath(Path.Combine(dataDirectory, normalized.Replace('/', Path.DirectorySeparatorChar)));
+        var root = Path.GetFullPath(Path.Combine(dataDirectory, requiredRoot)).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        if (!target.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"The backup database contains a {requiredRoot} path outside its managed directory.");
+        if (portableContentDirectory is not null)
+        {
+            var payload = Path.GetFullPath(Path.Combine(
+                portableContentDirectory,
+                normalized.Replace('/', Path.DirectorySeparatorChar)));
+            var payloadRoot = Path.GetFullPath(Path.Combine(portableContentDirectory, requiredRoot))
+                .TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            if (!payload.StartsWith(payloadRoot, StringComparison.OrdinalIgnoreCase) || !File.Exists(payload))
+                throw new InvalidDataException($"The backup database references missing {requiredRoot} content.");
+        }
+        return target;
     }
 
     public async Task UpsertSkillCatalogAsync(
@@ -648,9 +853,15 @@ public sealed class HarnessStore : IAsyncDisposable
                     $scope, $workspacePath, $providerId, $modelId, $sha256,
                     $enabled, $installedAt)
                 ON CONFLICT(id) DO UPDATE SET
+                    catalog_id = excluded.catalog_id,
+                    name = excluded.name,
                     source_revision = excluded.source_revision,
                     package_path = excluded.package_path,
                     install_path = excluded.install_path,
+                    scope = excluded.scope,
+                    workspace_path = excluded.workspace_path,
+                    provider_id = excluded.provider_id,
+                    model_id = excluded.model_id,
                     content_sha256 = excluded.content_sha256,
                     enabled = excluded.enabled,
                     installed_at = excluded.installed_at;
@@ -987,8 +1198,13 @@ public sealed class HarnessStore : IAsyncDisposable
                 transaction,
                 active.Id,
                 cancellationToken);
+            var activityEvents = await ReadActivityEventsAsync(
+                connection,
+                transaction,
+                project.Id,
+                cancellationToken);
             await transaction.CommitAsync(cancellationToken);
-            return new WorkspaceSessionSnapshot(project, sessions, active, messages, attachments);
+            return new WorkspaceSessionSnapshot(project, sessions, active, messages, attachments, activityEvents);
         }
         finally
         {
@@ -1411,6 +1627,41 @@ public sealed class HarnessStore : IAsyncDisposable
         }
     }
 
+    public async Task AppendActivityEventAsync(
+        StoredActivityEvent activityEvent,
+        CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
+        try
+        {
+            await using var connection = await OpenConnectionAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                INSERT INTO activity_events(
+                    id, project_id, session_id, kind, title, detail, outcome,
+                    color, is_milestone, created_at)
+                VALUES(
+                    $id, $projectId, $sessionId, $kind, $title, $detail, $outcome,
+                    $color, $isMilestone, $createdAt);
+                """;
+            command.Parameters.AddWithValue("$id", activityEvent.Id);
+            command.Parameters.AddWithValue("$projectId", activityEvent.ProjectId);
+            command.Parameters.AddWithValue("$sessionId", (object?)activityEvent.SessionId ?? DBNull.Value);
+            command.Parameters.AddWithValue("$kind", activityEvent.Kind);
+            command.Parameters.AddWithValue("$title", activityEvent.Title);
+            command.Parameters.AddWithValue("$detail", activityEvent.Detail);
+            command.Parameters.AddWithValue("$outcome", activityEvent.Outcome);
+            command.Parameters.AddWithValue("$color", activityEvent.Color);
+            command.Parameters.AddWithValue("$isMilestone", activityEvent.IsMilestone ? 1 : 0);
+            command.Parameters.AddWithValue("$createdAt", FormatTimestamp(activityEvent.CreatedAt));
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     private async Task<SqliteConnection> OpenConnectionAsync(CancellationToken cancellationToken)
     {
         var connection = new SqliteConnection(_connectionString);
@@ -1680,6 +1931,42 @@ public sealed class HarnessStore : IAsyncDisposable
         while (await reader.ReadAsync(cancellationToken))
         {
             result.Add(ReadAttachment(reader));
+        }
+        return result;
+    }
+
+    private static async Task<List<StoredActivityEvent>> ReadActivityEventsAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        string projectId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT id, project_id, session_id, kind, title, detail, outcome,
+                   color, is_milestone, created_at
+            FROM activity_events
+            WHERE project_id = $projectId
+            ORDER BY created_at DESC
+            LIMIT 500;
+            """;
+        command.Parameters.AddWithValue("$projectId", projectId);
+        var result = new List<StoredActivityEvent>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            result.Add(new StoredActivityEvent(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.IsDBNull(2) ? null : reader.GetString(2),
+                reader.GetString(3),
+                reader.GetString(4),
+                reader.GetString(5),
+                reader.GetString(6),
+                reader.GetString(7),
+                reader.GetInt64(8) != 0,
+                ParseTimestamp(reader.GetString(9))));
         }
         return result;
     }

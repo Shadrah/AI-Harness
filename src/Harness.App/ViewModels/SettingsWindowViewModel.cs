@@ -35,6 +35,9 @@ public sealed class SettingsWindowViewModel : ObservableObject
     private readonly HashSet<string> _storedHiddenModels;
     private readonly HashSet<string> _storedFavoriteModels;
     private readonly List<string> _storedModelOrder;
+    private bool _promptForSubscriptionHandoff;
+    private double _subscriptionHandoffThresholdPercent;
+    private string? _activeCodexIdentityId;
 
     public SettingsWindowViewModel(HarnessApplicationSettings settings, string workspacePath)
     {
@@ -51,6 +54,9 @@ public sealed class SettingsWindowViewModel : ObservableObject
         _storedHiddenModels = (settings.HiddenModelIds ?? []).ToHashSet(StringComparer.OrdinalIgnoreCase);
         _storedFavoriteModels = (settings.FavoriteModelIds ?? []).ToHashSet(StringComparer.OrdinalIgnoreCase);
         _storedModelOrder = (settings.ModelOrder ?? []).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        _activeCodexIdentityId = settings.ActiveCodexIdentityId;
+        _promptForSubscriptionHandoff = settings.PromptForSubscriptionHandoff;
+        _subscriptionHandoffThresholdPercent = Math.Clamp(settings.SubscriptionHandoffThresholdPercent, 1, 25);
         WorkspacePath = workspacePath;
     }
 
@@ -72,6 +78,9 @@ public sealed class SettingsWindowViewModel : ObservableObject
     public string DefaultGitBranch { get => _defaultGitBranch; set => SetProperty(ref _defaultGitBranch, value); }
     public IReadOnlyList<PermissionModeOption> PermissionModes { get; } = PermissionModeOption.All;
     public PermissionModeOption SelectedPermissionMode { get => _selectedPermissionMode; set => SetProperty(ref _selectedPermissionMode, value); }
+    public bool PromptForSubscriptionHandoff { get => _promptForSubscriptionHandoff; set => SetProperty(ref _promptForSubscriptionHandoff, value); }
+    public double SubscriptionHandoffThresholdPercent { get => _subscriptionHandoffThresholdPercent; set => SetProperty(ref _subscriptionHandoffThresholdPercent, Math.Clamp(value, 1, 25)); }
+    public string? ActiveCodexIdentityId { get => _activeCodexIdentityId; set => SetProperty(ref _activeCodexIdentityId, value); }
     public BatchObservableCollection<SkillCatalogItem> Skills { get; } = [];
     public BatchObservableCollection<ModelPreferenceItem> ModelPreferences { get; } = [];
     public bool HasModelPreferences => ModelPreferences.Count > 0;
@@ -163,7 +172,7 @@ public sealed class SettingsWindowViewModel : ObservableObject
         IReadOnlyList<SkillCatalogSource>? sources = null)
     {
         var selectedId = SelectedSkill?.Entry.Id;
-        var installedIds = installed.Select(item => item.CatalogId).ToHashSet(StringComparer.Ordinal);
+        var installedIds = installed.Where(item => item.Enabled).Select(item => item.CatalogId).ToHashSet(StringComparer.Ordinal);
         var filtered = entries.Select(entry => new SkillCatalogItem(
             entry,
             installedIds.Contains(entry.Id),
@@ -231,7 +240,10 @@ public sealed class SettingsWindowViewModel : ObservableObject
             SelectedPermissionMode.Id,
             hidden,
             favorites,
-            order);
+            order,
+            ActiveCodexIdentityId,
+            PromptForSubscriptionHandoff,
+            SubscriptionHandoffThresholdPercent);
     }
 }
 

@@ -13,6 +13,7 @@ public sealed class ApiConnectionStore
     private static readonly string CatalogPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "Harness", "api-connections.json");
     private static readonly SemaphoreSlim Gate = new(1, 1);
+    public static string MetadataPath => CatalogPath;
 
     public async Task<IReadOnlyList<SavedApiConnection>> LoadAsync(CancellationToken cancellationToken = default)
     {

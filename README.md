@@ -58,13 +58,20 @@ capability/content contracts:
 - a Codex app-server adapter for model discovery and authenticated rate-limit
   snapshots without starting a model turn;
 - explicit ChatGPT subscription sign-in through the Codex runtime;
-- persistent subscription connection management in Settings, including the real
-  account identity, plan, runtime source, complete reported model list, refresh,
-  sign-in, and sign-out without removing local projects or chats;
+- persistent multi-account subscription management in Settings. Each named
+  account has an isolated provider profile, credentials, catalog, usage, and
+  provider threads; a user-confirmed low-usage handoff continues the same local
+  task without merging quotas or spending the source account on a summary;
 - provider-neutral model-picker preferences for visibility, favorites, and
   ordering, retained across catalog refreshes, restarts, and provider reconnects;
 - unclean-shutdown recovery with a visible next-launch notice and bounded,
   privacy-safe diagnostics that exclude prompts, credentials, commands, and paths;
+- portable, integrity-checked backup and staged next-launch restore for Harness
+  history, settings, retained context, catalog data, and credential-free provider
+  metadata, with moved-workspace relinking and explicit secret/source exclusions;
+- a workspace-scoped native terminal opened from the command strip or <kbd>Ctrl</kbd>+<kbd>`</kbd>:
+  real shell input, selectable bounded output, command history, clear/restart,
+  and process-tree ownership without persisting potentially sensitive transcripts;
 - real Codex thread/turn startup, streamed assistant messages, activity events,
   and token-usage updates;
 - active-context tracking from the provider's latest input footprint (kept
@@ -162,7 +169,12 @@ documented in [storage](docs/storage.md). The complete product contract is defin
 in [product completeness](docs/product-completeness.md), including the searchable,
 provider-aware [Skills Library](docs/skills-library.md). The Windows
 [reference browser](docs/reference-browser.md) provides browser-scoped agent
-control and real image observations without another harness or Electron.
+control and real image observations without another harness or Electron. See
+[portable backup and restore](docs/backup-restore.md) for archive scope, safety,
+and migration behavior; [integrated terminal](docs/integrated-terminal.md) covers
+shell selection, process ownership, output bounds, and privacy behavior. See
+[subscription account handoff](docs/subscription-account-handoff.md) for account
+isolation, confirmation, continuity, and usage-trigger behavior.
 
 ## License
 

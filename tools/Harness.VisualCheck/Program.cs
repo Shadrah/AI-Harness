@@ -186,6 +186,17 @@ try
             firstSessionId,
             "thread/tokenUsage/updated",
             "{\"tokenUsage\":{\"last\":{\"inputTokens\":37449},\"total\":{\"totalTokens\":24690858},\"modelContextWindow\":258400}}");
+        await store.AppendActivityEventAsync(new StoredActivityEvent(
+            "activity-complete",
+            snapshot.Project.Id,
+            firstSessionId,
+            "TASK",
+            "Completed · Durable activity probe",
+            "2 files changed · Verification passed",
+            "COMPLETED",
+            "#65C7D0",
+            true,
+            DateTimeOffset.UtcNow));
         var contextSource = Path.Combine(storageProbeWorkspace, "context.md");
         await File.WriteAllTextAsync(contextSource, "durable context");
         var attachment = await store.AddAttachmentAsync(firstSessionId, contextSource);
@@ -255,6 +266,9 @@ try
         if (managed.Sessions.Count != 1
             || managed.ActiveSession.Id != firstSessionId
             || managed.ActiveSession.Title != "Recovered session"
+            || managed.ActivityEvents.Count != 1
+            || managed.ActivityEvents[0].Title != "Completed · Durable activity probe"
+            || !managed.ActivityEvents[0].IsMilestone
             || classifiedSubagent?.SourceKind != "Codex internal session"
             || classifiedHarness?.SourceKind != "Codex internal session")
         {
@@ -381,6 +395,7 @@ try
         activityProbe.ConversationAdvanced += (_, _) => conversationAdvances++;
         activityProbe.PromptText = "Implement the change";
         activityProbe.BeginTurn();
+        activityProbe.RecordTurnStarted("GPT activity probe", "Implement the change");
         activityProbe.StartAssistantMessage("status-probe");
         activityProbe.AppendAssistantDelta("status-probe", "I am continuing with the implementation.");
         activityProbe.CompleteAssistant("status-probe");
@@ -394,8 +409,12 @@ try
             throw new InvalidOperationException("Live chat follow, turn activity, or permission modes are incomplete.");
         }
         activityProbe.CompleteTurn();
-        if (deliveredMessage.Status != "COMPLETED")
-            throw new InvalidOperationException("Assistant text was marked complete before the provider turn completed.");
+        if (deliveredMessage.Status != "COMPLETED"
+            || activityProbe.Activity.Count(item => item.IsMilestone) < 2
+            || !activityProbe.Activity.Any(item => item.Outcome == "COMPLETED" && item.Title.StartsWith("Completed ·", StringComparison.Ordinal)))
+        {
+            throw new InvalidOperationException("Assistant completion or the task milestone journal did not track the completed turn.");
+        }
 
         var turnImagePath = Path.Combine(storageProbeWorkspace, "turn-image.png");
         var turnTextPath = Path.Combine(storageProbeWorkspace, "turn-notes.md");
@@ -738,6 +757,7 @@ sessionNamingProbe.ApplyWorkspaceSnapshot(new WorkspaceSessionSnapshot(
     [namingSession],
     namingSession,
     [],
+    [],
     []));
 sessionNamingProbe.RenameStoredSession(namingSession.Id, "Persist this conversation");
 if (sessionNamingProbe.CurrentSessionTitle != "Persist this conversation"
@@ -1001,6 +1021,8 @@ var attachmentButton = window.FindControl<Button>("AttachmentMenuButton")
     ?? throw new InvalidOperationException("The composer did not expose the attachment menu.");
 _ = window.FindControl<Button>("SkillsLibraryButton")
     ?? throw new InvalidOperationException("The command strip did not expose the Skills Library bookshelf shortcut.");
+_ = window.FindControl<Button>("TerminalButton")
+    ?? throw new InvalidOperationException("The command strip did not expose the workspace terminal shortcut.");
 
 var previewViewModel = (MainWindowViewModel)window.DataContext!;
 previewViewModel.AddTurnAttachments([Path.GetFullPath(outputPath)], "image");
@@ -1111,6 +1133,19 @@ settingsWindow.Show();
 var settingsTabs = settingsWindow.FindControl<TabControl>("SettingsTabs")
     ?? throw new InvalidOperationException("The Settings category navigator was not created.");
 var settingsViewModel = (SettingsWindowViewModel)settingsWindow.DataContext!;
+_ = settingsWindow.FindControl<Button>("ExportBackupButton")
+    ?? throw new InvalidOperationException("Workspace settings did not expose portable backup export.");
+_ = settingsWindow.FindControl<Button>("RestoreBackupButton")
+    ?? throw new InvalidOperationException("Workspace settings did not expose portable backup restore.");
+settingsTabs.SelectedIndex = 0;
+var backupSettingsPath = Path.Combine(
+    Path.GetDirectoryName(Path.GetFullPath(outputPath))!,
+    $"{Path.GetFileNameWithoutExtension(outputPath)}-backup{Path.GetExtension(outputPath)}");
+using (var backupSettingsFrame = settingsWindow.CaptureRenderedFrame()
+    ?? throw new InvalidOperationException("Avalonia did not render portable backup settings."))
+{
+    backupSettingsFrame.Save(backupSettingsPath);
+}
 var previewSkills = new[]
 {
     ("game-feel", "Add shake, hit-stop, easing, and layered feedback without losing responsiveness.", "Game development", "community/indie-skills"),
@@ -1211,6 +1246,33 @@ using (var executionFrame = executionWindow.CaptureRenderedFrame()
     executionFrame.Save(executionPath);
 }
 executionWindow.Close();
+
+var terminalViewModel = new TerminalWindowViewModel(Environment.CurrentDirectory);
+terminalViewModel.EnqueueSystem("Harness terminal · Windows PowerShell\nWorkspace · E:\\Dev Projects\\AI Harness\n\n› git status\nOn branch main\nChanges not staged for commit:\n  modified: src/Harness.App/Views/MainWindow.axaml\n");
+terminalViewModel.FlushPendingOutput();
+terminalViewModel.SetState(true, "READY");
+var terminalWindow = new TerminalWindow(Environment.CurrentDirectory)
+{
+    Width = 1120,
+    Height = 680,
+    DataContext = terminalViewModel
+};
+terminalWindow.Show();
+_ = terminalWindow.FindControl<TextBox>("TerminalOutputBox")
+    ?? throw new InvalidOperationException("Terminal did not expose selectable output.");
+_ = terminalWindow.FindControl<TextBox>("TerminalCommandBox")
+    ?? throw new InvalidOperationException("Terminal did not expose command input.");
+_ = terminalWindow.FindControl<Button>("TerminalRestartButton")
+    ?? throw new InvalidOperationException("Terminal did not expose shell restart.");
+var terminalPath = Path.Combine(
+    Path.GetDirectoryName(Path.GetFullPath(outputPath))!,
+    $"{Path.GetFileNameWithoutExtension(outputPath)}-terminal{Path.GetExtension(outputPath)}");
+using (var terminalFrame = terminalWindow.CaptureRenderedFrame()
+    ?? throw new InvalidOperationException("Avalonia did not render the terminal module."))
+{
+    terminalFrame.Save(terminalPath);
+}
+terminalWindow.Close();
 
 var diffWindow = new DiffWindow
 {

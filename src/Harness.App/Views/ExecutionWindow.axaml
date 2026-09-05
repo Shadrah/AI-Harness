@@ -17,45 +17,89 @@
       <Grid Margin="14,0,0,0" ColumnDefinitions="Auto,12,Auto,*,40,40,40">
         <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
           <controls:HarnessMark />
-          <TextBlock Text="RUN ACTIVITY" Classes="micro" VerticalAlignment="Center"/>
+          <TextBlock Text="ACTIVITY JOURNAL" Classes="micro" VerticalAlignment="Center"/>
         </StackPanel>
         <Border Grid.Column="1" Width="1" Height="18" Background="#29313C"/>
-        <TextBlock Grid.Column="2" Text="{Binding ExecutionStatus}" Classes="micro" FontSize="8" Foreground="#65C7D0" VerticalAlignment="Center"/>
+          <TextBlock Grid.Column="2" Text="{Binding ActivityStatus}" Classes="micro" FontSize="8" Foreground="#65C7D0" VerticalAlignment="Center"/>
         <Button Grid.Column="4" Classes="window-command" Click="Minimize_OnClick"><Border Width="12" Height="1.5" Background="#D8DEE8"/></Button>
         <Button Grid.Column="5" Classes="window-command" Click="Maximize_OnClick"><Border Width="11" Height="11" BorderBrush="#D8DEE8" BorderThickness="1.5"/></Button>
         <Button Grid.Column="6" Classes="window-command window-close" Click="Close_OnClick"><Path Width="14" Height="14" Stretch="Uniform" Stroke="#D8DEE8" StrokeThickness="1.5" Data="M3,3 L13,13 M13,3 L3,13"/></Button>
       </Grid>
     </Border>
-    <Grid Grid.Row="1" ColumnDefinitions="330,*">
+    <Grid Grid.Row="1" ColumnDefinitions="410,*">
       <Border BorderBrush="#29313C" BorderThickness="0,0,1,0" Background="#151A21">
-        <ListBox ItemsSource="{Binding ExecutionItems}" SelectedItem="{Binding SelectedExecutionItem, Mode=TwoWay}" Background="Transparent" BorderThickness="0">
+      <Grid RowDefinitions="52,*">
+        <Grid Margin="16,0" ColumnDefinitions="*,Auto" VerticalAlignment="Center">
+          <StackPanel Spacing="2">
+            <TextBlock Text="PROJECT JOURNAL" Classes="micro" Foreground="#65C7D0"/>
+            <TextBlock Text="Milestones and meaningful workspace activity" Classes="muted" FontSize="9"/>
+          </StackPanel>
+          <TextBlock Grid.Column="1" Text="{Binding ActivityStatus}" Classes="micro" FontSize="8" VerticalAlignment="Center"/>
+        </Grid>
+        <ListBox Grid.Row="1" ItemsSource="{Binding Activity}" Background="Transparent" BorderThickness="0">
           <ListBox.ItemTemplate>
-            <DataTemplate x:DataType="vm:ExecutionItem">
-              <Grid Margin="10,7" ColumnDefinitions="4,10,*,Auto">
+            <DataTemplate x:DataType="vm:ActivityItem">
+              <Grid Margin="12,5" ColumnDefinitions="4,12,*">
                 <Border Background="{Binding Color}" CornerRadius="2"/>
-                <StackPanel Grid.Column="2" Spacing="3">
-                  <TextBlock Text="{Binding Kind}" Classes="micro" FontSize="8" Foreground="{Binding Color}"/>
-                  <TextBlock Text="{Binding Title}" TextTrimming="CharacterEllipsis"/>
-                  <TextBlock Text="{Binding Time}" Classes="muted mono" FontSize="8"/>
-                </StackPanel>
-                <TextBlock Grid.Column="3" Text="{Binding Status}" Classes="micro" FontSize="8" VerticalAlignment="Center"/>
+                <Border Grid.Column="2" Padding="11,9" Background="#11151B" BorderBrush="#29313C" BorderThickness="1" CornerRadius="4">
+                  <StackPanel Spacing="5">
+                    <Grid ColumnDefinitions="Auto,8,*,Auto">
+                      <TextBlock Text="{Binding Kind}" Classes="micro" FontSize="8" Foreground="{Binding Color}"/>
+                      <Border Grid.Column="2" IsVisible="{Binding IsMilestone}" HorizontalAlignment="Left" Padding="6,2" CornerRadius="3" BorderBrush="#65C7D0" BorderThickness="1">
+                        <TextBlock Text="MILESTONE" Classes="micro" FontSize="7" Foreground="#65C7D0"/>
+                      </Border>
+                      <TextBlock Grid.Column="3" Text="{Binding Outcome}" Classes="micro" FontSize="7" Foreground="{Binding Color}"/>
+                    </Grid>
+                    <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                    <TextBlock Text="{Binding Detail}" IsVisible="{Binding HasDetail}" Classes="muted" FontSize="10" TextWrapping="Wrap" MaxLines="4" TextTrimming="CharacterEllipsis"/>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                      <TextBlock Text="{Binding Day}" Classes="micro" FontSize="7"/>
+                      <TextBlock Text="{Binding Time}" Classes="muted mono" FontSize="8"/>
+                    </StackPanel>
+                  </StackPanel>
+                </Border>
               </Grid>
             </DataTemplate>
           </ListBox.ItemTemplate>
         </ListBox>
+      </Grid>
       </Border>
-      <Grid Grid.Column="1" RowDefinitions="42,*">
+      <Grid Grid.Column="1" RowDefinitions="52,220,42,*">
         <Grid Margin="14,0" ColumnDefinitions="*,Auto" VerticalAlignment="Center">
+          <StackPanel Spacing="2">
+            <TextBlock Text="CURRENT RUN" Classes="micro" Foreground="#65C7D0"/>
+            <TextBlock Text="Bounded command, tool, approval, and file events" Classes="muted" FontSize="9"/>
+          </StackPanel>
+          <TextBlock Grid.Column="1" Text="{Binding ExecutionStatus}" Classes="micro" FontSize="8"/>
+        </Grid>
+        <Border Grid.Row="1" BorderBrush="#29313C" BorderThickness="0,1,0,1">
+          <ListBox ItemsSource="{Binding ExecutionItems}" SelectedItem="{Binding SelectedExecutionItem, Mode=TwoWay}" Background="Transparent" BorderThickness="0">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="vm:ExecutionItem">
+                <Grid Margin="12,6" ColumnDefinitions="4,10,*,Auto">
+                  <Border Background="{Binding Color}" CornerRadius="2"/>
+                  <StackPanel Grid.Column="2" Spacing="3">
+                    <TextBlock Text="{Binding Kind}" Classes="micro" FontSize="8" Foreground="{Binding Color}"/>
+                    <TextBlock Text="{Binding Title}" TextTrimming="CharacterEllipsis"/>
+                    <TextBlock Text="{Binding Time}" Classes="muted mono" FontSize="8"/>
+                  </StackPanel>
+                  <TextBlock Grid.Column="3" Text="{Binding Status}" Classes="micro" FontSize="8" VerticalAlignment="Center"/>
+                </Grid>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </Border>
+        <Grid Grid.Row="2" Margin="14,0" ColumnDefinitions="*,Auto" VerticalAlignment="Center">
           <TextBlock Text="{Binding SelectedExecutionItem.Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
           <TextBlock Grid.Column="1" Text="{Binding SelectedExecutionItem.Status}" Classes="micro" Foreground="#65C7D0"/>
         </Grid>
-        <Border Grid.Row="1" Margin="12" Classes="panel">
+        <Border Grid.Row="3" Margin="12" Classes="panel">
           <TextBox Text="{Binding SelectedExecutionItem.Detail}" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap" BorderThickness="0" FontFamily="{Binding SelectedExecutionItem.FontFamily}" FontSize="11"/>
         </Border>
       </Grid>
     </Grid>
     <Border Grid.Row="2" BorderBrush="#29313C" BorderThickness="0,1,0,0" Background="#0D1116">
-      <TextBlock Text="Output is bounded per event; complete provider records remain available in durable session storage." Classes="muted" FontSize="9" Margin="11,0" VerticalAlignment="Center"/>
+      <TextBlock Text="Project history is durable. High-volume output stays bounded in Current run so Activity remains fast and readable." Classes="muted" FontSize="9" Margin="11,0" VerticalAlignment="Center"/>
     </Border>
   </Grid>
 </Window>

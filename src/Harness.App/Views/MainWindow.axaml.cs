@@ -33,14 +33,21 @@ public sealed partial class MainWindow : Window
     private readonly object _persistenceLock = new();
     private readonly GitWorkspaceClient _git = new();
     private readonly GitHubCliClient _github = new();
+    private readonly PortableBackupService _portableBackupService = new();
+    private readonly SubscriptionIdentityStore _subscriptionIdentityStore = new();
+    private readonly SemaphoreSlim _subscriptionSwitchGate = new(1, 1);
+    private IReadOnlyList<SubscriptionIdentity> _subscriptionIdentities = [];
+    private SubscriptionIdentity? _activeSubscriptionIdentity;
     private WorkingTreeWindow? _workingTreeWindow;
     private HarnessApplicationSettings _applicationSettings = new();
     private SettingsWindow? _settingsWindow;
     private ExecutionWindow? _executionWindow;
+    private TerminalWindow? _terminalWindow;
     private StoredImportSource? _activeImportSource;
     private bool _importContextApplied;
     private const string ImportContextAppliedEvent = "harness/importContextBriefV2Applied";
     private const string ContextFilesAppliedEvent = "harness/contextFilesAppliedV1";
+    private const string ProviderIdentityChangedEvent = "harness/providerIdentityChangedV1";
     private readonly HashSet<string> _appliedContextContentIds = new(StringComparer.OrdinalIgnoreCase);
     private string? _appliedContextThreadId;
     private long _compactionAttempt;
@@ -62,6 +69,9 @@ public sealed partial class MainWindow : Window
     private Task? _usageRefreshTask;
     private string? _usageProviderId;
     private Task<CrashRecoveryNotice?>? _diagnosticsStartupTask;
+    private ProviderUsageSnapshot? _pendingHandoffUsage;
+    private string? _activeHandoffNoticeKey;
+    private string? _dismissedHandoffNoticeKey;
 
     public MainWindow() : this(usePreviewData: false)
     {
@@ -78,6 +88,7 @@ public sealed partial class MainWindow : Window
         DataContext = new MainWindowViewModel(usePreviewData);
         ViewModel.ConversationRestored += ViewModel_OnConversationRestored;
         ViewModel.ConversationAdvanced += ViewModel_OnConversationAdvanced;
+        ViewModel.ActivityPersistenceRequested += ViewModel_OnActivityPersistenceRequested;
         _deltaFlushTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
         _deltaFlushTimer.Tick += (_, _) => FlushPendingUiDeltas();
         _deltaFlushTimer.Start();
@@ -114,6 +125,7 @@ public sealed partial class MainWindow : Window
         {
             _diagnosticsStartupTask = CrashDiagnosticsService.Shared.StartSessionAsync();
             _ = ObserveCrashRecoveryAsync(_diagnosticsStartupTask);
+            await ApplyPendingPortableRestoreAsync();
             await InitializePersistenceAsync();
             _lifetime.Token.ThrowIfCancellationRequested();
             _skillWarmTask = Task.Run(WarmSkillCatalogAsync, _lifetime.Token);
@@ -122,6 +134,24 @@ public sealed partial class MainWindow : Window
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
         catch (Exception exception) { ViewModel.AddActivity("STARTUP", CleanError(exception), "#E2A84A"); }
+    }
+
+    private async Task ApplyPendingPortableRestoreAsync()
+    {
+        try
+        {
+            var restored = await _portableBackupService.ApplyPendingRestoreAsync(_lifetime.Token);
+            if (restored is null) return;
+            ViewModel.SetRestoreNotice(restored.BackupCreatedAtUtc);
+            ViewModel.AddActivity("BACKUP", "Portable backup restored before storage startup.", "#65C7D0");
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            ViewModel.SetRestoreFailureNotice();
+            ViewModel.AddActivity("BACKUP", CleanError(exception), "#E2A84A");
+            _ = CrashDiagnosticsService.Shared.WriteNonfatalReportAsync(exception, "portable-restore");
+        }
     }
 
     private async Task ObserveCrashRecoveryAsync(Task<CrashRecoveryNotice?> recoveryTask)
@@ -163,6 +193,7 @@ public sealed partial class MainWindow : Window
             ViewModel.ApplyWorkspaceSnapshot(snapshot);
             await RefreshWorkspaceCatalogAsync(snapshot.Project.Id);
             await LoadImportStateAsync(snapshot.ActiveSession.Id);
+            await SelectSubscriptionIdentityForSessionAsync(snapshot.ActiveSession.Id, _lifetime.Token, restartRuntime: false);
             ViewModel.MessagePersistenceRequested += ViewModel_OnMessagePersistenceRequested;
             ViewModel.AddActivity("STORAGE", "Durable session store ready", "#65C7D0");
         }
@@ -175,16 +206,25 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private async Task ConnectCodexAsync()
+    private async Task ConnectCodexAsync(bool resumeThread = true)
     {
         try
         {
-            _codex = await CodexAppServerClient.StartAsync(_lifetime.Token);
+            if (_activeSubscriptionIdentity is null)
+            {
+                await SelectSubscriptionIdentityForSessionAsync(
+                    _activeSession?.Id,
+                    _lifetime.Token,
+                    restartRuntime: false);
+            }
+            _codex = await CodexAppServerClient.StartAsync(
+                _activeSubscriptionIdentity?.ProfileRoot,
+                _lifetime.Token);
             _notificationTask = ListenForNotificationsAsync(_codex, _lifetime.Token);
             _requestTask = ListenForServerRequestsAsync(_codex, _lifetime.Token);
             await ReloadModelsAsync();
             await RefreshUsageAsync();
-            await ResumeActiveThreadAsync();
+            if (resumeThread) await ResumeActiveThreadAsync();
             if ((!_codex.Runtime.HarnessOwned || !_codex.Runtime.CodeToolsAvailable)
                 && !_automaticRuntimeUpdateStarted)
             {
@@ -209,6 +249,8 @@ public sealed partial class MainWindow : Window
         _settingsWindow = null;
         _executionWindow?.Close();
         _executionWindow = null;
+        _terminalWindow?.Close();
+        _terminalWindow = null;
         _workingTreeWindow?.Close();
         _workingTreeWindow = null;
         _lifetime.Cancel();
@@ -224,6 +266,7 @@ public sealed partial class MainWindow : Window
         _deltaFlushTimer.Stop();
         ViewModel.ConversationRestored -= ViewModel_OnConversationRestored;
         ViewModel.ConversationAdvanced -= ViewModel_OnConversationAdvanced;
+        ViewModel.ActivityPersistenceRequested -= ViewModel_OnActivityPersistenceRequested;
         await StopCodexAsync();
         await FlushPersistenceAsync();
         if (_store is not null)
@@ -238,6 +281,7 @@ public sealed partial class MainWindow : Window
             await CrashDiagnosticsService.Shared.CompleteSessionAsync();
         }
         _lifetime.Dispose();
+        _subscriptionSwitchGate.Dispose();
     }
 
     private async void OpenRecoveryDiagnostics_OnClick(object? sender, RoutedEventArgs e)
@@ -371,6 +415,34 @@ public sealed partial class MainWindow : Window
         _executionWindow.Show(this);
     }
 
+    private void OpenTerminal_OnClick(object? sender, RoutedEventArgs e) => OpenTerminal();
+
+    private void OpenTerminal()
+    {
+        if (_terminalWindow is not null)
+        {
+            _terminalWindow.Activate();
+            return;
+        }
+        if (!Directory.Exists(ViewModel.WorkspacePath))
+        {
+            ViewModel.AddActivity("TERMINAL", "Open an available workspace before starting a terminal.", "#E2A84A");
+            return;
+        }
+        _terminalWindow = new TerminalWindow(ViewModel.WorkspacePath);
+        _terminalWindow.Closed += (_, _) => _terminalWindow = null;
+        _terminalWindow.Show(this);
+    }
+
+    private void MainWindow_OnKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.OemTilde && e.KeyModifiers.HasFlag(KeyModifiers.Control))
+        {
+            e.Handled = true;
+            OpenTerminal();
+        }
+    }
+
     private void OpenSettings_OnClick(object? sender, RoutedEventArgs e) => OpenSettings(openSkills: false);
 
     private void OpenSkills_OnClick(object? sender, RoutedEventArgs e) => OpenSettings(openSkills: true);
@@ -384,7 +456,7 @@ public sealed partial class MainWindow : Window
             _settingsWindow.Activate();
             return;
         }
-        _settingsWindow = new SettingsWindow(
+        var settingsWindow = new SettingsWindow(
             _applicationSettings,
             ViewModel.WorkspacePath,
             SaveApplicationSettingsAsync,
@@ -399,9 +471,38 @@ public sealed partial class MainWindow : Window
             RefreshApiConnectionsAsync,
             ReadCodexConnectionAsync,
             BeginCodexSignInAsync,
-            SignOutCodexAsync);
-        _settingsWindow.Closed += (_, _) => _settingsWindow = null;
-        _settingsWindow.Show(this);
+            SignOutCodexAsync,
+            CreatePortableBackupAsync,
+            new SubscriptionIdentityActions(
+                ReadSubscriptionIdentitiesAsync,
+                AddSubscriptionIdentityAsync,
+                (identityId, token) => ActivateSubscriptionIdentityAsync(identityId, "manual", token),
+                RemoveSubscriptionIdentityAsync));
+        _settingsWindow = settingsWindow;
+        settingsWindow.ActivityRecorded += SettingsWindow_OnActivityRecorded;
+        settingsWindow.Closed += (_, _) =>
+        {
+            settingsWindow.ActivityRecorded -= SettingsWindow_OnActivityRecorded;
+            if (ReferenceEquals(_settingsWindow, settingsWindow)) _settingsWindow = null;
+        };
+        settingsWindow.Show(this);
+    }
+
+    private void SettingsWindow_OnActivityRecorded(object? sender, SettingsActivityEventArgs activity) =>
+        ViewModel.AddActivity(
+            activity.Kind,
+            activity.Title,
+            activity.Color,
+            detail: activity.Detail,
+            outcome: activity.Outcome,
+            isMilestone: activity.IsMilestone);
+
+    private async Task<PortableBackupSummary> CreatePortableBackupAsync(string destinationPath, CancellationToken cancellationToken)
+    {
+        if (ViewModel.IsRunning) throw new InvalidOperationException("Finish or stop the active turn before creating a backup.");
+        var store = _store ?? throw new InvalidOperationException("Harness storage is not ready.");
+        await FlushPersistenceAsync();
+        return await new PortableBackupService(store).CreateAsync(destinationPath, cancellationToken);
     }
 
     private IReadOnlyList<SkillInstallTarget> BuildSkillInstallTargets()
@@ -481,6 +582,202 @@ public sealed partial class MainWindow : Window
         _suppressPermissionModeChange = false;
         _providerConfigurationRefreshPending = true;
         await RefreshActiveThreadConfigurationAsync();
+    }
+
+    private async Task SelectSubscriptionIdentityForSessionAsync(
+        string? sessionId,
+        CancellationToken cancellationToken,
+        bool restartRuntime)
+    {
+        var identities = await Task.Run(
+            () => _subscriptionIdentityStore.LoadAsync(cancellationToken),
+            cancellationToken);
+        _subscriptionIdentities = identities;
+
+        string? desiredId = null;
+        if (_store is not null && !string.IsNullOrWhiteSpace(sessionId))
+        {
+            var payload = await _store.GetLatestProviderEventPayloadAsync(
+                sessionId,
+                ProviderIdentityChangedEvent,
+                cancellationToken);
+            if (!string.IsNullOrWhiteSpace(payload))
+            {
+                try
+                {
+                    using var document = JsonDocument.Parse(payload);
+                    if (document.RootElement.TryGetProperty("identityId", out var identityElement)
+                        && identityElement.ValueKind == JsonValueKind.String)
+                        desiredId = identityElement.GetString();
+                }
+                catch (JsonException exception)
+                {
+                    ViewModel.AddActivity("ACCOUNT", $"Stored account selection could not be read: {CleanError(exception)}", "#E2A84A");
+                }
+            }
+        }
+
+        desiredId ??= _applicationSettings.ActiveCodexIdentityId;
+        var selected = identities.FirstOrDefault(identity => identity.Id == desiredId)
+            ?? identities.FirstOrDefault(identity => identity.IsPrimary)
+            ?? identities[0];
+        var changed = _activeSubscriptionIdentity?.Id != selected.Id;
+        if (restartRuntime && (changed || _codex is null))
+        {
+            await _subscriptionSwitchGate.WaitAsync(cancellationToken);
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                _activeSubscriptionIdentity = selected;
+                ViewModel.SetActiveSubscription(selected.DisplayName);
+                await StopCodexAsync();
+                cancellationToken.ThrowIfCancellationRequested();
+                await ConnectCodexAsync(resumeThread: false);
+            }
+            finally
+            {
+                _subscriptionSwitchGate.Release();
+            }
+            return;
+        }
+        _activeSubscriptionIdentity = selected;
+        ViewModel.SetActiveSubscription(selected.DisplayName);
+    }
+
+    private Task<SubscriptionIdentityCatalogSnapshot> ReadSubscriptionIdentitiesAsync(
+        CancellationToken cancellationToken) =>
+        ReadSubscriptionIdentitiesCoreAsync(cancellationToken);
+
+    private async Task<SubscriptionIdentityCatalogSnapshot> ReadSubscriptionIdentitiesCoreAsync(
+        CancellationToken cancellationToken)
+    {
+        var identities = await Task.Run(
+            () => _subscriptionIdentityStore.LoadAsync(cancellationToken),
+            cancellationToken);
+        _subscriptionIdentities = identities;
+        var activeId = _activeSubscriptionIdentity?.Id
+            ?? identities.FirstOrDefault(identity => identity.IsPrimary)?.Id
+            ?? identities[0].Id;
+        return new SubscriptionIdentityCatalogSnapshot(identities, activeId);
+    }
+
+    private async Task<SubscriptionIdentity> AddSubscriptionIdentityAsync(
+        string? displayName,
+        CancellationToken cancellationToken)
+    {
+        var identity = await Task.Run(
+            () => _subscriptionIdentityStore.AddAsync(displayName, cancellationToken),
+            cancellationToken);
+        _subscriptionIdentities = await Task.Run(
+            () => _subscriptionIdentityStore.LoadAsync(cancellationToken),
+            cancellationToken);
+        return identity;
+    }
+
+    private async Task RemoveSubscriptionIdentityAsync(
+        string identityId,
+        CancellationToken cancellationToken)
+    {
+        if (_activeSubscriptionIdentity?.Id == identityId)
+            throw new InvalidOperationException("Switch to another account before removing this profile from Harness.");
+        await Task.Run(
+            () => _subscriptionIdentityStore.RemoveAsync(identityId, cancellationToken),
+            cancellationToken);
+        _subscriptionIdentities = await Task.Run(
+            () => _subscriptionIdentityStore.LoadAsync(cancellationToken),
+            cancellationToken);
+    }
+
+    private async Task ActivateSubscriptionIdentityAsync(
+        string identityId,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        if (ViewModel.IsRunning)
+            throw new InvalidOperationException("Finish or stop the active turn before handing it to another account.");
+
+        await _subscriptionSwitchGate.WaitAsync(cancellationToken);
+        try
+        {
+            var identities = await Task.Run(
+                () => _subscriptionIdentityStore.LoadAsync(cancellationToken),
+                cancellationToken);
+            var destination = identities.FirstOrDefault(identity => identity.Id == identityId)
+                ?? throw new InvalidOperationException("That OpenAI account profile is no longer available.");
+            var previous = _activeSubscriptionIdentity;
+            if (previous?.Id == destination.Id) return;
+
+            var previousThreadId = _threadId ?? _activeSession?.ProviderThreadId;
+            await StopCodexAsync();
+            _subscriptionIdentities = identities;
+            _activeSubscriptionIdentity = destination;
+            ViewModel.SetActiveSubscription(destination.DisplayName);
+            ViewModel.DismissSubscriptionHandoffNotice();
+            _pendingHandoffUsage = null;
+            _activeHandoffNoticeKey = null;
+            _dismissedHandoffNoticeKey = null;
+
+            _applicationSettings = _applicationSettings with { ActiveCodexIdentityId = destination.Id };
+            if (_store is not null)
+                await _store.SaveApplicationSettingsAsync(_applicationSettings, cancellationToken);
+
+            if (_store is not null && _activeSession is not null)
+            {
+                var modelId = ViewModel.SelectedModel?.ModelName
+                    ?? _activeSession.ModelId
+                    ?? "provider-default";
+                await _store.UpdateSessionConnectionAsync(
+                    _activeSession.Id,
+                    "openai-codex",
+                    null,
+                    modelId,
+                    ViewModel.SelectedReasoningLevel?.Id ?? _activeSession.ReasoningEffort,
+                    ViewModel.SelectedServiceTier?.Id ?? _activeSession.ServiceTier,
+                    cancellationToken);
+                await _store.AppendProviderEventAsync(
+                    _activeSession.Id,
+                    ProviderIdentityChangedEvent,
+                    JsonSerializer.Serialize(new
+                    {
+                        identityId = destination.Id,
+                        displayName = destination.DisplayName,
+                        previousIdentityId = previous?.Id,
+                        previousThreadId,
+                        selectedAt = DateTimeOffset.UtcNow,
+                        reason
+                    }),
+                    cancellationToken);
+                _activeSession = _activeSession with
+                {
+                    ProviderId = "openai-codex",
+                    ProviderThreadId = null,
+                    ModelId = modelId,
+                    UpdatedAt = DateTimeOffset.UtcNow
+                };
+            }
+
+            await ConnectCodexAsync(resumeThread: false);
+            if (previous is not null && _activeSession is not null)
+            {
+                ViewModel.AddSubscriptionHandoffMarker(
+                    $"Continued from {previous.DisplayName} with {destination.DisplayName}. Harness preserved this task locally and will create a fresh provider thread on the next message.");
+            }
+            ViewModel.AddActivity(
+                "ACCOUNT",
+                previous is null
+                    ? $"Active OpenAI account · {destination.DisplayName}"
+                    : $"Handoff · {previous.DisplayName} → {destination.DisplayName}",
+                "#65C7D0",
+                detail: previous is null
+                    ? "Account selected for future OpenAI turns"
+                    : "Task continuity retained locally; the next message starts a fresh provider thread",
+                outcome: "COMPLETED",
+                isMilestone: previous is not null);
+        }
+        finally
+        {
+            _subscriptionSwitchGate.Release();
+        }
     }
 
     private async Task ImportConversationAsync(ConversationImportPlan plan)
@@ -641,18 +938,24 @@ public sealed partial class MainWindow : Window
         if (!Directory.Exists(selected.Path))
         {
             ViewModel.SelectedWorkspace = previous;
-            ViewModel.AddActivity("WORKSPACE", $"Project folder is unavailable: {selected.Path}", "#E2A84A");
+            await RelinkMissingWorkspaceAsync(selected);
             return;
         }
 
         _workspaceSwitch?.Cancel();
         _workspaceSwitch?.Dispose();
         _workspaceSwitch = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        _terminalWindow?.Close();
         var switchCts = _workspaceSwitch;
         var version = Interlocked.Increment(ref _workspaceSwitchVersion);
         ViewModel.BeginRepositoryRefresh(selected.Name);
         try
         {
+            await _portableBackupService.ActivateDeferredWorkspaceSkillsAsync(
+                _store!,
+                selected.Path,
+                selected.Path,
+                switchCts.Token);
             if (!await LoadWorkspaceAsync(selected.Path, version, switchCts.Token)
                 && version == Interlocked.Read(ref _workspaceSwitchVersion))
             {
@@ -661,6 +964,42 @@ public sealed partial class MainWindow : Window
         }
         catch (OperationCanceledException) when (switchCts.IsCancellationRequested)
         {
+        }
+    }
+
+    private async Task RelinkMissingWorkspaceAsync(WorkspaceItem workspace)
+    {
+        if (_store is null) return;
+        var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+        {
+            Title = $"Locate the restored project folder for {workspace.Name}",
+            AllowMultiple = false
+        });
+        var replacement = folders.FirstOrDefault()?.TryGetLocalPath();
+        if (replacement is null)
+        {
+            ViewModel.AddActivity("WORKSPACE", $"Project folder remains unavailable: {workspace.Path}", "#E2A84A");
+            return;
+        }
+        try
+        {
+            await _store.RelocateProjectAsync(workspace.ProjectId, replacement, _lifetime.Token);
+            var activatedSkills = await _portableBackupService.ActivateDeferredWorkspaceSkillsAsync(
+                _store,
+                workspace.Path,
+                replacement,
+                _lifetime.Token);
+            var opened = await LoadWorkspaceAsync(replacement);
+            ViewModel.AddActivity(
+                "WORKSPACE",
+                opened
+                    ? activatedSkills == 0 ? "Restored workspace relinked and opened." : $"Restored workspace relinked with {activatedSkills} skill{(activatedSkills == 1 ? string.Empty : "s")}."
+                    : "Workspace path was relinked, but it could not be opened.",
+                opened ? "#65C7D0" : "#E2A84A");
+        }
+        catch (Exception exception)
+        {
+            ViewModel.AddActivity("WORKSPACE", CleanError(exception), "#E2A84A");
         }
     }
 
@@ -971,10 +1310,13 @@ public sealed partial class MainWindow : Window
             await RefreshWorkspaceCatalogAsync(snapshot.Project.Id);
             if (switchVersion is { } catalogVersion
                 && catalogVersion != Interlocked.Read(ref _workspaceSwitchVersion)) return false;
-            ViewModel.ApplySessionModelSettings(snapshot.ActiveSession);
             await LoadImportStateAsync(snapshot.ActiveSession.Id);
             if (switchVersion is { } importVersion
                 && importVersion != Interlocked.Read(ref _workspaceSwitchVersion)) return false;
+            await SelectSubscriptionIdentityForSessionAsync(snapshot.ActiveSession.Id, token, restartRuntime: true);
+            if (switchVersion is { } identityVersion
+                && identityVersion != Interlocked.Read(ref _workspaceSwitchVersion)) return false;
+            ViewModel.ApplySessionModelSettings(snapshot.ActiveSession);
             _applicationSettings = _applicationSettings with { LastWorkspacePath = path };
             await _store.SaveApplicationSettingsAsync(_applicationSettings, token);
             _ = CompleteWorkspaceActivationAsync(path, switchVersion, token);
@@ -1181,6 +1523,7 @@ public sealed partial class MainWindow : Window
             }
 
             _threadId = null;
+            await SelectSubscriptionIdentityForSessionAsync(nextSession.Id, _lifetime.Token, restartRuntime: true);
             ViewModel.ApplySessionModelSettings(nextSession);
             await ResumeActiveThreadAsync();
         }
@@ -1248,6 +1591,7 @@ public sealed partial class MainWindow : Window
             _threadId = null;
             ViewModel.ApplyStoredSession(loaded.Session, loaded.Messages, loaded.Attachments);
             await LoadImportStateAsync(loaded.Session.Id);
+            await SelectSubscriptionIdentityForSessionAsync(loaded.Session.Id, _lifetime.Token, restartRuntime: true);
             ViewModel.ApplySessionModelSettings(loaded.Session);
             await ResumeActiveThreadAsync();
         }
@@ -1294,6 +1638,7 @@ public sealed partial class MainWindow : Window
         }
 
         var account = await client.GetAccountAsync(cancellationToken: cancellationToken);
+        await PersistSubscriptionAccountAsync(account, client, cancellationToken);
         var models = ViewModel.Models
             .Where(model => string.Equals(model.ProviderId, client.Id, StringComparison.Ordinal))
             .Select(model => model.DisplayName)
@@ -1311,6 +1656,29 @@ public sealed partial class MainWindow : Window
             : account.RequiresOpenAiAuth ? "Not signed in" : "No OpenAI account required";
         var detail = $"{client.Runtime.SourceLabel} · {(account.IsAuthenticated ? "CONNECTED" : "SIGNED OUT")}";
         return new SubscriptionConnectionSnapshot(true, account.IsAuthenticated, accountLabel, detail, models);
+    }
+
+    private async Task PersistSubscriptionAccountAsync(
+        CodexAccountInfo account,
+        CodexAppServerClient sourceClient,
+        CancellationToken cancellationToken)
+    {
+        var identity = _activeSubscriptionIdentity;
+        if (identity is null || !ReferenceEquals(_codex, sourceClient)) return;
+        var updated = identity with
+        {
+            Email = account.Email,
+            Plan = account.PlanType,
+            LastConnectedAt = account.IsAuthenticated ? DateTimeOffset.UtcNow : identity.LastConnectedAt
+        };
+        await Task.Run(
+            () => _subscriptionIdentityStore.UpdateAsync(updated, cancellationToken),
+            cancellationToken);
+        if (!ReferenceEquals(_codex, sourceClient)) return;
+        _activeSubscriptionIdentity = updated;
+        _subscriptionIdentities = _subscriptionIdentities
+            .Select(item => item.Id == updated.Id ? updated : item)
+            .ToArray();
     }
 
     private Task<CodexDeviceCodeLoginStart> BeginCodexSignInAsync(CancellationToken cancellationToken) =>
@@ -2113,6 +2481,7 @@ public sealed partial class MainWindow : Window
             ? prompt
             : $"{importedContext.Text}\n# Current user request\n{prompt}";
         NameSessionFromFirstPrompt(prompt);
+        ViewModel.RecordTurnStarted(model.DisplayName, prompt);
         ViewModel.AddActivity(
             "MODEL",
             $"Requested {model.ModelName} · reasoning {requestedEffort ?? "provider default"} · tier {requestedTierLabel} · turn files {turnAttachments.Length} · context {attachedContextFiles.Length}",
@@ -2137,6 +2506,17 @@ public sealed partial class MainWindow : Window
                 _providerConfigurationRefreshPending = false;
                 if (_activeSession is not null && _store is not null)
                     TrackPersistence(_store.AppendProviderEventAsync(_activeSession.Id, "harness/browserTools/v1", JsonSerializer.Serialize(new { threadId = _threadId })));
+                if (_activeSession is not null && _store is not null && _activeSubscriptionIdentity is not null)
+                    TrackPersistence(_store.AppendProviderEventAsync(
+                        _activeSession.Id,
+                        ProviderIdentityChangedEvent,
+                        JsonSerializer.Serialize(new
+                        {
+                            identityId = _activeSubscriptionIdentity.Id,
+                            displayName = _activeSubscriptionIdentity.DisplayName,
+                            selectedAt = DateTimeOffset.UtcNow,
+                            reason = "thread-start"
+                        })));
                 if (_store is not null && _activeSession is not null)
                 {
                     _activeSession = _activeSession with
@@ -2800,6 +3180,25 @@ public sealed partial class MainWindow : Window
             message.CreatedAt)));
     }
 
+    private void ViewModel_OnActivityPersistenceRequested(
+        object? sender,
+        ActivityPersistenceRequestedEventArgs request)
+    {
+        if (_store is null) return;
+        var item = request.Activity;
+        TrackPersistence(_store.AppendActivityEventAsync(new StoredActivityEvent(
+            item.Id,
+            request.ProjectId,
+            request.SessionId,
+            item.Kind,
+            item.Title,
+            item.Detail,
+            item.Outcome,
+            item.Color,
+            item.IsMilestone,
+            item.OccurredAt)));
+    }
+
     private void PersistProviderEvent(CodexNotification notification)
     {
         if (_store is not null
@@ -3086,6 +3485,11 @@ public sealed partial class MainWindow : Window
                 _pendingGeneratedImagePaths.Clear();
             }
             ViewModel.CompleteTurn(error);
+            if (_pendingHandoffUsage is { } pendingUsage)
+            {
+                _pendingHandoffUsage = null;
+                EvaluateSubscriptionHandoff(pendingUsage);
+            }
         }
 
         if (_providerConfigurationRefreshPending)
@@ -3180,20 +3584,27 @@ public sealed partial class MainWindow : Window
 
     private async Task RefreshUsageCoreAsync()
     {
-        if (_codex is null || ViewModel.SelectedModel?.ProviderId != _codex.Id)
+        var client = _codex;
+        if (client is null || ViewModel.SelectedModel?.ProviderId != client.Id)
         {
             return;
         }
 
         try
         {
-            var usage = await _codex.GetUsageAsync(_lifetime.Token);
+            var usage = await client.GetUsageAsync(_lifetime.Token);
             if (usage is not null)
             {
                 await Dispatcher.UIThread.InvokeAsync(() =>
                 {
-                    if (ViewModel.SelectedModel?.ProviderId == _codex.Id) ViewModel.ApplyUsage(usage);
+                    if (ReferenceEquals(_codex, client)
+                        && ViewModel.SelectedModel?.ProviderId == client.Id)
+                    {
+                        ViewModel.ApplyUsage(usage);
+                        EvaluateSubscriptionHandoff(usage);
+                    }
                 });
+                _ = PersistSubscriptionUsageAsync(usage, client);
             }
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
@@ -3203,9 +3614,126 @@ public sealed partial class MainWindow : Window
         {
             await Dispatcher.UIThread.InvokeAsync(() =>
             {
-                if (ViewModel.SelectedModel?.ProviderId == _codex.Id) ViewModel.SetUsageUnavailable(CleanError(exception));
+                if (ReferenceEquals(_codex, client)
+                    && ViewModel.SelectedModel?.ProviderId == client.Id)
+                    ViewModel.SetUsageUnavailable(CleanError(exception));
             });
         }
+    }
+
+    private void EvaluateSubscriptionHandoff(ProviderUsageSnapshot usage)
+    {
+        if (!_applicationSettings.PromptForSubscriptionHandoff
+            || _activeSubscriptionIdentity is null
+            || _subscriptionIdentities.All(identity => identity.Id == _activeSubscriptionIdentity.Id))
+        {
+            ViewModel.DismissSubscriptionHandoffNotice();
+            return;
+        }
+
+        var fiveHour = FindFiveHourWindow(usage.Windows);
+        if (fiveHour is null
+            || fiveHour.RemainingPercent > _applicationSettings.SubscriptionHandoffThresholdPercent)
+        {
+            _pendingHandoffUsage = null;
+            _activeHandoffNoticeKey = null;
+            _dismissedHandoffNoticeKey = null;
+            ViewModel.DismissSubscriptionHandoffNotice();
+            return;
+        }
+
+        if (ViewModel.IsRunning)
+        {
+            _pendingHandoffUsage = usage;
+            return;
+        }
+
+        var noticeKey = $"{_activeSubscriptionIdentity.Id}|{fiveHour.Id}|{fiveHour.ResetsAt?.UtcTicks}";
+        if (noticeKey == _dismissedHandoffNoticeKey) return;
+        _activeHandoffNoticeKey = noticeKey;
+        var reset = fiveHour.ResetsAt is { } resetsAt
+            ? $" It resets {resetsAt.ToLocalTime():t}."
+            : string.Empty;
+        ViewModel.SetSubscriptionHandoffNotice(
+            $"{_activeSubscriptionIdentity.DisplayName} has {fiveHour.RemainingPercent:0.#}% left in its 5-hour window.{reset} Continue this task with another connected account?");
+    }
+
+    private async Task PersistSubscriptionUsageAsync(
+        ProviderUsageSnapshot usage,
+        CodexAppServerClient sourceClient)
+    {
+        try
+        {
+            var identity = _activeSubscriptionIdentity;
+            if (identity is null || !ReferenceEquals(_codex, sourceClient)) return;
+            var fiveHour = FindFiveHourWindow(usage.Windows);
+            var account = await sourceClient.GetAccountAsync(cancellationToken: _lifetime.Token);
+            var updated = identity with
+            {
+                Email = account.Email,
+                Plan = account.PlanType,
+                LastConnectedAt = account.IsAuthenticated ? DateTimeOffset.UtcNow : identity.LastConnectedAt,
+                LastFiveHourRemainingPercent = fiveHour?.RemainingPercent,
+                LastUsageAt = fiveHour is null ? identity.LastUsageAt : usage.CapturedAt
+            };
+            await Task.Run(
+                () => _subscriptionIdentityStore.UpdateAsync(updated, _lifetime.Token),
+                _lifetime.Token);
+            if (!ReferenceEquals(_codex, sourceClient)) return;
+            _activeSubscriptionIdentity = updated;
+            _subscriptionIdentities = _subscriptionIdentities
+                .Select(item => item.Id == updated.Id ? updated : item)
+                .ToArray();
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            await Dispatcher.UIThread.InvokeAsync(() =>
+                ViewModel.AddActivity("ACCOUNT", $"Could not retain account status: {CleanError(exception)}", "#E2A84A"));
+        }
+    }
+
+    private static UsageWindowSnapshot? FindFiveHourWindow(
+        IReadOnlyList<UsageWindowSnapshot> windows) =>
+        windows.FirstOrDefault(window =>
+            window.DisplayName.Contains("5 hour", StringComparison.OrdinalIgnoreCase)
+            || window.DisplayName.Contains("5-hour", StringComparison.OrdinalIgnoreCase))
+        ?? windows
+            .Where(window => window.Duration is not null)
+            .OrderBy(window => Math.Abs(window.Duration!.Value.TotalMinutes - 300))
+            .FirstOrDefault(window => Math.Abs(window.Duration!.Value.TotalMinutes - 300) <= 90);
+
+    private async void SubscriptionHandoff_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (_activeSubscriptionIdentity is null || ViewModel.IsRunning) return;
+        var destinations = _subscriptionIdentities
+            .Where(identity => identity.Id != _activeSubscriptionIdentity.Id)
+            .OrderByDescending(identity => identity.LastFiveHourRemainingPercent ?? -1)
+            .ThenBy(identity => identity.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (destinations.Length == 0) return;
+        var dialog = new SubscriptionHandoffDialog(_activeSubscriptionIdentity, destinations);
+        var selectedId = await dialog.ShowDialog<string?>(this);
+        if (string.IsNullOrWhiteSpace(selectedId)) return;
+        try
+        {
+            await ActivateSubscriptionIdentityAsync(selectedId, "low-usage-handoff", _lifetime.Token);
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            ViewModel.AddActivity("ACCOUNT", CleanError(exception), "#E2A84A");
+        }
+    }
+
+    private void DismissSubscriptionHandoff_OnClick(object? sender, RoutedEventArgs e)
+    {
+        _dismissedHandoffNoticeKey = _activeHandoffNoticeKey;
+        ViewModel.DismissSubscriptionHandoffNotice();
     }
 
     private static bool TryGetString(JsonElement element, string property, out string value)

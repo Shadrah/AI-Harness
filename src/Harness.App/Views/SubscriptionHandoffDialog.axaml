@@ -1,0 +1,58 @@
+<Window
+    x:Class="Harness.App.Views.SubscriptionHandoffDialog"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:Harness.App.Controls"
+    xmlns:services="using:Harness.App.Services"
+    Title="Continue with another account"
+    Width="620"
+    Height="470"
+    MinWidth="560"
+    MinHeight="410"
+    CanResize="True"
+    ExtendClientAreaToDecorationsHint="True"
+    ExtendClientAreaChromeHints="NoChrome"
+    ExtendClientAreaTitleBarHeightHint="46"
+    WindowStartupLocation="CenterOwner">
+  <Grid RowDefinitions="46,*,62">
+    <Border Grid.Row="0" Classes="hairline" Background="#151A21" PointerPressed="TitleBar_OnPointerPressed">
+      <Grid Margin="14,0,6,0" ColumnDefinitions="Auto,9,Auto,*,40">
+        <controls:HarnessMark VerticalAlignment="Center"/>
+        <TextBlock Grid.Column="2" Text="ACCOUNT HANDOFF" Classes="micro" Foreground="#D8DEE8" VerticalAlignment="Center"/>
+        <Button Grid.Column="4" Content="×" Classes="window-command window-close" Click="Cancel_OnClick" ToolTip.Tip="Close"/>
+      </Grid>
+    </Border>
+
+    <Grid Grid.Row="1" Margin="22,18,22,12" RowDefinitions="Auto,12,Auto,12,*">
+      <StackPanel Spacing="5">
+        <TextBlock Text="Continue this task" FontSize="22" FontWeight="SemiBold"/>
+        <TextBlock x:Name="OriginText" Classes="muted" TextWrapping="Wrap"/>
+      </StackPanel>
+      <Border Grid.Row="2" Background="#142026" BorderBrush="#3C8A94" BorderThickness="1" CornerRadius="5" Padding="12,9">
+        <TextBlock Text="Harness will preserve the visible task, local history, context files, reports, and workspace state. The destination account starts a fresh provider thread on your next message." TextWrapping="Wrap"/>
+      </Border>
+      <ListBox x:Name="DestinationList" Grid.Row="4" SelectionMode="Single" Background="#11151B" BorderBrush="#29313C" BorderThickness="1">
+        <ListBox.ItemTemplate>
+          <DataTemplate x:DataType="services:SubscriptionIdentity">
+            <Grid MinHeight="58" Margin="4,2" ColumnDefinitions="6,12,*,Auto">
+              <Border Width="6" Height="34" CornerRadius="3" Background="#65C7D0" VerticalAlignment="Center"/>
+              <StackPanel Grid.Column="2" VerticalAlignment="Center" Spacing="2">
+                <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold"/>
+                <TextBlock Text="{Binding AccountLabel}" Classes="muted" FontSize="10" TextTrimming="CharacterEllipsis"/>
+              </StackPanel>
+              <TextBlock Grid.Column="3" Text="{Binding UsageLabel}" Classes="muted mono" FontSize="9" VerticalAlignment="Center" Margin="12,0"/>
+            </Grid>
+          </DataTemplate>
+        </ListBox.ItemTemplate>
+      </ListBox>
+    </Grid>
+
+    <Border Grid.Row="2" BorderBrush="#29313C" BorderThickness="0,1,0,0" Background="#151A21">
+      <Grid Margin="22,0" ColumnDefinitions="*,Auto,8,Auto">
+        <TextBlock Text="No model generation is made until you send the next message." Classes="muted" FontSize="10" VerticalAlignment="Center"/>
+        <Button Grid.Column="1" Content="CANCEL" Click="Cancel_OnClick"/>
+        <Button Grid.Column="3" Content="CONTINUE WITH SELECTED" Classes="primary" Click="Continue_OnClick"/>
+      </Grid>
+    </Border>
+  </Grid>
+</Window>

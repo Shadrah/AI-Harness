@@ -20,10 +20,113 @@ public sealed partial class SettingsWindow
     private readonly Func<CancellationToken, Task<CodexDeviceCodeLoginStart>>? _beginCodexSignIn;
     private readonly Func<CancellationToken, Task>? _signOutCodex;
     private bool _codexBusy;
+    private IReadOnlyList<SubscriptionIdentity> _codexIdentities = [];
+
+    private async Task RefreshSubscriptionIdentitiesAsync(string? selectIdentityId = null)
+    {
+        if (_subscriptionIdentityActions is null)
+        {
+            CodexIdentityPicker.ItemsSource = Array.Empty<SubscriptionIdentity>();
+            CodexUseIdentityButton.IsEnabled = false;
+            CodexRemoveIdentityButton.IsEnabled = false;
+            return;
+        }
+
+        var snapshot = await _subscriptionIdentityActions.Read(_lifetime.Token);
+        _codexIdentities = snapshot.Identities;
+        ViewModel.ActiveCodexIdentityId = snapshot.ActiveIdentityId;
+        CodexIdentityPicker.ItemsSource = _codexIdentities;
+        CodexIdentityPicker.SelectedItem = _codexIdentities.FirstOrDefault(identity =>
+            identity.Id == (selectIdentityId ?? snapshot.ActiveIdentityId))
+            ?? _codexIdentities.FirstOrDefault();
+        ApplySelectedIdentity();
+    }
+
+    private void CodexIdentity_OnChanged(object? sender, SelectionChangedEventArgs e) =>
+        ApplySelectedIdentity();
+
+    private void ApplySelectedIdentity()
+    {
+        if (CodexIdentityPicker.SelectedItem is not SubscriptionIdentity identity) return;
+        var isActive = identity.Id == ViewModel.ActiveCodexIdentityId;
+        CodexIdentityName.Text = identity.DisplayName;
+        CodexIdentityActive.IsVisible = isActive;
+        CodexIdentityUsage.Text = identity.UsageLabel;
+        CodexUseIdentityButton.IsEnabled = !isActive;
+        CodexRemoveIdentityButton.IsEnabled = !isActive && _codexIdentities.Count > 1;
+        if (!isActive)
+        {
+            CodexAccountStatus.Text = identity.AccountLabel;
+            CodexRuntimeStatus.Text = "SAVED PROFILE · SELECT USE ACCOUNT TO ACTIVATE";
+            CodexModelCount.Text = "MODELS · PROFILE INACTIVE";
+            CodexModelList.Text = "Model availability and live usage are refreshed when this account becomes active.";
+            CodexSignInButton.IsVisible = false;
+            CodexSignOutButton.IsVisible = false;
+        }
+    }
+
+    private async void CodexUseIdentity_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (_subscriptionIdentityActions is null
+            || CodexIdentityPicker.SelectedItem is not SubscriptionIdentity identity
+            || identity.Id == ViewModel.ActiveCodexIdentityId) return;
+        await RunAsync($"Switching to {identity.DisplayName}…", async () =>
+        {
+            await _subscriptionIdentityActions.Activate(identity.Id, _lifetime.Token);
+            ViewModel.ActiveCodexIdentityId = identity.Id;
+            await RefreshSubscriptionIdentitiesAsync(identity.Id);
+            await RefreshCodexConnectionAsync();
+            ViewModel.Status = $"{identity.DisplayName} is now the active OpenAI account";
+            RecordActivity("ACCOUNT", $"Activated · {identity.DisplayName}", outcome: "COMPLETED");
+        });
+    }
+
+    private async void CodexAddIdentity_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (_subscriptionIdentityActions is null) return;
+        await RunAsync("Adding an isolated OpenAI account…", async () =>
+        {
+            var identity = await _subscriptionIdentityActions.Add(
+                CodexIdentityNameInput.Text,
+                _lifetime.Token);
+            CodexIdentityNameInput.Text = "";
+            await _subscriptionIdentityActions.Activate(identity.Id, _lifetime.Token);
+            ViewModel.ActiveCodexIdentityId = identity.Id;
+            await RefreshSubscriptionIdentitiesAsync(identity.Id);
+            await RefreshCodexConnectionAsync();
+            ViewModel.Status = $"{identity.DisplayName} added. Sign in to connect this isolated account.";
+            RecordActivity(
+                "ACCOUNT",
+                $"Added · {identity.DisplayName}",
+                "Isolated OpenAI subscription profile created",
+                "READY",
+                true);
+        });
+    }
+
+    private async void CodexRemoveIdentity_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (_subscriptionIdentityActions is null
+            || CodexIdentityPicker.SelectedItem is not SubscriptionIdentity identity
+            || identity.Id == ViewModel.ActiveCodexIdentityId) return;
+        await RunAsync($"Removing {identity.DisplayName} from Harness…", async () =>
+        {
+            await _subscriptionIdentityActions.Remove(identity.Id, _lifetime.Token);
+            await RefreshSubscriptionIdentitiesAsync();
+            ViewModel.Status = $"{identity.DisplayName} removed from Harness. Provider-owned profile files were preserved.";
+            RecordActivity("ACCOUNT", $"Removed · {identity.DisplayName}", "Provider-owned profile files were preserved", "COMPLETED", true);
+        });
+    }
 
     public async Task RefreshCodexConnectionAsync()
     {
         if (_codexBusy) return;
+        if (CodexIdentityPicker.SelectedItem is SubscriptionIdentity selected
+            && selected.Id != ViewModel.ActiveCodexIdentityId)
+        {
+            ApplySelectedIdentity();
+            return;
+        }
         _codexBusy = true;
         CodexConnectionPanel.IsEnabled = false;
         CodexAccountStatus.Text = "Checking account…";
@@ -40,6 +143,12 @@ public sealed partial class SettingsWindow
                 : string.Join("  ·  ", snapshot.Models);
             CodexSignInButton.IsVisible = snapshot.RuntimeAvailable && !snapshot.IsAuthenticated;
             CodexSignOutButton.IsVisible = snapshot.RuntimeAvailable && snapshot.IsAuthenticated;
+            if (CodexIdentityPicker.SelectedItem is SubscriptionIdentity active)
+            {
+                CodexIdentityName.Text = active.DisplayName;
+                CodexIdentityActive.IsVisible = true;
+                CodexUseIdentityButton.IsEnabled = false;
+            }
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
         {
@@ -60,8 +169,12 @@ public sealed partial class SettingsWindow
         }
     }
 
-    private async void CodexRefresh_OnClick(object? sender, RoutedEventArgs e) =>
+    private async void CodexRefresh_OnClick(object? sender, RoutedEventArgs e)
+    {
+        await RefreshSubscriptionIdentitiesAsync(
+            (CodexIdentityPicker.SelectedItem as SubscriptionIdentity)?.Id);
         await RefreshCodexConnectionAsync();
+    }
 
     private async void CodexSignIn_OnClick(object? sender, RoutedEventArgs e)
     {
@@ -72,6 +185,7 @@ public sealed partial class SettingsWindow
             await Launcher.LaunchUriAsync(new Uri(login.VerificationUrl));
             await OpenAiDeviceCodeDialog.ShowAsync(this, login);
             await RefreshCodexConnectionAsync();
+            RecordActivity("ACCOUNT", "OpenAI sign-in completed", outcome: "COMPLETED", isMilestone: true);
         });
     }
 
@@ -83,6 +197,7 @@ public sealed partial class SettingsWindow
             await _signOutCodex(_lifetime.Token);
             await RefreshCodexConnectionAsync();
             ViewModel.Status = "Signed out of OpenAI. Local workspaces and chats were preserved.";
+            RecordActivity("ACCOUNT", "Signed out of OpenAI", "Local workspaces and chats were preserved", "COMPLETED", true);
         });
     }
 
@@ -171,6 +286,12 @@ public sealed partial class SettingsWindow
             ApiModelPicker.SelectedIndex = _apiModels.Count > 0 ? 0 : -1;
             ApiConnectionStatus.Text = $"Connected · {models.Count:N0} conversational candidates reported. Availability is checked again when you send a request. API billing is separate from subscriptions.";
             if (_apiConnectionsChanged is not null) await _apiConnectionsChanged();
+            RecordActivity(
+                "PROVIDER",
+                $"Connected · {connection.Name}",
+                $"{models.Count:N0} conversational candidates reported",
+                "COMPLETED",
+                true);
         });
     }
 
@@ -185,6 +306,7 @@ public sealed partial class SettingsWindow
             await LoadApiConnectionsAsync();
             if (_apiConnectionsChanged is not null) await _apiConnectionsChanged();
             ApiConnectionStatus.Text = "Disconnected. Saved chat history is preserved.";
+            RecordActivity("PROVIDER", "API connection removed", "Saved chat history was preserved", "COMPLETED", true);
         });
     }
 
@@ -235,8 +357,16 @@ public sealed partial class SettingsWindow
         ApiModelPanel.IsEnabled = false;
         ApiConnectionStatus.Text = "Working…";
         try { await action(); }
-        catch (OperationCanceledException) { ApiConnectionStatus.Text = "Connection request cancelled or timed out. No generation was retried."; }
-        catch (Exception exception) { ApiConnectionStatus.Text = exception.Message; }
+        catch (OperationCanceledException)
+        {
+            ApiConnectionStatus.Text = "Connection request cancelled or timed out. No generation was retried.";
+            RecordActivity("PROVIDER", "Provider connection stopped", ApiConnectionStatus.Text, "CANCELLED", color: "#E2A84A");
+        }
+        catch (Exception exception)
+        {
+            ApiConnectionStatus.Text = exception.Message;
+            RecordActivity("ERROR", "Provider connection failed", exception.Message, "FAILED", color: "#E2A84A");
+        }
         finally { _apiBusy = false; ApiConnectionPanel.IsEnabled = true; ApiModelPanel.IsEnabled = true; }
     }
 }

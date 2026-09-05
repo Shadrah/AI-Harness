@@ -92,14 +92,21 @@ public sealed class CodexAppServerClient : IModelProvider, IProviderTelemetry, I
 
     public static Task<CodexAppServerClient> StartAsync(
         CancellationToken cancellationToken = default) =>
-        // Resolution, process startup and the JSON read pump must never capture the UI context.
-        Task.Run(() => StartCoreAsync(cancellationToken), cancellationToken);
+        StartAsync(null, cancellationToken);
 
-    private static async Task<CodexAppServerClient> StartCoreAsync(CancellationToken cancellationToken)
+    public static Task<CodexAppServerClient> StartAsync(
+        string? profileRoot,
+        CancellationToken cancellationToken = default) =>
+        // Resolution, process startup and the JSON read pump must never capture the UI context.
+        Task.Run(() => StartCoreAsync(profileRoot, cancellationToken), cancellationToken);
+
+    private static async Task<CodexAppServerClient> StartCoreAsync(
+        string? profileRoot,
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var runtime = CodexRuntimeResolver.Resolve();
-        var process = new Process { StartInfo = CreateStartInfo(runtime) };
+        var process = new Process { StartInfo = CreateStartInfo(runtime, profileRoot) };
         if (!process.Start())
         {
             throw new InvalidOperationException("Codex app-server did not start.");
@@ -631,7 +638,7 @@ public sealed class CodexAppServerClient : IModelProvider, IProviderTelemetry, I
         });
     }
 
-    private static ProcessStartInfo CreateStartInfo(CodexRuntimeInfo runtime)
+    private static ProcessStartInfo CreateStartInfo(CodexRuntimeInfo runtime, string? profileRoot)
     {
         var utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
         var start = new ProcessStartInfo
@@ -656,6 +663,12 @@ public sealed class CodexAppServerClient : IModelProvider, IProviderTelemetry, I
                      .ToArray())
         {
             start.Environment.Remove(key);
+        }
+        if (!string.IsNullOrWhiteSpace(profileRoot))
+        {
+            var fullProfileRoot = Path.GetFullPath(profileRoot);
+            Directory.CreateDirectory(fullProfileRoot);
+            start.Environment["CODEX_HOME"] = fullProfileRoot;
         }
 
         if (runtime.HarnessOwned && File.Exists(runtime.ExecutablePath))

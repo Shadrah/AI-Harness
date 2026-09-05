@@ -32,6 +32,7 @@ public sealed class MainWindowViewModel : ObservableObject
     private string _effectiveReasoning = "NOT CONFIRMED";
     private string _effectiveServiceTier = "DEFAULT";
     private string? _activeSessionId;
+    private string? _activeProjectId;
     private TaskItem? _selectedTask;
     private string? _repositoryRoot;
     private string _workingTreeStatus = "CHECKING";
@@ -51,6 +52,10 @@ public sealed class MainWindowViewModel : ObservableObject
     private string _turnActivityStatus = "READY";
     private string _recoveryNotice = "";
     private bool _showRecoveryNotice;
+    private bool _showRecoveryDiagnosticsAction;
+    private string _activeSubscriptionName = "OpenAI 1";
+    private string _subscriptionHandoffNotice = "";
+    private bool _showSubscriptionHandoffNotice;
     private readonly Dictionary<string, IReadOnlyList<ModelOption>> _reportedProviderModels = [];
     private HarnessApplicationSettings _applicationSettings = new();
 
@@ -69,11 +74,7 @@ public sealed class MainWindowViewModel : ObservableObject
             return;
         }
 
-        Activity.Add(ActivityItem.Now(
-            "SYSTEM",
-            "Connecting to the local Codex runtime",
-            "#8993A3",
-            true));
+        AddActivity("SYSTEM", "Connecting to the local Codex runtime", "#8993A3", true);
     }
 
     public string WorkspacePath => _workspacePath;
@@ -93,6 +94,7 @@ public sealed class MainWindowViewModel : ObservableObject
     public ObservableCollection<ExecutionItem> ExecutionItems { get; } = [];
     public ObservableCollection<TurnAttachmentItem> TurnAttachments { get; } = [];
     public event EventHandler<MessagePersistenceRequestedEventArgs>? MessagePersistenceRequested;
+    public event EventHandler<ActivityPersistenceRequestedEventArgs>? ActivityPersistenceRequested;
     public event EventHandler? ConversationRestored;
     public event EventHandler? ConversationAdvanced;
     public ExecutionItem? SelectedExecutionItem
@@ -108,6 +110,9 @@ public sealed class MainWindowViewModel : ObservableObject
     public string ExecutionStatus => ExecutionItems.Count == 0
         ? "NO ACTIVITY"
         : $"{ExecutionItems.Count} EVENT{(ExecutionItems.Count == 1 ? string.Empty : "S")}";
+    public string ActivityStatus => Activity.Count == 0
+        ? "NO PROJECT HISTORY"
+        : $"{Activity.Count(item => item.IsMilestone)} MILESTONE{(Activity.Count(item => item.IsMilestone) == 1 ? string.Empty : "S")} · {Activity.Count} EVENTS";
     public IReadOnlyList<PermissionModeOption> PermissionModes => PermissionModeOption.All;
     public PermissionModeOption SelectedPermissionMode
     {
@@ -128,16 +133,53 @@ public sealed class MainWindowViewModel : ObservableObject
     public void SetTurnActivity(string status) => TurnActivityStatus = status;
     public string RecoveryNotice { get => _recoveryNotice; private set => SetProperty(ref _recoveryNotice, value); }
     public bool ShowRecoveryNotice { get => _showRecoveryNotice; private set => SetProperty(ref _showRecoveryNotice, value); }
+    public bool ShowRecoveryDiagnosticsAction { get => _showRecoveryDiagnosticsAction; private set => SetProperty(ref _showRecoveryDiagnosticsAction, value); }
 
     public void SetRecoveryNotice(int recoveredSessionCount)
     {
         RecoveryNotice = recoveredSessionCount == 1
             ? "Harness recovered after an unexpected shutdown. Saved workspaces and persisted chat history remain available; a privacy-safe diagnostic was retained."
             : $"Harness recovered {recoveredSessionCount} interrupted sessions. Saved workspaces and persisted chat history remain available; privacy-safe diagnostics were retained.";
+        ShowRecoveryDiagnosticsAction = true;
+        ShowRecoveryNotice = true;
+    }
+
+    public void SetRestoreNotice(DateTimeOffset backupCreatedAtUtc)
+    {
+        RecoveryNotice = $"Portable backup restored from {backupCreatedAtUtc.ToLocalTime():g}. Reconnect credentials and relink any project folders that moved.";
+        ShowRecoveryDiagnosticsAction = false;
+        ShowRecoveryNotice = true;
+    }
+
+    public void SetRestoreFailureNotice()
+    {
+        RecoveryNotice = "The staged backup could not be restored. Existing Harness data was preserved; review Activity for the failure and choose the backup again if needed.";
+        ShowRecoveryDiagnosticsAction = false;
         ShowRecoveryNotice = true;
     }
 
     public void DismissRecoveryNotice() => ShowRecoveryNotice = false;
+    public string ActiveSubscriptionName { get => _activeSubscriptionName; private set => SetProperty(ref _activeSubscriptionName, value); }
+    public string SubscriptionHandoffNotice { get => _subscriptionHandoffNotice; private set => SetProperty(ref _subscriptionHandoffNotice, value); }
+    public bool ShowSubscriptionHandoffNotice { get => _showSubscriptionHandoffNotice; private set => SetProperty(ref _showSubscriptionHandoffNotice, value); }
+
+    public void SetActiveSubscription(string displayName) => ActiveSubscriptionName = displayName;
+
+    public void SetSubscriptionHandoffNotice(string notice)
+    {
+        SubscriptionHandoffNotice = notice;
+        ShowSubscriptionHandoffNotice = true;
+    }
+
+    public void DismissSubscriptionHandoffNotice() => ShowSubscriptionHandoffNotice = false;
+
+    public void AddSubscriptionHandoffMarker(string text)
+    {
+        var message = ChatMessageItem.Report(text, "ACCOUNT HANDOFF");
+        Messages.Add(message);
+        RequestMessagePersistence(message);
+        ConversationAdvanced?.Invoke(this, EventArgs.Empty);
+    }
 
     public TaskItem? SelectedTask
     {
@@ -453,12 +495,12 @@ public sealed class MainWindowViewModel : ObservableObject
     {
         _reportedProviderModels.Clear();
         ApplyProviderModels("openai-codex", descriptors, "OpenAI Codex", runtimeSource);
-        Activity.Add(ActivityItem.Now(
+        AddActivity(
             "RUNTIME",
             descriptors.Count > 0
                 ? $"Loaded {descriptors.Count} models from Codex"
                 : "Codex returned an empty model catalog",
-            descriptors.Count > 0 ? "#65C7D0" : "#E2A84A"));
+            descriptors.Count > 0 ? "#65C7D0" : "#E2A84A");
     }
 
     public void ApplyProviderModels(string providerId, IReadOnlyList<ModelDescriptor> descriptors, string providerName, string source)
@@ -544,6 +586,13 @@ public sealed class MainWindowViewModel : ObservableObject
     public void ApplyWorkspaceSnapshot(WorkspaceSessionSnapshot snapshot)
     {
         _workspacePath = snapshot.Project.RootPath;
+        _activeProjectId = snapshot.Project.Id;
+        Activity.Clear();
+        foreach (var activityEvent in snapshot.ActivityEvents)
+        {
+            Activity.Add(ActivityItem.FromStored(activityEvent));
+        }
+        RaisePropertyChanged(nameof(ActivityStatus));
         Tasks.Clear();
         for (var index = 0; index < snapshot.Sessions.Count; index++)
         {
@@ -613,13 +662,6 @@ public sealed class MainWindowViewModel : ObservableObject
         SelectedExecutionItem = null;
         RaisePropertyChanged(nameof(ExecutionStatus));
         SetTurnDiff(string.Empty);
-        Activity.Clear();
-        Activity.Add(ActivityItem.Now(
-            "SESSION",
-            messages.Count > 0
-                ? $"Restored {messages.Count} persisted records"
-                : "New durable session",
-            "#65C7D0"));
         _activeContextTokens = null;
         _cumulativeTokens = null;
         _contextWindowTokens = null;
@@ -655,10 +697,7 @@ public sealed class MainWindowViewModel : ObservableObject
         ContextFiles.Add(ContextFileItem.FromStored(attachment));
         RaisePropertyChanged(nameof(HasContextFiles));
         RaisePropertyChanged(nameof(ContextStatus));
-        Activity.Add(ActivityItem.Now(
-            "CONTEXT",
-            $"Attached {attachment.DisplayName}",
-            "#65C7D0"));
+        AddActivity("CONTEXT", $"Attached {attachment.DisplayName}", "#65C7D0");
     }
 
     public void RemoveContextFile(string attachmentId)
@@ -672,7 +711,7 @@ public sealed class MainWindowViewModel : ObservableObject
         ContextFiles.Remove(item);
         RaisePropertyChanged(nameof(HasContextFiles));
         RaisePropertyChanged(nameof(ContextStatus));
-        Activity.Add(ActivityItem.Now("CONTEXT", $"Detached {item.DisplayName}", "#8993A3"));
+        AddActivity("CONTEXT", $"Detached {item.DisplayName}", "#8993A3");
     }
 
     public void RenameStoredSession(string sessionId, string title)
@@ -760,7 +799,7 @@ public sealed class MainWindowViewModel : ObservableObject
         IsInstallingRuntime = isRunning;
         ConnectionStatus = state;
         ShowRuntimeSetup = state.Contains("FAILED", StringComparison.OrdinalIgnoreCase);
-        Activity.Add(ActivityItem.Now("RUNTIME", detail, isRunning ? "#E2A84A" : "#65C7D0", isRunning));
+        AddActivity("RUNTIME", detail, isRunning ? "#E2A84A" : "#65C7D0", isRunning);
     }
 
     public void SetConnectionFailure(string detail)
@@ -771,7 +810,7 @@ public sealed class MainWindowViewModel : ObservableObject
         UsageDetail = detail;
         ShowRuntimeSetup = true;
         ShowAuthenticationAction = false;
-        Activity.Add(ActivityItem.Now("ERROR", detail, "#E2A84A"));
+        AddActivity("ERROR", detail, "#E2A84A", outcome: "FAILED");
     }
 
     public string BeginTurn()
@@ -797,7 +836,6 @@ public sealed class MainWindowViewModel : ObservableObject
         RaisePropertyChanged(nameof(ExecutionStatus));
         ChangedFiles.Clear();
         SetTurnDiff(string.Empty);
-        Activity.Add(ActivityItem.Now("MODEL", "Turn started", "#65C7D0", true));
         ConversationAdvanced?.Invoke(this, EventArgs.Empty);
         return prompt;
     }
@@ -862,7 +900,8 @@ public sealed class MainWindowViewModel : ObservableObject
         RaisePropertyChanged(nameof(ExecutionStatus));
         SetTurnDiff(string.Empty);
         Activity.Clear();
-        Activity.Add(ActivityItem.Now("WORKSPACE", $"Opened {fullPath}", "#65C7D0"));
+        _activeProjectId = null;
+        AddActivity("WORKSPACE", $"Opened {fullPath}", "#65C7D0");
         _activeContextTokens = null;
         _cumulativeTokens = null;
         _contextWindowTokens = null;
@@ -972,7 +1011,6 @@ public sealed class MainWindowViewModel : ObservableObject
             _executionItems.Remove(removed.Id);
         }
         RaisePropertyChanged(nameof(ExecutionStatus));
-        Activity.Add(ActivityItem.Now(kind, title, color, true));
         RefreshTurnActivity();
     }
 
@@ -1076,8 +1114,40 @@ public sealed class MainWindowViewModel : ObservableObject
         if (combined.Count > 0) SetTurnDiff(string.Join(Environment.NewLine + Environment.NewLine, combined));
     }
 
-    public void AddActivity(string kind, string detail, string color = "#8993A3", bool isRunning = false) =>
-        Activity.Add(ActivityItem.Now(kind, detail, color, isRunning));
+    public void AddActivity(
+        string kind,
+        string title,
+        string color = "#8993A3",
+        bool isRunning = false,
+        string detail = "",
+        string outcome = "INFO",
+        bool isMilestone = false)
+    {
+        var item = ActivityItem.Now(kind, title, detail, outcome, color, isRunning, isMilestone);
+        Activity.Insert(0, item);
+        while (Activity.Count > 500) Activity.RemoveAt(Activity.Count - 1);
+        RaisePropertyChanged(nameof(ActivityStatus));
+        if (_activeProjectId is not null
+            && !string.Equals(kind, "STORAGE", StringComparison.OrdinalIgnoreCase))
+        {
+            ActivityPersistenceRequested?.Invoke(
+                this,
+                new ActivityPersistenceRequestedEventArgs(_activeProjectId, _activeSessionId, item));
+        }
+    }
+
+    public void RecordTurnStarted(string modelName, string prompt)
+    {
+        var request = CollapseForActivity(prompt, 280);
+        AddActivity(
+            "TASK",
+            $"Started · {CurrentSessionTitle}",
+            "#65C7D0",
+            true,
+            string.IsNullOrWhiteSpace(request) ? modelName : $"{modelName} · {request}",
+            "RUNNING",
+            true);
+    }
 
     public void CompleteTurn(string? error = null)
     {
@@ -1100,11 +1170,41 @@ public sealed class MainWindowViewModel : ObservableObject
             Messages.Add(report);
             RequestMessagePersistence(report);
         }
-        Activity.Add(ActivityItem.Now(
-            error is null ? "MODEL" : "ERROR",
-            error ?? "Turn completed",
-            error is null ? "#65C7D0" : "#E2A84A"));
+        var cancelled = error?.Contains("stopped", StringComparison.OrdinalIgnoreCase) == true
+            || error?.Contains("cancel", StringComparison.OrdinalIgnoreCase) == true
+            || error?.Contains("interrupt", StringComparison.OrdinalIgnoreCase) == true;
+        var changed = ChangedFiles.Count;
+        var commands = ExecutionItems.Count(item => item.Kind is "COMMAND" or "OUTPUT");
+        var tools = ExecutionItems.Count(item => item.Kind is "TOOL" or "WEB");
+        var facts = new List<string>();
+        if (changed > 0) facts.Add($"{changed} file{(changed == 1 ? string.Empty : "s")} changed");
+        if (commands > 0) facts.Add($"{commands} command{(commands == 1 ? string.Empty : "s")}");
+        if (tools > 0) facts.Add($"{tools} tool action{(tools == 1 ? string.Empty : "s")}");
+        var finalSummary = Messages
+            .LastOrDefault(message => message.Role == "HARNESS" && !string.IsNullOrWhiteSpace(message.Text))?.Text;
+        var detail = string.Join(" · ", facts);
+        var summary = CollapseForActivity(error ?? finalSummary ?? string.Empty, 900);
+        if (!string.IsNullOrWhiteSpace(summary))
+            detail = string.IsNullOrWhiteSpace(detail) ? summary : $"{detail}{Environment.NewLine}{summary}";
+        AddActivity(
+            error is null ? "TASK" : cancelled ? "CANCELLED" : "ERROR",
+            error is null
+                ? $"Completed · {CurrentSessionTitle}"
+                : cancelled ? $"Stopped · {CurrentSessionTitle}" : $"Needs attention · {CurrentSessionTitle}",
+            error is null ? "#65C7D0" : "#E2A84A",
+            false,
+            detail,
+            error is null ? "COMPLETED" : cancelled ? "CANCELLED" : "FAILED",
+            true);
         ConversationAdvanced?.Invoke(this, EventArgs.Empty);
+    }
+
+    private static string CollapseForActivity(string text, int maximumCharacters)
+    {
+        var collapsed = Regex.Replace(text, @"\s+", " ").Trim();
+        return collapsed.Length <= maximumCharacters
+            ? collapsed
+            : collapsed[..(maximumCharacters - 1)].TrimEnd() + "…";
     }
 
     private ChatMessageItem? BuildTurnReport(string? error)
@@ -1212,10 +1312,10 @@ public sealed class MainWindowViewModel : ObservableObject
             ? "STANDARD (PROVIDER DEFAULT)"
             : serviceTier.ToUpperInvariant();
         RaisePropertyChanged(nameof(ModelSettingsStatus));
-        Activity.Add(ActivityItem.Now(
+        AddActivity(
             "MODEL",
             $"Effective reasoning: {_effectiveReasoning}; service tier: {_effectiveServiceTier}",
-            "#65C7D0"));
+            "#65C7D0");
     }
 
     public void ApplyWorkingTree(WorkingTreeSnapshot snapshot)
@@ -1454,15 +1554,48 @@ public sealed class TaskItem : ObservableObject
 public sealed record MessagePersistenceRequestedEventArgs(
     string SessionId,
     ChatMessageItem Message);
+public sealed record ActivityPersistenceRequestedEventArgs(
+    string ProjectId,
+    string? SessionId,
+    ActivityItem Activity);
 public sealed record ActivityItem(
+    string Id,
     string Kind,
+    string Title,
     string Detail,
-    string Time,
+    DateTimeOffset OccurredAt,
+    string Outcome,
     string Color,
-    bool IsActive)
+    bool IsActive,
+    bool IsMilestone)
 {
-    public static ActivityItem Now(string kind, string detail, string color, bool isActive = false) =>
-        new(kind, detail, DateTimeOffset.Now.ToString("h:mm"), color, isActive);
+    public string Time => OccurredAt.ToLocalTime().ToString("h:mm tt");
+    public string Day => OccurredAt.ToLocalTime().Date == DateTime.Today
+        ? "TODAY"
+        : OccurredAt.ToLocalTime().ToString("ddd, MMM d").ToUpperInvariant();
+    public bool HasDetail => !string.IsNullOrWhiteSpace(Detail);
+
+    public static ActivityItem Now(
+        string kind,
+        string title,
+        string detail,
+        string outcome,
+        string color,
+        bool isActive = false,
+        bool isMilestone = false) =>
+        new(Guid.NewGuid().ToString("N"), kind, title, detail, DateTimeOffset.UtcNow,
+            outcome, color, isActive, isMilestone);
+
+    public static ActivityItem FromStored(StoredActivityEvent activityEvent) => new(
+        activityEvent.Id,
+        activityEvent.Kind,
+        activityEvent.Title,
+        activityEvent.Detail,
+        activityEvent.CreatedAt,
+        activityEvent.Outcome,
+        activityEvent.Color,
+        false,
+        activityEvent.IsMilestone);
 }
 
 public sealed record CapabilityItem(string Name, double Opacity);

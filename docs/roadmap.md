@@ -12,12 +12,14 @@ driver without keeping that driver installed?
 - Streaming assistant text, reasoning summaries when exposed, tool lifecycle,
   command input/output, file-change patches, errors, token usage, and cancellation.
 - Inline approvals, working-tree inspection, diff review, and recoverable
-  stage/unstage/revert actions are implemented. Integrated terminal access and
-  broader patch-level apply controls remain.
+  stage/unstage/revert actions and integrated terminal access are implemented.
+  Broader patch-level apply controls remain.
 - Durable projects, sessions, normalized messages, provider events,
   content-addressed context-file attachments, and restart recovery are
   implemented in local SQLite storage. Durable turn-level projections and
   additional attachment types remain.
+- Activity includes a durable project journal for meaningful workspace events
+  and task milestones, alongside a separately bounded current-run detail stream.
 
 ## Implemented foundation
 

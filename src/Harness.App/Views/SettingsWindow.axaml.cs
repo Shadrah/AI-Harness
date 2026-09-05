@@ -24,7 +24,11 @@ public sealed partial class SettingsWindow : Window
     private readonly HarnessStore? _store;
     private readonly IReadOnlyList<SkillInstallTarget> _skillTargets;
     private readonly bool _openSkillsOnLaunch;
+    private readonly Func<string, CancellationToken, Task<PortableBackupSummary>>? _createPortableBackup;
+    private readonly SubscriptionIdentityActions? _subscriptionIdentityActions;
+    private readonly PortableBackupService _portableBackupService = new();
     private bool _loadingSkillCatalog;
+    public event EventHandler<SettingsActivityEventArgs>? ActivityRecorded;
 
     public SettingsWindow() : this(
         new HarnessApplicationSettings(),
@@ -38,6 +42,8 @@ public sealed partial class SettingsWindow : Window
         [],
         [],
         false,
+        null,
+        null,
         null,
         null,
         null,
@@ -65,7 +71,9 @@ public sealed partial class SettingsWindow : Window
         Func<Task>? apiConnectionsChanged = null,
         Func<CancellationToken, Task<SubscriptionConnectionSnapshot>>? readCodexConnection = null,
         Func<CancellationToken, Task<CodexDeviceCodeLoginStart>>? beginCodexSignIn = null,
-        Func<CancellationToken, Task>? signOutCodex = null)
+        Func<CancellationToken, Task>? signOutCodex = null,
+        Func<string, CancellationToken, Task<PortableBackupSummary>>? createPortableBackup = null,
+        SubscriptionIdentityActions? subscriptionIdentityActions = null)
     {
         InitializeComponent();
         _save = save;
@@ -80,6 +88,8 @@ public sealed partial class SettingsWindow : Window
         _readCodexConnection = readCodexConnection;
         _beginCodexSignIn = beginCodexSignIn;
         _signOutCodex = signOutCodex;
+        _createPortableBackup = createPortableBackup;
+        _subscriptionIdentityActions = subscriptionIdentityActions;
         DataContext = new SettingsWindowViewModel(settings, workspacePath);
         ViewModel.SetCompatibilityTargets(compatibilityTargets ?? []);
         ViewModel.SetModelPreferences(compatibilityTargets ?? []);
@@ -90,6 +100,17 @@ public sealed partial class SettingsWindow : Window
     }
 
     private SettingsWindowViewModel ViewModel => (SettingsWindowViewModel)DataContext!;
+
+    private void RecordActivity(
+        string kind,
+        string title,
+        string detail = "",
+        string outcome = "INFO",
+        bool isMilestone = false,
+        string color = "#65C7D0") =>
+        ActivityRecorded?.Invoke(
+            this,
+            new SettingsActivityEventArgs(kind, title, detail, outcome, isMilestone, color));
 
     public void ShowSkills()
     {
@@ -103,6 +124,7 @@ public sealed partial class SettingsWindow : Window
         {
             if (_openSkillsOnLaunch) ShowSkills();
             await LoadApiConnectionsAsync();
+            await RefreshSubscriptionIdentitiesAsync();
             await RefreshCodexConnectionAsync();
             await LoadSkillCatalogAsync();
             await RefreshGitHubAsync();
@@ -115,10 +137,94 @@ public sealed partial class SettingsWindow : Window
         {
             await _save(ViewModel.ToSettings());
             ViewModel.Status = "Settings saved";
+            RecordActivity("SETTINGS", "Settings saved");
         });
     }
 
     private void Close_OnClick(object? sender, RoutedEventArgs e) => Close();
+
+    private async void ExportBackup_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (_createPortableBackup is null)
+        {
+            ViewModel.Status = "Open Settings from the Harness workspace to create a backup";
+            return;
+        }
+        var destination = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = "Export portable Harness backup",
+            SuggestedFileName = $"Harness-{DateTime.Now:yyyy-MM-dd}.harness-backup",
+            FileTypeChoices = [new FilePickerFileType("Harness portable backup") { Patterns = ["*.harness-backup"] }]
+        });
+        var path = destination?.TryGetLocalPath();
+        if (path is null) return;
+        await RunAsync("Creating portable backup…", async () =>
+        {
+            var summary = await _createPortableBackup(path, _lifetime.Token);
+            ViewModel.Status = $"Backup exported · {summary.DisplaySize} · {summary.PayloadCount:N0} files";
+            RecordActivity(
+                "BACKUP",
+                "Portable backup exported",
+                $"{summary.DisplaySize} · {summary.PayloadCount:N0} files · {Path.GetFileName(path)}",
+                "COMPLETED",
+                true);
+        });
+    }
+
+    private async void RestoreBackup_OnClick(object? sender, RoutedEventArgs e)
+    {
+        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "Choose a portable Harness backup",
+            AllowMultiple = false,
+            FileTypeFilter = [new FilePickerFileType("Harness portable backup") { Patterns = ["*.harness-backup"] }]
+        });
+        var path = files.FirstOrDefault()?.TryGetLocalPath();
+        if (path is null) return;
+        if (!await ConfirmPortableRestoreAsync(path)) return;
+        await RunAsync("Validating and staging backup…", async () =>
+        {
+            var summary = await _portableBackupService.StageRestoreAsync(path, _lifetime.Token);
+            ViewModel.Status = $"Restore staged from {summary.CreatedAtUtc.ToLocalTime():g} · close and reopen Harness to apply";
+            RecordActivity(
+                "BACKUP",
+                "Portable restore staged",
+                $"Backup from {summary.CreatedAtUtc.ToLocalTime():g} will apply after restart",
+                "READY",
+                true,
+                "#E2A84A");
+        });
+    }
+
+    private async Task<bool> ConfirmPortableRestoreAsync(string path)
+    {
+        var restore = new Button { Content = "STAGE RESTORE", Classes = { "primary" } };
+        var cancel = new Button { Content = "CANCEL" };
+        var dialog = new Window
+        {
+            Title = "Restore Harness backup",
+            Width = 620,
+            SizeToContent = SizeToContent.Height,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new StackPanel
+            {
+                Margin = new Avalonia.Thickness(20),
+                Spacing = 12,
+                Children =
+                {
+                    new TextBlock { Text = "PORTABLE RESTORE", Classes = { "micro" } },
+                    new TextBlock { Text = Path.GetFileName(path), FontSize = 19, FontWeight = Avalonia.Media.FontWeight.SemiBold, TextWrapping = Avalonia.Media.TextWrapping.Wrap },
+                    new TextBlock { Text = "The archive will be validated now and applied the next time Harness starts. It replaces Harness history, tasks, settings, cached context, and API connection metadata.", TextWrapping = Avalonia.Media.TextWrapping.Wrap },
+                    new TextBlock { Text = "Workspace source files are never changed. Credentials and sign-ins are not restored. Harness keeps the current database as harness.db.before-restore.", Classes = { "muted" }, TextWrapping = Avalonia.Media.TextWrapping.Wrap },
+                    new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right, Spacing = 8, Children = { cancel, restore } }
+                }
+            }
+        };
+        restore.Click += (_, _) => dialog.Close(true);
+        cancel.Click += (_, _) => dialog.Close(false);
+        return await dialog.ShowDialog<bool>(this);
+    }
 
     private async void OpenDiagnostics_OnClick(object? sender, RoutedEventArgs e)
     {
@@ -337,6 +443,7 @@ public sealed partial class SettingsWindow : Window
         await _github.SignInAsync(_lifetime.Token);
         await RefreshGitHubAsync();
         await _repositoryChanged();
+        RecordActivity("GITHUB", "GitHub account connected", outcome: "COMPLETED", isMilestone: true);
         try
         {
             var profile = await _github.GetAuthenticatedUserAsync(_lifetime.Token);
@@ -528,6 +635,12 @@ public sealed partial class SettingsWindow : Window
             await LoadSkillCatalogAsync();
             ViewModel.Status = $"Installed {selected.Name} for {request.Target.DisplayName}";
             ViewModel.SkillCatalogStatus = $"Installed at {installPath}. Codex detects skill changes automatically.";
+            RecordActivity(
+                "SKILL",
+                $"Installed · {selected.Name}",
+                $"{request.Target.DisplayName} · {request.Scope.ToLowerInvariant()} scope",
+                "COMPLETED",
+                true);
         });
     }
 
@@ -610,8 +723,23 @@ public sealed partial class SettingsWindow : Window
             var error = exception.Message.Replace("\r", " ").Replace("\n", " ");
             ViewModel.Status = error;
             if (SettingsTabs.SelectedIndex == 5) ViewModel.SkillCatalogStatus = error;
+            RecordActivity(
+                "ERROR",
+                status.Trim().TrimEnd('…'),
+                error,
+                "FAILED",
+                false,
+                "#E2A84A");
         }
     }
 
     private sealed record SkillInstallChoice(SkillInstallTarget Target, string Scope);
 }
+
+public sealed record SettingsActivityEventArgs(
+    string Kind,
+    string Title,
+    string Detail,
+    string Outcome,
+    bool IsMilestone,
+    string Color);

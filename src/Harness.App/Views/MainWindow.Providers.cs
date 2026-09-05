@@ -118,6 +118,7 @@ public sealed partial class MainWindow
         var currentUserMessageId = ViewModel.Messages.LastOrDefault()?.Id;
         beganTurn = true;
         NameSessionFromFirstPrompt(prompt);
+        ViewModel.RecordTurnStarted(model.Descriptor.DisplayName, prompt);
         try
         {
             // Restore only state which corresponds exactly to the visible conversation. Switching

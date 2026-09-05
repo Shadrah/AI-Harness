@@ -128,7 +128,7 @@ public static class SkillPackageInstaller
         await File.WriteAllTextAsync(manifestPath, string.Join('\n', lines), new UTF8Encoding(false), cancellationToken);
     }
 
-    private static async Task RebuildProviderIndexAsync(string destinationRoot, CancellationToken cancellationToken)
+    public static async Task RebuildProviderIndexAsync(string destinationRoot, CancellationToken cancellationToken = default)
     {
         var records = new List<object>();
         foreach (var markerPath in Directory.EnumerateDirectories(destinationRoot)
