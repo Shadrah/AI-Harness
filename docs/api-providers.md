@@ -12,6 +12,8 @@ The existing Harness-managed Codex subscription runtime remains independent.
 | Mistral | Chat Completions | `/v1/models` |
 | DeepSeek | Chat Completions | `/models` |
 | OpenRouter | Chat Completions | `/api/v1/models` |
+| Ollama | Chat Completions | native `/api/tags` + `/api/show` |
+| llama.cpp | Chat Completions | native router `/models` |
 | Local / compatible | Chat Completions | configured base URL + `models` |
 
 This is a conversational API integration, **not full feature parity** with every
@@ -27,6 +29,9 @@ compatibility. No account was charged during implementation.
    Multiple named connections are supported. Keys live in Windows Credential
    Manager; public connection metadata and explicit model overrides live in
    `%LOCALAPPDATA%/Harness/api-connections.json`.
+   For Ollama or llama.cpp, **Detect local** checks their default loopback ports
+   without an API key, generation request, model download, or model load. A custom
+   loopback port can also be entered on either local connection type.
 2. Select a discovered model to inspect capabilities. A catalog that only lists
    IDs cannot tell Harness its modalities, context limit, or valid reasoning
    values. Unknown options are not inferred from model names. Enable tools/images
@@ -43,6 +48,17 @@ consumer subscriptions are not silently treated as API credits either.
 ## Implemented
 
 - Per-account catalog refresh at startup; no generation requests for discovery.
+- Explicit Ollama and llama.cpp connection types. Ollama discovery enriches its
+  installed tags from native per-model capability/context metadata and excludes
+  embedding-only entries. llama.cpp uses the router's native metadata catalog.
+  Neither path guesses reasoning levels that the runtime did not report.
+- A shared model/adapter conformance report separates **ready**, **reported but
+  not implemented**, **model unsupported**, and **unknown** states. The primary
+  workspace enables only ready features; Settings → Providers explains adapter
+  gaps without erasing the provider's metadata.
+- Preflight rejects a model from the wrong connection, unadvertised reasoning or
+  service-tier values, unsupported tools, and unsupported or not-yet-implemented
+  attachment modalities before an HTTP request is made.
 - Native text streaming, Unicode, output completion/error checks, and cancellation.
 - Text/code contents and inline image attachments when image input is enabled.
   Inline turn attachments are limited to 20 MiB total and 1 MiB per text file;
@@ -99,7 +115,9 @@ query plans and timings, never message contents or credentials.
 `dotnet run --project tools/Harness.ApiCheck -c Release`
 
 This uses synthetic in-memory HTTP responses, never real credentials or model
-calls. It covers four wire formats, native-state replay, model metadata/pagination,
+calls. It covers four wire formats, native Ollama/llama.cpp discovery,
+native-state replay, model metadata/pagination,
+model/adapter conformance and request preflight,
 tool approval boundaries, credential routing failures, Unicode, usage separation,
 catalog coexistence, and a headless Providers settings preview.
 
@@ -108,4 +126,6 @@ Contract references: [OpenAI Responses](https://developers.openai.com/api/refere
 [Gemini models](https://ai.google.dev/api/models),
 [xAI models](https://docs.x.ai/developers/rest-api-reference/inference/models),
 [Mistral models](https://docs.mistral.ai/api/endpoint/models),
-[OpenRouter reasoning preservation](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens).
+[OpenRouter reasoning preservation](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens),
+[Ollama model details](https://docs.ollama.com/api-reference/show-model-details), and
+[llama.cpp server routes](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md).

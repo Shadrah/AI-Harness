@@ -70,7 +70,11 @@ public sealed partial class MainWindow
                         continue;
                     }
                     _apiConnections[connection.Id] = (result.Saved, result.Models);
-                    ViewModel.ApplyProviderModels(connection.Id, result.Models.Select(model => model.Descriptor).ToArray(), connection.Name, "DIRECT API");
+                    ViewModel.ApplyProviderModels(connection.Id, result.Models.Select(model =>
+                    {
+                        var report = ApiCapabilityConformance.Evaluate(model);
+                        return model.Descriptor with { Capabilities = report.ReadyCapabilities };
+                    }).ToArray(), connection.Name, "DIRECT API");
                 }
                 if (selected is not null)
                 {
@@ -143,7 +147,7 @@ public sealed partial class MainWindow
             var credential = await Task.Run(() => ApiConnectionStore.ReadCredential(connection.Id), token);
             using var transport = new ApiTransport(connection, credential);
             var client = new ApiConversationClient(connection, transport);
-            await Task.Run(() => client.AddUserAsync(history, continuity is null ? prompt : $"{continuity}\n# Current request\n{prompt}", turnFiles, token), token);
+            await Task.Run(() => client.AddUserAsync(model, history, continuity is null ? prompt : $"{continuity}\n# Current request\n{prompt}", turnFiles, token), token);
             if (await Task.Run(() => history.ToJsonString().Length > 24 * 1024 * 1024, token))
                 throw new InvalidOperationException("API history exceeds the 24 MiB local request limit. Start a new chat with a continuity brief. Native API compaction is not enabled yet.");
             var instructions = await Task.Run(() => BuildApiInstructionsAsync(workspace, model.Descriptor.Supports(ModelCapability.ToolUse), token), token);

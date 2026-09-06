@@ -199,10 +199,11 @@
             </Grid>
             <TextBox x:Name="ApiEndpoint" Watermark="API base URL, including /v1/ where required"/>
             <TextBox x:Name="ApiKey" PasswordChar="●" Watermark="API key · leave blank to keep the saved key"/>
-            <TextBlock Text="Keys are stored in Windows Credential Manager, never in workspace files. Connect checks the catalog only; it does not make a billable generation request. Local examples: LM Studio port 1234, Ollama port 11434 with /v1/." Classes="muted" TextWrapping="Wrap"/>
+            <TextBlock Text="Keys are stored in Windows Credential Manager, never in workspace files. Connect checks the catalog only; it does not make a billable generation request. Harness can detect native Ollama and llama.cpp servers on their default local ports without loading a model." Classes="muted" TextWrapping="Wrap"/>
             <WrapPanel Orientation="Horizontal">
               <Button Content="CONNECT / REFRESH" Classes="primary" Margin="0,0,8,0" Click="ApiConnect_OnClick"/>
               <Button Content="NEW CONNECTION" Margin="0,0,8,0" Click="ApiNew_OnClick"/>
+              <Button x:Name="ApiDetectLocalButton" Content="DETECT LOCAL" Margin="0,0,8,0" Click="ApiDetectLocal_OnClick" ToolTip.Tip="Find Ollama and llama.cpp on their default local ports"/>
               <Button Content="DISCONNECT" Click="ApiDisconnect_OnClick"/>
             </WrapPanel>
             <TextBlock x:Name="ApiConnectionStatus" Text="No API connection selected." TextWrapping="Wrap" Classes="muted"/>

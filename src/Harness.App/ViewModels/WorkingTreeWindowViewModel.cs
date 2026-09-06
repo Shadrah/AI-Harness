@@ -12,14 +12,19 @@ public sealed class WorkingTreeWindowViewModel : ObservableObject
     private string _branch = "GIT —";
     private string? _repositoryRoot;
     private string _activity = "Ready";
+    private DiffHunkItem? _selectedHunk;
 
     public ObservableCollection<WorkingTreeFileItem> Files { get; } = [];
     public ObservableCollection<DiffLineItem> DiffLines { get; } = [];
+    public ObservableCollection<DiffHunkItem> Hunks { get; } = [];
 
     public WorkingTreeFileItem? SelectedFile
     {
         get => _selectedFile;
-        set => SetProperty(ref _selectedFile, value);
+        set
+        {
+            if (SetProperty(ref _selectedFile, value)) RaiseHunkState();
+        }
     }
 
     public string DiffText
@@ -29,9 +34,38 @@ public sealed class WorkingTreeWindowViewModel : ObservableObject
         {
             if (SetProperty(ref _diffText, value))
             {
-                ApplyDiff(UnifiedDiffParser.Parse(value));
+                ApplyHunks(value);
             }
         }
+    }
+
+    public DiffHunkItem? SelectedHunk
+    {
+        get => _selectedHunk;
+        set
+        {
+            if (!SetProperty(ref _selectedHunk, value)) return;
+            ApplyDiff(UnifiedDiffParser.Parse(value?.Source.Patch ?? _diffText));
+            RaiseHunkState();
+        }
+    }
+
+    public bool HasHunks => Hunks.Count > 0;
+    public bool CanStageHunk => SelectedHunk?.Source.Source == DiffHunkSource.WorkingTree;
+    public bool CanUnstageHunk => SelectedHunk?.Source.Source == DiffHunkSource.Staged;
+    public bool CanDiscardHunk => CanStageHunk && SelectedFile?.Source.IsUntracked == false;
+    public string HunkStatus => SelectedHunk is null
+        ? "NO TEXT HUNKS"
+        : $"HUNK {SelectedHunk.Source.Index} OF {Hunks.Count} · {SelectedHunk.SourceLabel}";
+
+    public void BeginDiffLoad()
+    {
+        _diffText = "Loading diff…";
+        RaisePropertyChanged(nameof(DiffText));
+        Hunks.Clear();
+        SelectedHunk = null;
+        ApplyDiff(UnifiedDiffParser.Parse(_diffText));
+        RaiseHunkState();
     }
 
     public string DiffSummary { get; private set; } = "+0  −0";
@@ -60,7 +94,7 @@ public sealed class WorkingTreeWindowViewModel : ObservableObject
         set => SetProperty(ref _activity, value);
     }
 
-    public void Apply(WorkingTreeSnapshot snapshot)
+    public void Apply(WorkingTreeSnapshot snapshot, string? preferredPath = null)
     {
         Files.Clear();
         RepositoryRoot = snapshot.RepositoryRoot;
@@ -85,8 +119,29 @@ public sealed class WorkingTreeWindowViewModel : ObservableObject
         }
         else
         {
-            SelectedFile = Files[0];
+            SelectedFile = Files.FirstOrDefault(file =>
+                string.Equals(file.RelativePath, preferredPath, StringComparison.OrdinalIgnoreCase))
+                ?? Files[0];
         }
+    }
+
+    private void ApplyHunks(string diff)
+    {
+        Hunks.Clear();
+        foreach (var hunk in UnifiedDiffParser.ParseHunks(diff))
+            Hunks.Add(DiffHunkItem.FromModel(hunk));
+        SelectedHunk = Hunks.FirstOrDefault();
+        if (SelectedHunk is null) ApplyDiff(UnifiedDiffParser.Parse(diff));
+        RaiseHunkState();
+    }
+
+    private void RaiseHunkState()
+    {
+        RaisePropertyChanged(nameof(HasHunks));
+        RaisePropertyChanged(nameof(CanStageHunk));
+        RaisePropertyChanged(nameof(CanUnstageHunk));
+        RaisePropertyChanged(nameof(CanDiscardHunk));
+        RaisePropertyChanged(nameof(HunkStatus));
     }
 
     private void ApplyDiff(DiffDocument document)
@@ -99,6 +154,20 @@ public sealed class WorkingTreeWindowViewModel : ObservableObject
         DiffSummary = $"+{document.AddedLines}  −{document.RemovedLines}";
         RaisePropertyChanged(nameof(DiffSummary));
     }
+}
+
+public sealed record DiffHunkItem(DiffHunk Source, string DisplayName, string SourceLabel)
+{
+    public static DiffHunkItem FromModel(DiffHunk hunk)
+    {
+        var source = hunk.Source == DiffHunkSource.Staged ? "STAGED" : "WORKING TREE";
+        return new DiffHunkItem(
+            hunk,
+            $"{source} · Hunk {hunk.Index} · +{hunk.AddedLines} −{hunk.RemovedLines}",
+            source);
+    }
+
+    public override string ToString() => DisplayName;
 }
 
 public sealed record DiffLineItem(

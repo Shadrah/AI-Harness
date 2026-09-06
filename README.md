@@ -31,7 +31,9 @@ desktop codebase.
 ## Current milestone
 
 Direct API connections are now available in **Settings → Providers** for OpenAI,
-Anthropic, Gemini, xAI, Mistral, DeepSeek, OpenRouter, and local compatible servers.
+Anthropic, Gemini, xAI, Mistral, DeepSeek, OpenRouter, native Ollama and llama.cpp,
+and other local compatible servers. Native local detection reads metadata only;
+it does not download or load models.
 This first slice includes native streaming, client workspace tools, explicit
 approvals, attachments, and durable continuation. It is not yet full provider
 feature parity or live-account certified. See [API provider coverage and setup](docs/api-providers.md)
@@ -64,6 +66,10 @@ capability/content contracts:
   task without merging quotas or spending the source account on a summary;
 - provider-neutral model-picker preferences for visibility, favorites, and
   ordering, retained across catalog refreshes, restarts, and provider reconnects;
+- a shared direct-API conformance layer that keeps provider-reported capability
+  metadata separate from Harness adapter readiness, enables only their verified
+  intersection, and rejects stale models or unsupported tools, attachments,
+  reasoning values, and speed tiers before transmission;
 - unclean-shutdown recovery with a visible next-launch notice and bounded,
   privacy-safe diagnostics that exclude prompts, credentials, commands, and paths;
 - portable, integrity-checked backup and staged next-launch restore for Harness
@@ -101,8 +107,9 @@ capability/content contracts:
   provider identities, explicit package inspection, pinned downloads, and Codex
   user/workspace installation;
 - live Git branch and working-tree inspection with staged, unstaged, and
-  untracked status; full per-file diff review; stage and unstage actions; and
-  confirmed revert actions that preserve a Harness recovery copy first;
+  untracked status; full per-file diff review; file- and hunk-level stage and
+  unstage actions; and confirmed file or hunk discard actions that preserve a
+  Harness recovery copy first;
 - a dedicated modeless diff module with old/new line numbers, colored additions
   and removals, hunk headers, and per-file added/removed totals;
 - chat-native composer behavior (`Enter` sends; `Ctrl+Enter` or `Shift+Enter`

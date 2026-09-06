@@ -13,7 +13,12 @@ public enum ModelCapability
     AudioOutput = 1 << 6,
     PromptCaching = 1 << 7,
     ComputerUse = 1 << 8,
-    VideoInput = 1 << 9
+    VideoInput = 1 << 9,
+    StructuredOutput = 1 << 10,
+    PdfInput = 1 << 11,
+    Citations = 1 << 12,
+    ContextManagement = 1 << 13,
+    GeneratedArtifacts = 1 << 14
 }
 
 public sealed record ModelDescriptor(

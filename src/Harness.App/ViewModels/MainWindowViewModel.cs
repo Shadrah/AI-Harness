@@ -1405,7 +1405,7 @@ public sealed class MainWindowViewModel : ObservableObject
     private void RefreshCapabilities()
     {
         string[] capabilityNames =
-            ["TEXT", "VISION", "TOOLS", "REASONING", "CACHE", "AUDIO IN", "IMAGE GEN"];
+            ["TEXT", "VISION", "TOOLS", "REASONING", "STRUCTURED", "CACHE", "PDF", "AUDIO IN", "AUDIO OUT", "VIDEO IN", "IMAGE GEN", "COMPUTER", "CITATIONS", "COMPACTION", "ARTIFACTS"];
 
         Capabilities.Clear();
         foreach (var capability in capabilityNames)
@@ -1793,6 +1793,11 @@ public sealed record ModelOption(
         ModelCapability.PromptCaching => "CACHE",
         ModelCapability.ComputerUse => "COMPUTER",
         ModelCapability.VideoInput => "VIDEO IN",
+        ModelCapability.StructuredOutput => "STRUCTURED",
+        ModelCapability.PdfInput => "PDF",
+        ModelCapability.Citations => "CITATIONS",
+        ModelCapability.ContextManagement => "COMPACTION",
+        ModelCapability.GeneratedArtifacts => "ARTIFACTS",
         _ => capability.ToString().ToUpperInvariant()
     };
 }

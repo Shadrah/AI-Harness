@@ -18,6 +18,8 @@ public sealed record ApiProviderDefinition(string Id, string Name, string Endpoi
         new("mistral-api", "Mistral API", "https://api.mistral.ai/v1/", ApiProtocol.ChatCompletions),
         new("deepseek-api", "DeepSeek API", "https://api.deepseek.com/", ApiProtocol.ChatCompletions),
         new("openrouter-api", "OpenRouter", "https://openrouter.ai/api/v1/", ApiProtocol.ChatCompletions),
+        new("ollama-local", "Ollama (local)", "http://localhost:11434/v1/", ApiProtocol.ChatCompletions, true),
+        new("llama-cpp-local", "llama.cpp (local)", "http://localhost:8080/v1/", ApiProtocol.ChatCompletions, true),
         new("local-api", "Local / OpenAI-compatible", "http://localhost:1234/v1/", ApiProtocol.ChatCompletions, true)
     ];
     public override string ToString() => Name;
@@ -35,7 +37,7 @@ public sealed record ApiConnection(string Id, string ProviderId, string Name, st
                 || (uri.Scheme != "https" && !(uri.Scheme == "http" && uri.IsLoopback)))
                 throw new InvalidOperationException("Use HTTPS, or HTTP on localhost. URLs cannot contain credentials, query strings, or fragments.");
             // Prevent mistakenly forwarding a hosted provider's credential to an arbitrary endpoint.
-            if (ProviderId != "local-api" && uri != new Uri(Definition.Endpoint))
+            if (!Definition.KeyOptional && uri != new Uri(Definition.Endpoint))
                 throw new InvalidOperationException("Hosted providers use their official API endpoint. Choose a compatible connection for a custom endpoint.");
             return uri;
         }
@@ -93,6 +95,17 @@ public sealed class ApiTransport : IDisposable
     public async Task<JsonObject> GetAsync(string path, CancellationToken cancellationToken)
     {
         using var response = await SendAsync(path, null, cancellationToken).ConfigureAwait(false);
+        return await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<JsonObject> PostJsonAsync(string path, JsonNode body, CancellationToken cancellationToken)
+    {
+        using var response = await SendAsync(path, body, cancellationToken).ConfigureAwait(false);
+        return await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<JsonObject> ReadJsonAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
         return (await JsonNode.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false))?.AsObject()
             ?? throw new InvalidOperationException("The provider returned an empty catalog.");

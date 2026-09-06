@@ -2378,6 +2378,12 @@ public sealed partial class MainWindow : Window
             _git,
             ViewModel.WorkspacePath,
             (root, branch, token) => RenameWorkspaceBranchAsync(root, branch, token, makeDefault: false));
+        module.ActionCompleted += (_, action) => ViewModel.AddActivity(
+            action.Kind,
+            action.Title,
+            action.Color,
+            detail: action.Detail,
+            outcome: action.Outcome);
         module.WorkingTreeChanged += async (_, _) => await RefreshWorkingTreeAsync();
         module.Closed += async (_, _) =>
         {

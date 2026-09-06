@@ -62,10 +62,11 @@ foreach (var (provider, fixture) in fixtures)
     var handler = new FixtureHandler(fixture);
     using var transport = new ApiTransport(connection, "fixture-key-not-a-secret", handler);
     var client = new ApiConversationClient(connection, transport);
-    var descriptor = new ModelDescriptor(connection.Id, "provider-reported-fixture-model", "Fixture", ModelCapability.Text | ModelCapability.ToolUse);
+    var descriptor = new ModelDescriptor(connection.Id, "provider-reported-fixture-model", "Fixture", ModelCapability.Text | ModelCapability.ToolUse | ModelCapability.Reasoning,
+        ReasoningLevels: [new("custom-effort", "Custom effort")]);
     var model = new ApiModel(descriptor, new JsonObject(), false, 8192, provider == "anthropic-api");
     var history = new JsonArray();
-    await client.AddUserAsync(history, "Inspect a.txt", [], default);
+    await client.AddUserAsync(model, history, "Inspect a.txt", [], default);
     var text = new StringBuilder();
     var result = await client.CompleteAsync(model, history, "Standing instructions", "custom-effort", null, ApiWorkspaceTools.Definitions,
         delta => { text.Append(delta); return Task.CompletedTask; }, default);
@@ -89,14 +90,86 @@ foreach (var (provider, fixture) in fixtures)
 }
 
 var anthropic = Connection("anthropic-api");
-var discovered = ApiModelCatalog.Parse(anthropic, Obj("""{"id":"future-model","display_name":"Future model","max_input_tokens":456789,"capabilities":{"image_input":{"supported":true},"effort":{"supported":true,"brand-new-level":{"supported":true},"unavailable":{"supported":false}},"thinking":{"supported":true,"types":{"adaptive":{"supported":true}}}}}"""))!;
+var discovered = ApiModelCatalog.Parse(anthropic, Obj("""{"id":"future-model","display_name":"Future model","max_input_tokens":456789,"capabilities":{"image_input":{"supported":true},"pdf_input":{"supported":true},"structured_outputs":{"supported":true},"citations":{"supported":true},"context_management":{"supported":true},"effort":{"supported":true,"brand-new-level":{"supported":true},"unavailable":{"supported":false}},"thinking":{"supported":true,"types":{"adaptive":{"supported":true}}}}}"""))!;
 Check(discovered.Descriptor.ReasoningLevels!.Single().Id == "brand-new-level", "Catalog reasoning levels were hardcoded or unsupported levels leaked.");
-Check(discovered.Descriptor.Supports(ModelCapability.Vision) && discovered.AdaptiveThinking && discovered.Descriptor.ContextWindow == 456789, "Reported capabilities lost.");
+Check(discovered.Descriptor.Supports(ModelCapability.Vision | ModelCapability.PdfInput | ModelCapability.StructuredOutput
+      | ModelCapability.Citations | ModelCapability.ContextManagement)
+      && discovered.AdaptiveThinking && discovered.Descriptor.ContextWindow == 456789, "Reported capabilities lost.");
+var conformance = ApiCapabilityConformance.Evaluate(discovered);
+Check(conformance.Ready.Contains(ModelCapability.Vision) && conformance.Ready.Contains(ModelCapability.Reasoning),
+    "Implemented reported capabilities were not marked ready.");
+Check(conformance.AdapterGaps.Contains(ModelCapability.PdfInput)
+      && conformance.AdapterGaps.Contains(ModelCapability.StructuredOutput)
+      && conformance.AdapterGaps.Contains(ModelCapability.Citations)
+      && conformance.AdapterGaps.Contains(ModelCapability.ContextManagement),
+    "Reported adapter gaps were incorrectly advertised as ready.");
 var unknown = ApiModelCatalog.Parse(Connection("openai-api"), Obj("""{"id":"unclassified-model"}"""))!;
 Check(!unknown.CapabilityMetadataReported && unknown.Descriptor.Capabilities == ModelCapability.Text && unknown.Descriptor.ReasoningLevels!.Count == 0, "Unreported capabilities were invented.");
+Check(ApiCapabilityConformance.Evaluate(unknown).Findings.Single(finding => finding.Capability == ModelCapability.Vision).State == ApiCapabilityState.Unknown,
+    "Missing catalog metadata was treated as proof that vision is unsupported.");
 var mistral = ApiModelCatalog.Parse(Connection("mistral-api"), Obj("""{"id":"fixture","capabilities":{"completion_chat":true,"function_calling":true,"vision":true},"max_model_len":32000}"""))!;
 Check(mistral.Descriptor.Supports(ModelCapability.ToolUse | ModelCapability.Vision), "Mistral metadata not applied.");
+var parameterized = ApiModelCatalog.Parse(Connection("local-api"), Obj("""{"id":"fixture","input_modalities":["text","image","audio","video","pdf"],"output_modalities":["text","audio"],"supported_parameters":["tools","reasoning_effort","response_format","prompt_cache_key"]}"""))!;
+Check(parameterized.Descriptor.Supports(ModelCapability.Vision | ModelCapability.AudioInput | ModelCapability.AudioOutput
+      | ModelCapability.VideoInput | ModelCapability.PdfInput | ModelCapability.ToolUse | ModelCapability.StructuredOutput | ModelCapability.PromptCaching),
+    "OpenAI-compatible reported parameters or modalities were lost.");
 Check(ApiModelCatalog.Parse(Connection("gemini-api"), Obj("""{"name":"models/embedding","supportedGenerationMethods":["embedContent"]}""")) is null, "Embedding model appeared as a chat model.");
+
+var ollamaHandler = new RouteFixtureHandler(async request =>
+{
+    if (request.RequestUri!.AbsolutePath == "/api/tags")
+        return """{"models":[{"name":"gemma3:latest","model":"gemma3:latest"},{"name":"nomic-embed-text:latest","model":"nomic-embed-text:latest"}]}""";
+    var body = await request.Content!.ReadAsStringAsync();
+    return body.Contains("gemma3:latest", StringComparison.Ordinal)
+        ? """{"capabilities":["completion","vision","tools","thinking"],"model_info":{"gemma3.context_length":131072}}"""
+        : """{"capabilities":["embedding"],"model_info":{"nomic.context_length":8192}}""";
+});
+using (var transport = new ApiTransport(Connection("ollama-local"), "", ollamaHandler))
+{
+    var catalog = await ApiModelCatalog.LoadAsync(Connection("ollama-local"), transport, [], default);
+    Check(catalog.Count == 1 && catalog[0].Descriptor.ModelId == "gemma3:latest", "Ollama discovery included a non-chat model or lost its chat model.");
+    Check(catalog[0].Descriptor.Supports(ModelCapability.Vision | ModelCapability.ToolUse | ModelCapability.Reasoning)
+          && catalog[0].Descriptor.ContextWindow == 131072, "Ollama native capability metadata was lost.");
+    Check(catalog[0].Descriptor.ReasoningLevels!.Count == 0, "Ollama reasoning levels were invented instead of being model-reported.");
+    Check(ollamaHandler.Paths.SequenceEqual(["/api/tags", "/api/show", "/api/show"]), "Ollama discovery used a generation endpoint or skipped native details.");
+}
+
+var llamaHandler = new RouteFixtureHandler(_ => Task.FromResult(
+    """{"data":[{"id":"local-vision-model","architecture":{"input_modalities":["text","image"],"output_modalities":["text"]},"supported_parameters":["tools"],"meta":{"n_ctx_train":65536}}]}"""));
+using (var transport = new ApiTransport(Connection("llama-cpp-local"), "", llamaHandler))
+{
+    var catalog = await ApiModelCatalog.LoadAsync(Connection("llama-cpp-local"), transport, [], default);
+    Check(catalog.Count == 1 && catalog[0].Descriptor.Supports(ModelCapability.Vision | ModelCapability.ToolUse)
+          && catalog[0].Descriptor.ContextWindow == 65536, "llama.cpp router metadata was not applied.");
+    Check(llamaHandler.Paths.SequenceEqual(["/models"]), "llama.cpp discovery did not use its native metadata route.");
+}
+
+var strictModel = discovered with { Descriptor = discovered.Descriptor with
+{
+    ReasoningLevels = [new("low", "Low")],
+    ServiceTiers = [new("priority", "Fast")]
+}};
+ApiCapabilityConformance.ValidateTurn(anthropic, strictModel, "low", "priority", ApiWorkspaceTools.Definitions);
+foreach (var invalid in new Action[]
+{
+    () => ApiCapabilityConformance.ValidateTurn(anthropic, strictModel, "invented", "priority", []),
+    () => ApiCapabilityConformance.ValidateTurn(anthropic, strictModel, "low", "invented", []),
+    () => ApiCapabilityConformance.ValidateTurn(Connection("openai-api"), strictModel, null, null, []),
+    () => ApiCapabilityConformance.ValidateTurn(Connection("openai-api"), unknown, null, null, ApiWorkspaceTools.Definitions)
+})
+{
+    try { invalid(); throw new Exception("Invalid provider capability selection was accepted."); }
+    catch (InvalidOperationException) { }
+}
+try
+{
+    ApiCapabilityConformance.ValidateAttachment(discovered, new FilePart("fixture.pdf", "application/pdf"));
+    throw new Exception("Unimplemented PDF delivery was advertised as ready.");
+}
+catch (InvalidOperationException exception)
+{
+    Check(exception.Message.Contains("does not implement", StringComparison.Ordinal), "Adapter capability failure did not explain the implementation gap.");
+}
 
 var pagination = new FixtureHandler("", json: true, pages:
 [
@@ -127,6 +200,8 @@ foreach (var endpoint in new[] { "http://example.com/v1/", "https://user:passwor
     try { _ = new ApiConnection("fixture", "local-api", "Fixture", endpoint).BaseUri; throw new Exception("Unsafe URL accepted."); }
     catch (InvalidOperationException) { }
 }
+Check(new ApiConnection("fixture", "ollama-local", "Fixture", "http://localhost:11435/v1/").BaseUri.Port == 11435,
+    "A local runtime could not use a user-selected loopback port.");
 
 var testRoot = Path.Combine(Environment.CurrentDirectory, ".artifacts", "api-check", Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(testRoot);
@@ -439,6 +514,8 @@ var uiThread = new Thread(() =>
         using var frame = settings.CaptureRenderedFrame() ?? throw new Exception("Provider settings frame unavailable.");
         frame.Save(Path.Combine(Environment.CurrentDirectory, ".artifacts", "api-providers.png"));
         Check(settings.FindControl<TextBox>("ApiKey")!.PasswordChar != '\0', "API key input is not masked.");
+        Check(settings.FindControl<Button>("ApiDetectLocalButton") is not null,
+            "Native local-runtime discovery is missing from Providers settings.");
         Check(settings.FindControl<Border>("CodexConnectionPanel") is not null
             && settings.FindControl<Button>("CodexSignInButton") is not null
             && settings.FindControl<Button>("CodexSignOutButton") is not null
@@ -498,7 +575,7 @@ var uiThread = new Thread(() =>
 });
 uiThread.Start(); uiThread.Join();
 if (uiFailure is not null) throw uiFailure;
-Console.WriteLine("API checks passed: four native wire formats, reasoning/tool replay, Unicode, usage, pagination, unknown capabilities, failure handling, credential routing, approval boundaries, catalog merging, isolated subscription profiles and handoff UI, portable backup round-trip, unsafe-archive rejection, delayed PowerShell Write-Host plus rendered terminal output, and Providers UI. No live API calls made.");
+Console.WriteLine("API checks passed: four native wire formats, native Ollama/llama.cpp discovery, capability conformance/preflight, reasoning/tool replay, Unicode, usage, pagination, unknown capabilities, failure handling, credential routing, approval boundaries, catalog merging, isolated subscription profiles and handoff UI, portable backup round-trip, unsafe-archive rejection, delayed PowerShell Write-Host plus rendered terminal output, and Providers UI. No live API calls made.");
 
 sealed class FixtureHandler(string content, bool json = false, string[]? pages = null, HttpStatusCode status = HttpStatusCode.OK) : HttpMessageHandler
 {
@@ -511,5 +588,20 @@ sealed class FixtureHandler(string content, bool json = false, string[]? pages =
         if (request.RequestUri is null || !request.RequestUri.IsAbsoluteUri) throw new Exception("Request endpoint missing.");
         var body = pages is null ? content : pages[Calls - 1];
         return Task.FromResult(new HttpResponseMessage(status) { Content = new StringContent(body, Encoding.UTF8, json ? "application/json" : "text/event-stream") });
+    }
+}
+
+sealed class RouteFixtureHandler(Func<HttpRequestMessage, Task<string>> route) : HttpMessageHandler
+{
+    public List<string> Paths { get; } = [];
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        if (request.RequestUri is null || !request.RequestUri.IsAbsoluteUri) throw new Exception("Request endpoint missing.");
+        lock (Paths) Paths.Add(request.RequestUri.AbsolutePath);
+        return new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(await route(request), Encoding.UTF8, "application/json")
+        };
     }
 }

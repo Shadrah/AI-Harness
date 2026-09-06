@@ -73,10 +73,21 @@ explicit runtime update; it never supplements the response with guessed models.
 ## Capability preservation
 
 Capabilities and controls belong to a model descriptor, not merely to a provider. The core
-currently names text, vision, tool use, reasoning, image generation, audio input,
-audio output, prompt caching, and computer use. Each capability will grow typed
+currently names text, vision, tool use, reasoning, structured output, image
+generation, PDF/audio/video input, audio output, prompt caching, citations,
+native context management, computer use, and generated artifacts. Each
+capability will grow typed
 constraints such as accepted MIME types, maximum image count, tool schema limits,
 reasoning controls, and streaming event support.
+
+Direct API adapters evaluate a two-sided conformance report for every model:
+provider-reported support and Harness adapter readiness are separate states.
+Only the intersection is enabled in the workspace. Reported features whose wire
+path is unfinished remain visible as adapter gaps in Providers; absent catalog
+metadata remains unknown rather than becoming a guessed negative. Request
+preflight rejects stale cross-connection model selections, tools, attachments,
+reasoning values, and service tiers that the selected model did not advertise.
+This validation runs before HTTP transmission.
 
 Before a run, the application validates every content part and requested feature
 against the selected model. Switching models may surface an incompatibility or an

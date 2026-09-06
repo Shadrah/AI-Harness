@@ -15,13 +15,14 @@ public sealed class ApiConversationClient(ApiConnection connection, ApiTransport
 {
     private ApiProtocol Protocol => connection.Definition.Protocol;
 
-    public async Task AddUserAsync(JsonArray history, string text, IReadOnlyList<FilePart> files, CancellationToken cancellationToken)
+    public async Task AddUserAsync(ApiModel model, JsonArray history, string text, IReadOnlyList<FilePart> files, CancellationToken cancellationToken)
     {
         var parts = new JsonArray();
         if (!string.IsNullOrWhiteSpace(text)) parts.Add(TextPart(text));
         long total = 0;
         foreach (var file in files)
         {
+            ApiCapabilityConformance.ValidateAttachment(model, file);
             var info = new FileInfo(file.Path);
             if (!info.Exists) throw new IOException($"Attachment is missing: {file.DisplayName ?? info.Name}");
             total += info.Length;
@@ -274,6 +275,7 @@ public sealed class ApiConversationClient(ApiConnection connection, ApiTransport
 
     public JsonObject BuildRequest(ApiModel model, JsonArray history, string instructions, string? effort, string? tier, IReadOnlyList<ApiTool> tools)
     {
+        ApiCapabilityConformance.ValidateTurn(connection, model, effort, tier, tools);
         var body = new JsonObject { ["model"] = model.Descriptor.ModelId, ["stream"] = true };
         var definitions = new JsonArray();
         foreach (var tool in tools)

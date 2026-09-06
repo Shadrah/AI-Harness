@@ -91,9 +91,12 @@ remain visually distinct. The header reports total added and removed lines.
 - The conversation renders only user prompts, model responses, and one bounded
   evidence-based turn report. Commands, reasoning, tool calls, and raw output
   live in the separate Activity module.
-- Activity retains at most 200 events per turn and 48 KiB of visible detail per
-  event. Streaming deltas are coalesced on a 100 ms UI cadence so verbose builds
-  cannot monopolize the render thread.
+- Activity keeps a durable 500-event project journal for meaningful outcomes and
+  milestones. Its separate current-run stream retains at most 200 events per turn
+  and 48 KiB of visible detail per event. Streaming deltas are coalesced on a
+  100 ms UI cadence so verbose builds cannot monopolize the render thread.
 - Turn Diff and Working Tree share the structured unified-diff presentation:
   old/new line numbers, hunk headers, red removals, green additions, and exact
-  added/removed totals.
+  added/removed totals. Working Tree also exposes source-aware hunk selection:
+  stage working-tree hunks, unstage staged hunks, or discard a working-tree hunk
+  after Harness captures a complete recovery copy.

@@ -220,7 +220,7 @@ public sealed partial class SettingsWindow
     {
         try
         {
-            _savedApiConnections = await _apiStore.LoadAsync(_lifetime.Token);
+            _savedApiConnections = await Task.Run(() => _apiStore.LoadAsync(_lifetime.Token), _lifetime.Token);
             ApiSavedConnections.ItemsSource = _savedApiConnections.Select(saved => saved.Connection).ToArray();
             ApiSavedConnections.SelectedItem = _savedApiConnections.FirstOrDefault(saved => saved.Connection.Id == _editingApiConnection)?.Connection;
         }
@@ -256,7 +256,9 @@ public sealed partial class SettingsWindow
         ApiKey.Text = ""; ApiModelPicker.ItemsSource = null;
         if (ApiProviderPicker.SelectedItem is ApiProviderDefinition provider)
         { ApiConnectionName.Text = provider.Name; ApiEndpoint.Text = provider.Endpoint; }
-        ApiConnectionStatus.Text = "New connection. Enter your API key, then connect.";
+        ApiConnectionStatus.Text = ApiProviderPicker.SelectedItem is ApiProviderDefinition { KeyOptional: true }
+            ? "New local connection. Start the runtime, then connect; no API key is required."
+            : "New connection. Enter your API key, then connect.";
     }
 
     private async void ApiConnect_OnClick(object? sender, RoutedEventArgs e)
@@ -266,18 +268,25 @@ public sealed partial class SettingsWindow
             var provider = (ApiProviderDefinition)ApiProviderPicker.SelectedItem!;
             var connection = new ApiConnection(_editingApiConnection ?? "api-" + Guid.NewGuid().ToString("N"), provider.Id,
                 string.IsNullOrWhiteSpace(ApiConnectionName.Text) ? provider.Name : ApiConnectionName.Text.Trim(), ApiEndpoint.Text?.Trim() ?? "");
-            var key = !string.IsNullOrWhiteSpace(ApiKey.Text) ? ApiKey.Text.Trim() : _editingApiConnection is null ? "" : ApiConnectionStore.ReadCredential(connection.Id);
-            if (string.IsNullOrWhiteSpace(key) && !provider.KeyOptional) throw new InvalidOperationException("Enter this provider's API key. Chat subscription credentials are not API keys.");
             var saved = _savedApiConnections.FirstOrDefault(item => item.Connection.Id == connection.Id);
+            var enteredKey = ApiKey.Text?.Trim() ?? "";
             // Never reuse credentials when changing the destination of an existing connection.
             if (saved is not null && (saved.Connection.Endpoint != connection.Endpoint || saved.Connection.ProviderId != connection.ProviderId)
-                && string.IsNullOrWhiteSpace(ApiKey.Text)) throw new InvalidOperationException("Use a new connection, or supply a new key when changing its destination.");
+                && string.IsNullOrWhiteSpace(enteredKey)) throw new InvalidOperationException("Use a new connection, or supply a new key when changing its destination.");
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
             timeout.CancelAfter(TimeSpan.FromSeconds(40));
-            using var transport = new ApiTransport(connection, key);
             var configurations = saved?.Models ?? [];
-            var models = await ApiModelCatalog.LoadAsync(connection, transport, configurations, timeout.Token);
-            await _apiStore.SaveAsync(new(connection, configurations), key, _lifetime.Token);
+            var models = await Task.Run(async () =>
+            {
+                var key = !string.IsNullOrWhiteSpace(enteredKey) ? enteredKey
+                    : saved is null ? "" : ApiConnectionStore.ReadCredential(connection.Id);
+                if (string.IsNullOrWhiteSpace(key) && !provider.KeyOptional)
+                    throw new InvalidOperationException("Enter this provider's API key. Chat subscription credentials are not API keys.");
+                using var transport = new ApiTransport(connection, key);
+                var discovered = await ApiModelCatalog.LoadAsync(connection, transport, configurations, timeout.Token).ConfigureAwait(false);
+                await _apiStore.SaveAsync(new(connection, configurations), enteredKey.Length > 0 ? enteredKey : null, timeout.Token).ConfigureAwait(false);
+                return discovered;
+            }, timeout.Token);
             _editingApiConnection = connection.Id;
             ApiKey.Text = "";
             await LoadApiConnectionsAsync();
@@ -295,12 +304,62 @@ public sealed partial class SettingsWindow
         });
     }
 
+    private async void ApiDetectLocal_OnClick(object? sender, RoutedEventArgs e)
+    {
+        await RunApiActionAsync(async () =>
+        {
+            var savedSnapshot = _savedApiConnections;
+            var results = await Task.Run(async () =>
+            {
+                var providers = ApiProviderDefinition.All
+                    .Where(provider => provider.Id is "ollama-local" or "llama-cpp-local").ToArray();
+                var probes = providers.Select(async provider =>
+                {
+                    var saved = savedSnapshot.FirstOrDefault(item => item.Connection.ProviderId == provider.Id
+                        && string.Equals(item.Connection.Endpoint.TrimEnd('/'), provider.Endpoint.TrimEnd('/'), StringComparison.OrdinalIgnoreCase));
+                    var connection = saved?.Connection ?? new ApiConnection("api-" + Guid.NewGuid().ToString("N"),
+                        provider.Id, provider.Name, provider.Endpoint);
+                    using var probeTimeout = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+                    probeTimeout.CancelAfter(TimeSpan.FromSeconds(5));
+                    try
+                    {
+                        using var transport = new ApiTransport(connection, "");
+                        var models = await ApiModelCatalog.LoadAsync(connection, transport, saved?.Models ?? [], probeTimeout.Token).ConfigureAwait(false);
+                        await _apiStore.SaveAsync(new(connection, saved?.Models ?? []), null, probeTimeout.Token).ConfigureAwait(false);
+                        return new LocalDetectionResult(connection, models, null);
+                    }
+                    catch (OperationCanceledException) when (!_lifetime.IsCancellationRequested)
+                    { return new LocalDetectionResult(connection, [], "The local metadata request timed out."); }
+                    catch (Exception exception) { return new LocalDetectionResult(connection, [], exception.Message); }
+                });
+                return await Task.WhenAll(probes).ConfigureAwait(false);
+            }, _lifetime.Token);
+
+            var detected = results.Where(result => result.Error is null).ToArray();
+            if (detected.Length == 0)
+                throw new InvalidOperationException("No Ollama or llama.cpp server responded on its default local port. Start a runtime, or add its endpoint as a new local connection.");
+
+            var selected = detected.OrderByDescending(result => result.Models.Count).First();
+            _editingApiConnection = selected.Connection.Id;
+            await LoadApiConnectionsAsync();
+            _apiModels = selected.Models;
+            ApiModelPicker.ItemsSource = _apiModels;
+            ApiModelPicker.SelectedIndex = _apiModels.Count > 0 ? 0 : -1;
+            var names = string.Join(", ", detected.Select(result => result.Connection.Name));
+            var failures = results.Count(result => result.Error is not null);
+            ApiConnectionStatus.Text = $"Detected {names} · {detected.Sum(result => result.Models.Count):N0} conversational models."
+                + (failures == 0 ? "" : $" {failures} other local runtime did not respond.");
+            if (_apiConnectionsChanged is not null) await _apiConnectionsChanged();
+            RecordActivity("PROVIDER", "Local runtimes detected", ApiConnectionStatus.Text, "COMPLETED", true);
+        });
+    }
+
     private async void ApiDisconnect_OnClick(object? sender, RoutedEventArgs e)
     {
         await RunApiActionAsync(async () =>
         {
             if (_editingApiConnection is null) throw new InvalidOperationException("Choose a saved connection first.");
-            await _apiStore.RemoveAsync(_editingApiConnection, _lifetime.Token);
+            await Task.Run(() => _apiStore.RemoveAsync(_editingApiConnection, _lifetime.Token), _lifetime.Token);
             _editingApiConnection = null;
             ApiKey.Text = ""; ApiModelPicker.ItemsSource = null;
             await LoadApiConnectionsAsync();
@@ -315,9 +374,14 @@ public sealed partial class SettingsWindow
         if (ApiModelPicker.SelectedItem is not ApiModel model) return;
         var descriptor = model.Descriptor;
         var overridden = _savedApiConnections.FirstOrDefault(saved => saved.Connection.Id == _editingApiConnection)?.Models.Any(config => config.ModelId == descriptor.ModelId) == true;
-        ApiModelMetadataStatus.Text = overridden ? "Using your explicit model override."
+        var report = ApiCapabilityConformance.Evaluate(model);
+        var ready = string.Join(", ", report.Ready.Select(ApiCapabilityConformance.Name));
+        var gaps = string.Join(", ", report.AdapterGaps.Select(ApiCapabilityConformance.Name));
+        var source = overridden ? "Using your explicit model override."
             : model.CapabilityMetadataReported ? "Using provider metadata. Unreported options remain unknown; only implemented modalities are enabled."
             : "The catalog does not publish capability metadata. Text requests can be attempted; enable tools/images only after verifying support for this model.";
+        ApiModelMetadataStatus.Text = $"{source} Harness ready: {(ready.Length == 0 ? "none reported" : ready)}."
+            + (gaps.Length == 0 ? "" : $" Reported but not implemented yet: {gaps}.");
         ApiModelTools.IsChecked = descriptor.Supports(ModelCapability.ToolUse);
         ApiModelImages.IsChecked = descriptor.Supports(ModelCapability.Vision);
         ApiModelContext.Text = descriptor.ContextWindow?.ToString() ?? "";
@@ -340,7 +404,7 @@ public sealed partial class SettingsWindow
             var configurations = saved.Models.Where(config => config.ModelId != model.Descriptor.ModelId).ToList();
             if (!reset) configurations.Add(new(model.Descriptor.ModelId, ApiModelTools.IsChecked == true, ApiModelImages.IsChecked == true,
                 limit, Values(ApiModelReasoning.Text), Values(ApiModelTiers.Text)));
-            await _apiStore.SaveAsync(saved with { Models = configurations }, null, _lifetime.Token);
+            await Task.Run(() => _apiStore.SaveAsync(saved with { Models = configurations }, null, _lifetime.Token), _lifetime.Token);
             await LoadApiConnectionsAsync();
             if (_apiConnectionsChanged is not null) await _apiConnectionsChanged();
             ApiConnectionStatus.Text = reset ? "Model override removed. Refresh to inspect provider metadata." : "Model override saved and applied. The provider will validate these options on requests.";
@@ -370,6 +434,8 @@ public sealed partial class SettingsWindow
         finally { _apiBusy = false; ApiConnectionPanel.IsEnabled = true; ApiModelPanel.IsEnabled = true; }
     }
 }
+
+file sealed record LocalDetectionResult(ApiConnection Connection, IReadOnlyList<ApiModel> Models, string? Error);
 
 public sealed record SubscriptionConnectionSnapshot(
     bool RuntimeAvailable,

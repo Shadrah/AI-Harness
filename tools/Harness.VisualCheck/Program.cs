@@ -51,6 +51,18 @@ if (parsedDiff.AddedLines != 2
 {
     throw new InvalidOperationException("Unified diff line classification or numbering is incorrect.");
 }
+var parsedHunks = UnifiedDiffParser.ParseHunks(
+    "STAGED\n\n" +
+    "diff --git a/demo.txt b/demo.txt\n--- a/demo.txt\n+++ b/demo.txt\n@@ -1 +1 @@\n-old\n+staged\n\n" +
+    "WORKING TREE\n\n" +
+    "diff --git a/demo.txt b/demo.txt\n--- a/demo.txt\n+++ b/demo.txt\n@@ -8 +8 @@\n-before\n+after");
+if (parsedHunks.Count != 2
+    || parsedHunks[0].Source != DiffHunkSource.Staged
+    || parsedHunks[1].Source != DiffHunkSource.WorkingTree
+    || parsedHunks.Any(hunk => !hunk.Patch.StartsWith("diff --git", StringComparison.Ordinal)))
+{
+    throw new InvalidOperationException("Diff hunk parsing lost its staged/working-tree source or applyable patch header.");
+}
 
 var historyProbeRoot = Path.Combine(Path.GetTempPath(), "Harness.HistoryProbe", Guid.NewGuid().ToString("N"));
 var codexHistoryRoot = Path.Combine(historyProbeRoot, "codex");
@@ -581,19 +593,23 @@ try
         throw new InvalidOperationException("The tracked working-tree diff was incomplete.");
     }
 
-    await gitProbe.StageAsync(gitProbeRepository, untracked.RelativePath);
+    var untrackedHunk = UnifiedDiffParser.ParseHunks(
+        await gitProbe.GetDiffAsync(gitProbeRepository, untracked)).Single();
+    await gitProbe.StageHunkAsync(gitProbeRepository, untracked.RelativePath, untrackedHunk);
     status = await gitProbe.ReadStatusAsync(gitProbeRepository);
     var stagedUntracked = status.Files.Single(file => file.RelativePath == "untracked.txt");
     if (!stagedUntracked.IsStaged)
     {
-        throw new InvalidOperationException("Git stage did not update index state.");
+        throw new InvalidOperationException("Git hunk stage did not update an untracked file's index state.");
     }
-    await gitProbe.UnstageAsync(gitProbeRepository, stagedUntracked.RelativePath);
+    var stagedUntrackedHunk = UnifiedDiffParser.ParseHunks(
+        await gitProbe.GetDiffAsync(gitProbeRepository, stagedUntracked)).Single();
+    await gitProbe.UnstageHunkAsync(gitProbeRepository, stagedUntracked.RelativePath, stagedUntrackedHunk);
     status = await gitProbe.ReadStatusAsync(gitProbeRepository);
     untracked = status.Files.Single(file => file.RelativePath == "untracked.txt");
     if (!untracked.IsUntracked)
     {
-        throw new InvalidOperationException("Git unstage did not restore untracked state.");
+        throw new InvalidOperationException("Git hunk unstage did not restore untracked state.");
     }
 
     var trackedRecovery = await gitProbe.RevertWorkTreeAsync(
@@ -613,6 +629,58 @@ try
     {
         throw new InvalidOperationException("Untracked-file revert deleted rather than recovered the file.");
     }
+
+    var hunkPath = Path.Combine(gitProbeRepository, "hunks.txt");
+    var hunkBaseline = Enumerable.Range(1, 32).Select(index => $"line {index}").ToArray();
+    await File.WriteAllLinesAsync(hunkPath, hunkBaseline);
+    await RunGitProbeCommandAsync(gitProbeRepository, "add", "--", "hunks.txt");
+    await RunGitProbeCommandAsync(gitProbeRepository, "commit", "--quiet", "-m", "hunk baseline");
+    var hunkModified = hunkBaseline.ToArray();
+    hunkModified[1] = "line 2 changed";
+    hunkModified[29] = "line 30 changed";
+    await File.WriteAllLinesAsync(hunkPath, hunkModified);
+
+    status = await gitProbe.ReadStatusAsync(gitProbeRepository);
+    var hunkFile = status.Files.Single(file => file.RelativePath == "hunks.txt");
+    var hunkDiff = await gitProbe.GetDiffAsync(gitProbeRepository, hunkFile);
+    var workingHunks = UnifiedDiffParser.ParseHunks(hunkDiff);
+    if (workingHunks.Count != 2 || workingHunks.Any(hunk => hunk.Source != DiffHunkSource.WorkingTree))
+        throw new InvalidOperationException("Separated working-tree edits were not exposed as two actionable hunks.");
+
+    await gitProbe.StageHunkAsync(gitProbeRepository, hunkFile.RelativePath, workingHunks[0]);
+    status = await gitProbe.ReadStatusAsync(gitProbeRepository);
+    hunkFile = status.Files.Single(file => file.RelativePath == "hunks.txt");
+    var mixedHunks = UnifiedDiffParser.ParseHunks(await gitProbe.GetDiffAsync(gitProbeRepository, hunkFile));
+    if (!hunkFile.IsStaged || !hunkFile.HasWorkTreeChanges
+        || mixedHunks.Count != 2
+        || mixedHunks.Count(hunk => hunk.Source == DiffHunkSource.Staged) != 1
+        || mixedHunks.Count(hunk => hunk.Source == DiffHunkSource.WorkingTree) != 1)
+    {
+        throw new InvalidOperationException("Staging one hunk did not preserve the other working-tree hunk.");
+    }
+
+    await gitProbe.UnstageHunkAsync(
+        gitProbeRepository,
+        hunkFile.RelativePath,
+        mixedHunks.Single(hunk => hunk.Source == DiffHunkSource.Staged));
+    status = await gitProbe.ReadStatusAsync(gitProbeRepository);
+    hunkFile = status.Files.Single(file => file.RelativePath == "hunks.txt");
+    workingHunks = UnifiedDiffParser.ParseHunks(await gitProbe.GetDiffAsync(gitProbeRepository, hunkFile));
+    var hunkRecovery = await gitProbe.RevertHunkAsync(
+        gitProbeRepository,
+        hunkFile,
+        workingHunks[0]);
+    var afterHunkDiscard = await File.ReadAllLinesAsync(hunkPath);
+    if (afterHunkDiscard[1] != hunkBaseline[1]
+        || afterHunkDiscard[29] != hunkModified[29]
+        || !File.Exists(Path.Combine(hunkRecovery.RecoveryPath, "hunks.txt")))
+    {
+        throw new InvalidOperationException("Recoverable hunk discard changed the wrong hunk or omitted its recovery copy.");
+    }
+    status = await gitProbe.ReadStatusAsync(gitProbeRepository);
+    await gitProbe.RevertWorkTreeAsync(
+        gitProbeRepository,
+        status.Files.Single(file => file.RelativePath == "hunks.txt"));
 
     await File.WriteAllTextAsync(trackedPath, "committed by dock\n");
     await File.WriteAllTextAsync(Path.Combine(gitProbeRepository, "commit-all.txt"), "included\n");
@@ -1114,6 +1182,14 @@ var workingTreeWindow = new WorkingTreeWindow
 workingTreeWindow.Show();
 _ = workingTreeWindow.FindControl<Button>("RenameBranchButton")
     ?? throw new InvalidOperationException("Working Tree did not expose branch renaming.");
+_ = workingTreeWindow.FindControl<Button>("StageHunkButton")
+    ?? throw new InvalidOperationException("Working Tree did not expose per-hunk staging.");
+_ = workingTreeWindow.FindControl<Button>("UnstageHunkButton")
+    ?? throw new InvalidOperationException("Working Tree did not expose per-hunk unstaging.");
+_ = workingTreeWindow.FindControl<Button>("DiscardHunkButton")
+    ?? throw new InvalidOperationException("Working Tree did not expose recoverable per-hunk discard.");
+if (workingTreeViewModel.Hunks.Count != 1 || !workingTreeViewModel.CanStageHunk)
+    throw new InvalidOperationException("Working Tree did not bind its selected working-tree hunk to the correct actions.");
 var workingTreePath = Path.Combine(
     Path.GetDirectoryName(Path.GetFullPath(outputPath))!,
     $"{Path.GetFileNameWithoutExtension(outputPath)}-working-tree{Path.GetExtension(outputPath)}");

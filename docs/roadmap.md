@@ -12,8 +12,8 @@ driver without keeping that driver installed?
 - Streaming assistant text, reasoning summaries when exposed, tool lifecycle,
   command input/output, file-change patches, errors, token usage, and cancellation.
 - Inline approvals, working-tree inspection, diff review, and recoverable
-  stage/unstage/revert actions and integrated terminal access are implemented.
-  Broader patch-level apply controls remain.
+  file- and hunk-level stage/unstage/discard actions and integrated terminal
+  access are implemented. Every discard creates a recovery copy first.
 - Durable projects, sessions, normalized messages, provider events,
   content-addressed context-file attachments, and restart recovery are
   implemented in local SQLite storage. Durable turn-level projections and
@@ -55,8 +55,14 @@ driver without keeping that driver installed?
 
 - OpenAI subscription runtime and direct API connections.
 - Anthropic subscription runtime and direct API connections.
-- Local OpenAI-compatible endpoints plus explicit Ollama/llama.cpp discovery.
-- Capability-complete adapters with conformance fixtures for streaming, vision,
+- Local OpenAI-compatible endpoints plus explicit Ollama/llama.cpp discovery are
+  implemented. Detection is user-invoked, metadata-only, and never downloads or
+  loads a model.
+- Implemented foundation: a shared model/adapter conformance report and strict
+  preflight now prevent reported-but-unimplemented features or unadvertised
+  controls from being sent. Offline fixtures cover current streaming, vision,
+  tools, reasoning, metadata, and native-state paths across four wire formats.
+- Complete the adapters and conformance fixtures for streaming, vision,
   tools, reasoning controls, structured output, caching, audio, and generated
   artifacts wherever the provider exposes them.
 

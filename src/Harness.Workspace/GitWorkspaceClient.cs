@@ -118,6 +118,74 @@ public sealed class GitWorkspaceClient
         EnsureSuccess(result, $"stage {relativePath}");
     }
 
+    public async Task StageHunkAsync(
+        string repositoryRoot,
+        string relativePath,
+        DiffHunk hunk,
+        CancellationToken cancellationToken = default)
+    {
+        if (hunk.Source != DiffHunkSource.WorkingTree)
+            throw new InvalidOperationException("Only working-tree hunks can be staged.");
+        var root = Path.GetFullPath(repositoryRoot);
+        ValidateRelativePath(root, relativePath);
+        var result = await RunGitWithInputAsync(
+            root,
+            ["apply", "--cached", "--recount", "--whitespace=nowarn", "-"],
+            hunk.Patch,
+            cancellationToken);
+        EnsureSuccess(result, $"stage hunk {hunk.Index} from {relativePath}");
+    }
+
+    public async Task UnstageHunkAsync(
+        string repositoryRoot,
+        string relativePath,
+        DiffHunk hunk,
+        CancellationToken cancellationToken = default)
+    {
+        if (hunk.Source != DiffHunkSource.Staged)
+            throw new InvalidOperationException("Only staged hunks can be unstaged.");
+        var root = Path.GetFullPath(repositoryRoot);
+        ValidateRelativePath(root, relativePath);
+        var result = await RunGitWithInputAsync(
+            root,
+            ["apply", "--cached", "--reverse", "--recount", "--whitespace=nowarn", "-"],
+            hunk.Patch,
+            cancellationToken);
+        EnsureSuccess(result, $"unstage hunk {hunk.Index} from {relativePath}");
+    }
+
+    public async Task<WorkspaceRecoveryResult> RevertHunkAsync(
+        string repositoryRoot,
+        WorkingTreeFile file,
+        DiffHunk hunk,
+        CancellationToken cancellationToken = default)
+    {
+        if (hunk.Source != DiffHunkSource.WorkingTree)
+            throw new InvalidOperationException("Only working-tree hunks can be discarded.");
+        if (file.IsUntracked)
+            throw new InvalidOperationException("Discard individual hunks is unavailable for an untracked file. Stage a hunk or recoverably revert the whole file.");
+
+        var root = Path.GetFullPath(repositoryRoot);
+        ValidateRelativePath(root, file.RelativePath);
+        var recovery = await CreateRecoveryCopyAsync(root, file, moveUntracked: false, cancellationToken);
+        try
+        {
+            var result = await RunGitWithInputAsync(
+                root,
+                ["apply", "--reverse", "--recount", "--whitespace=nowarn", "-"],
+                hunk.Patch,
+                cancellationToken);
+            EnsureSuccess(result, $"discard hunk {hunk.Index} from {file.RelativePath}");
+            return recovery;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            throw new InvalidOperationException(
+                $"{exception.Message} The untouched recovery copy is at {recovery.RecoveryPath}.",
+                exception);
+        }
+    }
+
     public async Task InitializeRepositoryAsync(
         string workspacePath,
         CancellationToken cancellationToken = default,
@@ -387,6 +455,27 @@ public sealed class GitWorkspaceClient
         }
 
         var root = Path.GetFullPath(repositoryRoot);
+        ValidateRelativePath(root, file.RelativePath);
+        var recovery = await CreateRecoveryCopyAsync(root, file, file.IsUntracked, cancellationToken);
+
+        if (!file.IsUntracked)
+        {
+            var result = await RunGitAsync(
+                root,
+                ["restore", "--worktree", "--", file.RelativePath],
+                cancellationToken);
+            EnsureSuccess(result, $"revert {file.RelativePath}");
+        }
+
+        return recovery;
+    }
+
+    private async Task<WorkspaceRecoveryResult> CreateRecoveryCopyAsync(
+        string root,
+        WorkingTreeFile file,
+        bool moveUntracked,
+        CancellationToken cancellationToken)
+    {
         var fullPath = ValidateRelativePath(root, file.RelativePath);
         var recoveryDirectory = Path.Combine(
             _recoveryRoot,
@@ -397,7 +486,7 @@ public sealed class GitWorkspaceClient
             file.RelativePath.Replace('/', Path.DirectorySeparatorChar));
         Directory.CreateDirectory(Path.GetDirectoryName(recoveryPath)!);
 
-        var moved = file.IsUntracked && File.Exists(fullPath);
+        var moved = moveUntracked && file.IsUntracked && File.Exists(fullPath);
         var manifest = new
         {
             repositoryRoot = root,
@@ -413,7 +502,7 @@ public sealed class GitWorkspaceClient
 
         if (File.Exists(fullPath))
         {
-            if (file.IsUntracked)
+            if (moved)
             {
                 File.Move(fullPath, recoveryPath);
             }
@@ -421,15 +510,6 @@ public sealed class GitWorkspaceClient
             {
                 File.Copy(fullPath, recoveryPath, overwrite: false);
             }
-        }
-
-        if (!file.IsUntracked)
-        {
-            var result = await RunGitAsync(
-                root,
-                ["restore", "--worktree", "--", file.RelativePath],
-                cancellationToken);
-            EnsureSuccess(result, $"revert {file.RelativePath}");
         }
 
         return new WorkspaceRecoveryResult(file.RelativePath, recoveryDirectory, moved);
@@ -494,8 +574,16 @@ public sealed class GitWorkspaceClient
             {
                 return $"Untracked binary file · {info.Length:N0} bytes.";
             }
-            var text = new UTF8Encoding(false, true).GetString(bytes);
-            var lines = text.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+            var text = new UTF8Encoding(false, true).GetString(bytes)
+                .Replace("\r\n", "\n", StringComparison.Ordinal)
+                .Replace('\r', '\n');
+            var endsWithNewline = text.EndsWith('\n');
+            var lines = text.Split('\n');
+            if (endsWithNewline) lines = lines[..^1];
+            if (lines.Length == 0)
+            {
+                return "Untracked empty file · no textual hunk is available. Stage the complete file instead.";
+            }
             var builder = new StringBuilder()
                 .AppendLine("--- /dev/null")
                 .AppendLine($"+++ b/{relativePath}")
@@ -504,6 +592,7 @@ public sealed class GitWorkspaceClient
             {
                 builder.Append('+').AppendLine(line);
             }
+            if (!endsWithNewline) builder.AppendLine("\\ No newline at end of file");
             return builder.ToString();
         }
         catch (DecoderFallbackException)
@@ -564,6 +653,37 @@ public sealed class GitWorkspaceClient
             await standardOutput,
             await standardError);
     }
+
+    private static Task<GitResult> RunGitWithInputAsync(
+        string workingDirectory,
+        IReadOnlyList<string> arguments,
+        string standardInput,
+        CancellationToken cancellationToken) => Task.Run(async () =>
+    {
+        var start = new ProcessStartInfo
+        {
+            FileName = "git",
+            WorkingDirectory = Path.GetFullPath(workingDirectory),
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            StandardInputEncoding = new UTF8Encoding(false),
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8
+        };
+        foreach (var argument in arguments) start.ArgumentList.Add(argument);
+
+        using var process = Process.Start(start)
+            ?? throw new InvalidOperationException("Git could not be started.");
+        var output = process.StandardOutput.ReadToEndAsync(cancellationToken);
+        var error = process.StandardError.ReadToEndAsync(cancellationToken);
+        await process.StandardInput.WriteAsync(standardInput.AsMemory(), cancellationToken);
+        process.StandardInput.Close();
+        await process.WaitForExitAsync(cancellationToken);
+        return new GitResult(process.ExitCode, await output, await error);
+    }, cancellationToken);
 
     private static void EnsureSuccess(GitResult result, string operation)
     {

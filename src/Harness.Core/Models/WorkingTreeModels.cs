@@ -43,3 +43,17 @@ public sealed record DiffDocument(
     IReadOnlyList<DiffLine> Lines,
     int AddedLines,
     int RemovedLines);
+
+public enum DiffHunkSource
+{
+    WorkingTree,
+    Staged
+}
+
+public sealed record DiffHunk(
+    int Index,
+    DiffHunkSource Source,
+    string Header,
+    string Patch,
+    int AddedLines,
+    int RemovedLines);

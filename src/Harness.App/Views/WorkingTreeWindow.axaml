@@ -66,13 +66,28 @@
         </Grid>
       </Border>
 
-      <Grid Grid.Column="1" RowDefinitions="42,*" Background="#11151B">
+      <Grid Grid.Column="1" RowDefinitions="42,48,*" Background="#11151B">
         <Grid Margin="14,0" ColumnDefinitions="*,Auto,16,Auto" VerticalAlignment="Center">
           <TextBlock Text="DIFF" Classes="micro" />
           <TextBlock Grid.Column="1" Text="{Binding SelectedFile.RelativePath}" Classes="muted mono" FontSize="9" />
           <TextBlock Grid.Column="3" Text="{Binding DiffSummary}" Classes="mono" FontSize="10" Foreground="#65C7D0" />
         </Grid>
-        <Border Grid.Row="1" Margin="12" BorderBrush="#29313C" BorderThickness="1" CornerRadius="4" Background="#0F1318">
+        <Border Grid.Row="1" BorderBrush="#29313C" BorderThickness="0,1,0,1" Background="#151A21">
+          <Grid Margin="12,0" ColumnDefinitions="Auto,10,*,8,Auto,6,Auto,6,Auto" VerticalAlignment="Center">
+            <TextBlock Text="{Binding HunkStatus}" Classes="micro" FontSize="8" Foreground="#65C7D0" VerticalAlignment="Center" />
+            <ComboBox Grid.Column="2"
+                      ItemsSource="{Binding Hunks}"
+                      SelectedItem="{Binding SelectedHunk, Mode=TwoWay}"
+                      IsEnabled="{Binding HasHunks}"
+                      MinWidth="250"
+                      HorizontalAlignment="Stretch"
+                      AutomationProperties.Name="Select diff hunk" />
+            <Button x:Name="StageHunkButton" Grid.Column="4" Content="STAGE HUNK" Classes="ghost" IsEnabled="{Binding CanStageHunk}" Click="StageHunk_OnClick" ToolTip.Tip="Stage only this working-tree hunk" />
+            <Button x:Name="UnstageHunkButton" Grid.Column="6" Content="UNSTAGE" Classes="ghost" IsEnabled="{Binding CanUnstageHunk}" Click="UnstageHunk_OnClick" ToolTip.Tip="Return only this staged hunk to the working tree" />
+            <Button x:Name="DiscardHunkButton" Grid.Column="8" Content="DISCARD" Classes="ghost" IsEnabled="{Binding CanDiscardHunk}" Click="DiscardHunk_OnClick" ToolTip.Tip="Create a recovery copy, then discard only this working-tree hunk" />
+          </Grid>
+        </Border>
+        <Border Grid.Row="2" Margin="12" BorderBrush="#29313C" BorderThickness="1" CornerRadius="4" Background="#0F1318">
           <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
             <ItemsControl ItemsSource="{Binding DiffLines}">
               <ItemsControl.ItemTemplate>
