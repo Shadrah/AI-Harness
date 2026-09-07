@@ -94,9 +94,19 @@ against the selected model. Switching models may surface an incompatibility or a
 explicit conversion; Harness never silently drops an image, tool, structured
 output request, or provider-specific option.
 
-Images are canonical content parts. They preserve their path or URI, MIME type,
-alternative text, requested detail, dimensions when known, and content hash.
-Adapters translate the canonical part into the provider's native protocol.
+Attachments are canonical content parts. They preserve their path or URI, MIME
+type, display name, and content hash. Adapters translate them into provider-native
+blocks only after both model support and adapter support pass preflight. The
+direct API adapter currently maps images across all four protocols, PDFs to
+Responses/Anthropic/Gemini, and audio/video to Gemini `inlineData`; other
+combinations remain unavailable rather than falling through to text decoding.
+
+Generated documents remain provider artifacts rather than a Harness document
+format. When an explicitly enabled adapter receives a provider-native generated
+file reference, it downloads the opaque bytes into bounded Harness-managed
+storage, records the provider/container IDs, hash, media type, and size, and adds
+a local link to the transcript. Harness never claims that generic text generation
+is equivalent to native document generation.
 
 ## Event model
 

@@ -318,8 +318,14 @@
                     <MenuItem IsEnabled="{Binding CanAttachImage}" Click="AttachImage_OnClick">
                       <MenuItem.Header><Grid Width="270" ColumnDefinitions="*,Auto"><StackPanel><TextBlock Text="Image"/><TextBlock Text="PNG, JPEG, WebP, GIF" Classes="muted" FontSize="9"/></StackPanel><TextBlock Grid.Column="1" Text="{Binding ImageAttachmentAvailability}" Classes="micro" FontSize="8" Foreground="#65C7D0" VerticalAlignment="Center"/></Grid></MenuItem.Header>
                     </MenuItem>
+                    <MenuItem IsEnabled="{Binding CanAttachPdf}" Click="AttachPdf_OnClick">
+                      <MenuItem.Header><Grid Width="270" ColumnDefinitions="*,Auto"><StackPanel><TextBlock Text="PDF"/><TextBlock Text="Native document and visual analysis" Classes="muted" FontSize="9"/></StackPanel><TextBlock Grid.Column="1" Text="{Binding PdfAttachmentAvailability}" Classes="micro" FontSize="8" Foreground="#65C7D0" VerticalAlignment="Center"/></Grid></MenuItem.Header>
+                    </MenuItem>
+                    <MenuItem IsEnabled="{Binding CanAttachAudio}" Click="AttachAudio_OnClick">
+                      <MenuItem.Header><Grid Width="270" ColumnDefinitions="*,Auto"><StackPanel><TextBlock Text="Audio"/><TextBlock Text="MP3, WAV, M4A, OGG, FLAC" Classes="muted" FontSize="9"/></StackPanel><TextBlock Grid.Column="1" Text="{Binding AudioAttachmentAvailability}" Classes="micro" FontSize="8" Foreground="#65C7D0" VerticalAlignment="Center"/></Grid></MenuItem.Header>
+                    </MenuItem>
                     <MenuItem IsEnabled="{Binding CanAttachVideo}" Click="AttachVideo_OnClick">
-                      <MenuItem.Header><Grid Width="270" ColumnDefinitions="*,Auto"><StackPanel><TextBlock Text="Video"/><TextBlock Text="MP4, MOV, WebM, MKV" Classes="muted" FontSize="9"/></StackPanel><TextBlock Grid.Column="1" Text="{Binding VideoAttachmentAvailability}" Classes="micro" FontSize="8" Foreground="#65C7D0" VerticalAlignment="Center"/></Grid></MenuItem.Header>
+                      <MenuItem.Header><Grid Width="270" ColumnDefinitions="*,Auto"><StackPanel><TextBlock Text="Video"/><TextBlock Text="MP4, MOV, WebM, AVI" Classes="muted" FontSize="9"/></StackPanel><TextBlock Grid.Column="1" Text="{Binding VideoAttachmentAvailability}" Classes="micro" FontSize="8" Foreground="#65C7D0" VerticalAlignment="Center"/></Grid></MenuItem.Header>
                     </MenuItem>
                     <MenuItem IsEnabled="{Binding CanAttachText}" Click="AttachText_OnClick">
                       <MenuItem.Header><Grid Width="270" ColumnDefinitions="*,Auto"><StackPanel><TextBlock Text="Text or code"/><TextBlock Text="Documents, source, and structured text" Classes="muted" FontSize="9"/></StackPanel><TextBlock Grid.Column="1" Text="{Binding TextAttachmentAvailability}" Classes="micro" FontSize="8" Foreground="#65C7D0" VerticalAlignment="Center"/></Grid></MenuItem.Header>

@@ -60,9 +60,12 @@ consumer subscriptions are not silently treated as API credits either.
   service-tier values, unsupported tools, and unsupported or not-yet-implemented
   attachment modalities before an HTTP request is made.
 - Native text streaming, Unicode, output completion/error checks, and cancellation.
-- Text/code contents and inline image attachments when image input is enabled.
-  Inline turn attachments are limited to 20 MiB total and 1 MiB per text file;
-  unsupported input fails visibly instead of becoming an invisible path reference.
+- Text/code contents and native inline image attachments when image input is
+  enabled. PDF input uses native Responses `input_file`, Anthropic `document`,
+  or Gemini `inlineData` blocks. Gemini also supports inline audio and video.
+  Turn attachments are limited to 20 MiB total and 1 MiB per text file;
+  unsupported model/adapter combinations remain disabled and fail preflight
+  instead of becoming invisible path references or being decoded as text.
 - Provider-native conversation state retained in Harness's local SQLite event
   store, including signed/encrypted reasoning and tool-call IDs. Raw reasoning is
   not dumped into visible chat. Existing transcript imports and provider switches
@@ -76,6 +79,15 @@ consumer subscriptions are not silently treated as API credits either.
 - Provider-reported input/output tokens, with latest input separated from
   cumulative processed tokens. Unknown account quotas and context limits remain
   unknown; no simulated five-hour/weekly meters for API connections.
+- Per-model, opt-in Anthropic automatic prompt caching using the native five-minute
+  cache control. Cache-read and cache-write token counts come from provider usage
+  events and are recorded in Activity; Harness does not estimate cache hits.
+- Per-model, opt-in OpenAI and Anthropic hosted artifact generation. Harness
+  requests each provider's native code-execution output contract, accepts only
+  provider file references, downloads at most 20 files and 100 MiB per file
+  through the authenticated provider endpoint, uses atomic local writes, retains
+  hashes and provider IDs in the native event stream, and adds clickable local
+  links. Harness does not render or synthesize PDF, DOCX, or HTML itself.
 - Current Git working-tree diffs for changed dirty files (up to 100 files).
   These may include pre-existing edits, and are labeled accordingly.
 - No automatic billable retries or replay of interrupted tool calls. An interrupted
@@ -86,10 +98,13 @@ consumer subscriptions are not silently treated as API credits either.
 
 - Live account validation for each provider, including models without tool support,
   limited API keys, stream interruptions, reasoning variants, and quota failures.
-- Native image generation, audio, video, hosted search/computer tools, citations,
-  provider-native compaction, and additional sampling/budget controls. These are
-  not advertised as working capabilities in the new adapter.
-- Manual token-budget thinking (older Claude/Gemini contracts) and all provider-
+- Native audio/video delivery for non-Gemini protocols, image generation, hosted
+  search/computer tools, generated-file downloads for other protocols, citations,
+  provider-native compaction, and additional
+  sampling/budget controls. These are not advertised as working capabilities in
+  the new adapter.
+- Prompt-cache controls for non-Anthropic protocols, manual token-budget thinking
+  (older Claude/Gemini contracts), and all provider-
   specific controls. The current reasoning selector forwards effort/level strings;
   it does not translate a token budget into a fabricated reasoning level.
 - Shared sandbox/automatic-risk-review parity with Codex. The API runner is a
@@ -115,7 +130,8 @@ query plans and timings, never message contents or credentials.
 `dotnet run --project tools/Harness.ApiCheck -c Release`
 
 This uses synthetic in-memory HTTP responses, never real credentials or model
-calls. It covers four wire formats, native Ollama/llama.cpp discovery,
+calls. It covers four wire formats, native PDF/audio/video payloads,
+native Ollama/llama.cpp discovery,
 native-state replay, model metadata/pagination,
 model/adapter conformance and request preflight,
 tool approval boundaries, credential routing failures, Unicode, usage separation,

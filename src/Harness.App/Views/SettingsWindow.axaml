@@ -213,12 +213,20 @@
             <TextBlock Text="Model IDs come from your endpoint. Some catalogs do not publish capabilities or allowed reasoning values. Only configure overrides below when you have verified them for the selected model. Blank options leave the provider default unchanged." TextWrapping="Wrap" Classes="muted"/>
             <ComboBox x:Name="ApiModelPicker" HorizontalAlignment="Stretch" PlaceholderText="Connect to load models" SelectionChanged="ApiModel_OnChanged"/>
             <TextBlock x:Name="ApiModelMetadataStatus" TextWrapping="Wrap" Classes="muted"/>
-            <WrapPanel><CheckBox x:Name="ApiModelTools" Content="Workspace tools" Margin="0,0,20,0"/><CheckBox x:Name="ApiModelImages" Content="Image input"/></WrapPanel>
+            <WrapPanel>
+              <CheckBox x:Name="ApiModelTools" Content="Workspace tools" Margin="0,0,20,8"/>
+              <CheckBox x:Name="ApiModelImages" Content="Image input" Margin="0,0,20,8"/>
+              <CheckBox x:Name="ApiModelPdf" Content="PDF input" Margin="0,0,20,8"/>
+              <CheckBox x:Name="ApiModelAudio" Content="Audio input" Margin="0,0,20,8"/>
+              <CheckBox x:Name="ApiModelVideo" Content="Video input" Margin="0,0,20,8"/>
+              <CheckBox x:Name="ApiModelCaching" Content="Use 5-minute prompt caching" Margin="0,0,20,8" ToolTip.Tip="Opt in per model; cache writes may affect provider billing"/>
+              <CheckBox x:Name="ApiModelHostedArtifacts" Content="Provider-hosted artifacts" Margin="0,0,20,8" ToolTip.Tip="Allow this verified model to use its provider's hosted file-generation tool"/>
+            </WrapPanel>
             <TextBox x:Name="ApiModelContext" Watermark="Context limit in tokens · blank if unknown"/>
             <TextBox x:Name="ApiModelReasoning" Watermark="Verified reasoning values, comma-separated · blank for provider default"/>
             <TextBox x:Name="ApiModelTiers" Watermark="Verified service-tier values, comma-separated · blank for provider default"/>
             <WrapPanel><Button Content="SAVE MODEL OVERRIDE" Margin="0,0,8,0" Click="ApiSaveModel_OnClick"/><Button Content="USE PROVIDER METADATA" Click="ApiResetModel_OnClick"/></WrapPanel>
-            <TextBlock Text="This first API adapter supports streamed text, text/image attachments, and client tools. Video/audio, provider-hosted tools, image generation, and native compaction are not enabled yet. Approve for me falls back to asking for every API write or command; commands have no OS sandbox." Classes="muted" TextWrapping="Wrap"/>
+            <TextBlock Text="Harness enables only the intersection of reported model support and its protocol adapter. PDF input is implemented for Responses, Anthropic, and Gemini; inline audio/video input is implemented for Gemini. Anthropic 5-minute prompt caching and OpenAI/Anthropic hosted artifact generation are explicit per-model opt-ins because hosted operations can affect billing. Other provider-hosted tools, image generation, and native compaction are not enabled yet. Approve for me falls back to asking for every API write or command; commands have no OS sandbox." Classes="muted" TextWrapping="Wrap"/>
           </StackPanel></Border>
         </StackPanel></ScrollViewer>
       </TabItem>

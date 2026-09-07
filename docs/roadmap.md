@@ -61,7 +61,10 @@ driver without keeping that driver installed?
 - Implemented foundation: a shared model/adapter conformance report and strict
   preflight now prevent reported-but-unimplemented features or unadvertised
   controls from being sent. Offline fixtures cover current streaming, vision,
-  tools, reasoning, metadata, and native-state paths across four wire formats.
+  tools, reasoning, metadata, native PDF delivery, Gemini audio/video input, and
+  opt-in Anthropic prompt caching with provider-reported cache telemetry, OpenAI
+  and Anthropic hosted artifact references/downloads, plus native-state paths across four wire
+  formats.
 - Complete the adapters and conformance fixtures for streaming, vision,
   tools, reasoning controls, structured output, caching, audio, and generated
   artifacts wherever the provider exposes them.

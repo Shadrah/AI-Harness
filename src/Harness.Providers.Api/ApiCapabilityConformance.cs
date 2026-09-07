@@ -39,7 +39,7 @@ public sealed record ApiCapabilityReport(
 /// </summary>
 public static class ApiCapabilityConformance
 {
-    private const ModelCapability AdapterImplemented =
+    private const ModelCapability CommonAdapterCapabilities =
         ModelCapability.Text |
         ModelCapability.Vision |
         ModelCapability.ToolUse |
@@ -64,13 +64,14 @@ public static class ApiCapabilityConformance
         ModelCapability.GeneratedArtifacts
     ];
 
-    public static ApiCapabilityReport Evaluate(ApiModel model)
+    public static ApiCapabilityReport Evaluate(ApiConnection connection, ApiModel model)
     {
+        var adapterImplemented = ImplementedFor(connection);
         var findings = new List<ApiCapabilityFinding>(Features.Length);
         foreach (var capability in Features)
         {
             var reported = model.Descriptor.Supports(capability);
-            var implemented = (AdapterImplemented & capability) == capability;
+            var implemented = (adapterImplemented & capability) == capability;
             var fieldReported = model.ReportedCapabilityFields?.Contains(capability) == true;
             var state = reported
                 ? implemented ? ApiCapabilityState.Ready : ApiCapabilityState.AdapterUnavailable
@@ -86,6 +87,19 @@ public static class ApiCapabilityConformance
         }
         return new(findings);
     }
+
+    public static ModelCapability ImplementedFor(ApiProtocol protocol) => protocol switch
+    {
+        ApiProtocol.Responses => CommonAdapterCapabilities | ModelCapability.PdfInput,
+        ApiProtocol.Anthropic => CommonAdapterCapabilities | ModelCapability.PdfInput | ModelCapability.PromptCaching,
+        ApiProtocol.Gemini => CommonAdapterCapabilities | ModelCapability.PdfInput | ModelCapability.AudioInput | ModelCapability.VideoInput,
+        _ => CommonAdapterCapabilities
+    };
+
+    public static ModelCapability ImplementedFor(ApiConnection connection) =>
+        ImplementedFor(connection.Definition.Protocol)
+        | (connection.ProviderId is "openai-api" or "anthropic-api"
+            ? ModelCapability.GeneratedArtifacts : ModelCapability.None);
 
     public static string Name(ModelCapability capability) => capability switch
     {
@@ -112,11 +126,11 @@ public static class ApiCapabilityConformance
         if (!string.Equals(model.Descriptor.ProviderId, connection.Id, StringComparison.Ordinal))
             throw new InvalidOperationException("The selected model belongs to a different provider connection. Refresh the model selection and try again.");
 
-        if (tools.Count > 0) RequireReady(model, ModelCapability.ToolUse, "workspace tools");
+        if (tools.Count > 0) RequireReady(connection, model, ModelCapability.ToolUse, "workspace tools");
 
         if (!string.IsNullOrWhiteSpace(effort))
         {
-            RequireReady(model, ModelCapability.Reasoning, "reasoning control");
+            RequireReady(connection, model, ModelCapability.Reasoning, "reasoning control");
             var levels = model.Descriptor.ReasoningLevels ?? [];
             if (levels.Count == 0 || !levels.Any(level => string.Equals(level.Id, effort, StringComparison.Ordinal)))
                 throw new InvalidOperationException($"Reasoning level '{effort}' was not advertised for {model.Descriptor.DisplayName}. Refresh its catalog metadata or configure a verified model override.");
@@ -128,29 +142,34 @@ public static class ApiCapabilityConformance
             if (tiers.Count == 0 || !tiers.Any(option => string.Equals(option.Id, tier, StringComparison.Ordinal)))
                 throw new InvalidOperationException($"Service tier '{tier}' was not advertised for {model.Descriptor.DisplayName}. Refresh its catalog metadata or configure a verified model override.");
         }
+
+        if (model.PromptCachingEnabled)
+            RequireReady(connection, model, ModelCapability.PromptCaching, "automatic prompt caching");
+        if (model.HostedArtifactsEnabled)
+            RequireReady(connection, model, ModelCapability.GeneratedArtifacts, "provider-hosted artifact generation");
     }
 
-    public static void ValidateAttachment(ApiModel model, FilePart file)
+    public static void ValidateAttachment(ApiConnection connection, ApiModel model, FilePart file)
     {
         var mediaType = file.MediaType ?? "application/octet-stream";
         if (mediaType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
         {
-            RequireReady(model, ModelCapability.Vision, "image input");
+            RequireReady(connection, model, ModelCapability.Vision, "image input");
             return;
         }
         if (mediaType.Equals("application/pdf", StringComparison.OrdinalIgnoreCase))
-            RequireReady(model, ModelCapability.PdfInput, "PDF input");
+            RequireReady(connection, model, ModelCapability.PdfInput, "PDF input");
         else if (mediaType.StartsWith("audio/", StringComparison.OrdinalIgnoreCase))
-            RequireReady(model, ModelCapability.AudioInput, "audio input");
+            RequireReady(connection, model, ModelCapability.AudioInput, "audio input");
         else if (mediaType.StartsWith("video/", StringComparison.OrdinalIgnoreCase))
-            RequireReady(model, ModelCapability.VideoInput, "video input");
+            RequireReady(connection, model, ModelCapability.VideoInput, "video input");
     }
 
-    private static void RequireReady(ApiModel model, ModelCapability capability, string label)
+    private static void RequireReady(ApiConnection connection, ApiModel model, ModelCapability capability, string label)
     {
         if (!model.Descriptor.Supports(capability))
             throw new InvalidOperationException($"{model.Descriptor.DisplayName} did not report support for {label}. Harness did not send the turn.");
-        if ((AdapterImplemented & capability) != capability)
+        if ((ImplementedFor(connection) & capability) != capability)
             throw new InvalidOperationException($"{model.Descriptor.DisplayName} reports {label}, but the Harness API adapter does not implement that delivery path yet. Nothing was sent.");
     }
 }

@@ -7,7 +7,11 @@ namespace Harness.Providers.Api;
 
 public sealed record ApiTool(string Name, string Description, JsonObject Parameters);
 public sealed record ApiToolCall(string Id, string Name, string Arguments, string? ProviderCallId = null);
-public sealed record ApiReply(IReadOnlyList<ApiToolCall> Calls, long? InputTokens, long? OutputTokens, string? StopReason);
+public sealed record ApiGeneratedArtifact(string ProviderFileId, string FileName, string? MediaType,
+    string? ContainerId = null);
+public sealed record ApiReply(IReadOnlyList<ApiToolCall> Calls, long? InputTokens, long? OutputTokens, string? StopReason,
+    long? CacheReadInputTokens = null, long? CacheWriteInputTokens = null,
+    IReadOnlyList<ApiGeneratedArtifact>? Artifacts = null);
 
 /// <summary>Provider-native state, including signed/encrypted reasoning and tool-call IDs, is kept intact.
 /// No account credentials or HTTP headers belong in this state.</summary>
@@ -22,23 +26,46 @@ public sealed class ApiConversationClient(ApiConnection connection, ApiTransport
         long total = 0;
         foreach (var file in files)
         {
-            ApiCapabilityConformance.ValidateAttachment(model, file);
+            ApiCapabilityConformance.ValidateAttachment(connection, model, file);
             var info = new FileInfo(file.Path);
             if (!info.Exists) throw new IOException($"Attachment is missing: {file.DisplayName ?? info.Name}");
             total += info.Length;
             if (total > 20 * 1024 * 1024) throw new InvalidOperationException("API turn attachments exceed Harness's 20 MiB inline limit. Attach smaller files.");
-            if (file.MediaType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) == true)
+            var mediaType = file.MediaType ?? "application/octet-stream";
+            if (mediaType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
             {
-                if (file.MediaType is not ("image/png" or "image/jpeg" or "image/webp" or "image/gif"))
+                if (mediaType is not ("image/png" or "image/jpeg" or "image/webp" or "image/gif"))
                     throw new InvalidOperationException("Use PNG, JPEG, WebP, or GIF for API image input.");
                 var data = Convert.ToBase64String(await File.ReadAllBytesAsync(file.Path, cancellationToken).ConfigureAwait(false));
                 parts.Add(Protocol switch
                 {
                     ApiProtocol.Anthropic => new JsonObject { ["type"] = "image", ["source"] = new JsonObject
-                        { ["type"] = "base64", ["media_type"] = file.MediaType, ["data"] = data } },
-                    ApiProtocol.Gemini => new JsonObject { ["inlineData"] = new JsonObject { ["mimeType"] = file.MediaType, ["data"] = data } },
-                    ApiProtocol.Responses => new JsonObject { ["type"] = "input_image", ["image_url"] = $"data:{file.MediaType};base64,{data}" },
-                    _ => new JsonObject { ["type"] = "image_url", ["image_url"] = new JsonObject { ["url"] = $"data:{file.MediaType};base64,{data}" } }
+                        { ["type"] = "base64", ["media_type"] = mediaType, ["data"] = data } },
+                    ApiProtocol.Gemini => InlineData(mediaType, data),
+                    ApiProtocol.Responses => new JsonObject { ["type"] = "input_image", ["image_url"] = $"data:{mediaType};base64,{data}" },
+                    _ => new JsonObject { ["type"] = "image_url", ["image_url"] = new JsonObject { ["url"] = $"data:{mediaType};base64,{data}" } }
+                });
+            }
+            else if (mediaType == "application/pdf" || mediaType.StartsWith("audio/", StringComparison.OrdinalIgnoreCase)
+                     || mediaType.StartsWith("video/", StringComparison.OrdinalIgnoreCase))
+            {
+                var data = Convert.ToBase64String(await File.ReadAllBytesAsync(file.Path, cancellationToken).ConfigureAwait(false));
+                parts.Add(Protocol switch
+                {
+                    ApiProtocol.Anthropic when mediaType == "application/pdf" => new JsonObject
+                    {
+                        ["type"] = "document",
+                        ["source"] = new JsonObject { ["type"] = "base64", ["media_type"] = mediaType, ["data"] = data },
+                        ["title"] = SafeDocumentTitle(file.DisplayName ?? info.Name)
+                    },
+                    ApiProtocol.Responses when mediaType == "application/pdf" => new JsonObject
+                    {
+                        ["type"] = "input_file",
+                        ["filename"] = file.DisplayName ?? info.Name,
+                        ["file_data"] = $"data:{mediaType};base64,{data}"
+                    },
+                    ApiProtocol.Gemini => InlineData(mediaType, data),
+                    _ => throw new InvalidOperationException($"{connection.Name} does not implement native {mediaType} delivery.")
                 });
             }
             else
@@ -54,6 +81,15 @@ public sealed class ApiConversationClient(ApiConnection connection, ApiTransport
         if (Protocol == ApiProtocol.ChatCompletions && parts.All(part => ApiModelCatalog.Text(part, "type") == "text"))
             contentNode = JsonValue.Create(string.Join("\n\n", parts.Select(part => ApiModelCatalog.Text(part, "text"))))!;
         history.Add(new JsonObject { ["role"] = "user", [Protocol == ApiProtocol.Gemini ? "parts" : "content"] = contentNode });
+    }
+
+    private static JsonObject InlineData(string mediaType, string data) =>
+        new() { ["inlineData"] = new JsonObject { ["mimeType"] = mediaType, ["data"] = data } };
+
+    private static string SafeDocumentTitle(string title)
+    {
+        var value = Path.GetFileNameWithoutExtension(title).Trim();
+        return value.Length switch { 0 => "Attached PDF", > 255 => value[..255], _ => value };
     }
 
     private JsonObject TextPart(string text) => Protocol switch
@@ -93,7 +129,10 @@ public sealed class ApiConversationClient(ApiConnection connection, ApiTransport
             ApiProtocol.Responses => "responses",
             _ => "chat/completions"
         };
-        using var response = await transport.SendAsync(path, body, cancellationToken).ConfigureAwait(false);
+        var betaFeatures = model.HostedArtifactsEnabled && Protocol == ApiProtocol.Anthropic
+            ? new[] { "code-execution-2025-08-25", "files-api-2025-04-14" }
+            : null;
+        using var response = await transport.SendAsync(path, body, cancellationToken, betaFeatures).ConfigureAwait(false);
         var nativeOutput = new JsonArray();
         var calls = new List<ApiToolCall>();
         var anthropicBlocks = new SortedDictionary<int, JsonObject>();
@@ -105,6 +144,7 @@ public sealed class ApiConversationClient(ApiConnection connection, ApiTransport
         var display = new StringBuilder();
         var lastFlush = Environment.TickCount64;
         long? input = null, output = null;
+        long? cacheRead = null, cacheWrite = null;
         string? stop = null;
         var complete = false;
         await foreach (var payload in ReadEventsAsync(response, cancellationToken).ConfigureAwait(false))
@@ -124,6 +164,8 @@ public sealed class ApiConversationClient(ApiConnection connection, ApiTransport
                             nativeOutput = e["response"]?["output"]?.DeepClone().AsArray() ?? [];
                             input = Long(e["response"]?["usage"], "input_tokens");
                             output = Long(e["response"]?["usage"], "output_tokens");
+                            cacheRead = Long(e["response"]?["usage"]?["input_tokens_details"], "cached_tokens");
+                            cacheWrite = Long(e["response"]?["usage"]?["input_tokens_details"], "cache_write_tokens");
                             complete = true;
                             break;
                         case "response.failed": case "response.incomplete":
@@ -137,6 +179,8 @@ public sealed class ApiConversationClient(ApiConnection connection, ApiTransport
                         case "message_start":
                             var usage = e["message"]?["usage"];
                             input = SumUsage(usage, "input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens");
+                            cacheRead = Long(usage, "cache_read_input_tokens");
+                            cacheWrite = Long(usage, "cache_creation_input_tokens");
                             break;
                         case "content_block_start":
                             anthropicBlocks[index] = e["content_block"]!.DeepClone().AsObject();
@@ -175,6 +219,7 @@ public sealed class ApiConversationClient(ApiConnection connection, ApiTransport
                         }
                     input = Long(e["usageMetadata"], "promptTokenCount") ?? input;
                     output = SumUsage(e["usageMetadata"], "candidatesTokenCount", "thoughtsTokenCount") ?? output;
+                    cacheRead = Long(e["usageMetadata"], "cachedContentTokenCount") ?? cacheRead;
                     if (ApiModelCatalog.Text(candidate, "finishReason") is { } finish) { stop = finish; complete = true; }
                     if (e["promptFeedback"]?["blockReason"] is not null) throw new IOException("The provider blocked the request.");
                     break;
@@ -182,6 +227,7 @@ public sealed class ApiConversationClient(ApiConnection connection, ApiTransport
                     if (e["usage"] is { } chatUsage)
                     {
                         input = Long(chatUsage, "prompt_tokens"); output = Long(chatUsage, "completion_tokens");
+                        cacheRead = Long(chatUsage["prompt_tokens_details"], "cached_tokens");
                     }
                     var choice = (e["choices"] as JsonArray)?.FirstOrDefault();
                     if (choice is null) break;
@@ -228,9 +274,11 @@ public sealed class ApiConversationClient(ApiConnection connection, ApiTransport
         if (!complete) throw new IOException("Provider stream disconnected before completion. Partial text is retained; tools were not executed.");
         if (stop is "max_tokens" or "length" or "MAX_TOKENS") throw new IOException("The provider reached its output limit. Partial text is retained; incomplete tool calls were not executed.");
         if (Protocol == ApiProtocol.Gemini && stop != "STOP") throw new IOException("Gemini stopped without a successful completion. No tools were executed.");
+        IReadOnlyList<ApiGeneratedArtifact> artifacts = [];
         switch (Protocol)
         {
             case ApiProtocol.Responses:
+                artifacts = ExtractOpenAiArtifacts(nativeOutput);
                 foreach (var item in nativeOutput.OfType<JsonObject>())
                 {
                     if (ApiModelCatalog.Text(item, "type") == "function_call")
@@ -246,6 +294,7 @@ public sealed class ApiConversationClient(ApiConnection connection, ApiTransport
                     nativeOutput.Add(block.DeepClone());
                 }
                 history.Add(new JsonObject { ["role"] = "assistant", ["content"] = nativeOutput });
+                artifacts = ExtractAnthropicArtifacts(nativeOutput);
                 break;
             case ApiProtocol.Gemini:
                 foreach (var part in nativeOutput.OfType<JsonObject>())
@@ -270,7 +319,7 @@ public sealed class ApiConversationClient(ApiConnection connection, ApiTransport
                 history.Add(message);
                 break;
         }
-        return new(calls, input, output, stop);
+        return new(calls, input, output, stop, cacheRead, cacheWrite, artifacts);
     }
 
     public JsonObject BuildRequest(ApiModel model, JsonArray history, string instructions, string? effort, string? tier, IReadOnlyList<ApiTool> tools)
@@ -286,6 +335,18 @@ public sealed class ApiConversationClient(ApiConnection connection, ApiTransport
             if (Protocol == ApiProtocol.Responses) { function["type"] = "function"; function["strict"] = false; }
             definitions.Add(Protocol == ApiProtocol.ChatCompletions ? new JsonObject { ["type"] = "function", ["function"] = function } : function);
         }
+        if (model.HostedArtifactsEnabled && Protocol == ApiProtocol.Responses)
+            definitions.Add(new JsonObject
+            {
+                ["type"] = "code_interpreter",
+                ["container"] = new JsonObject { ["type"] = "auto" }
+            });
+        else if (model.HostedArtifactsEnabled && Protocol == ApiProtocol.Anthropic)
+            definitions.Add(new JsonObject
+            {
+                ["type"] = "code_execution_20250825",
+                ["name"] = "code_execution"
+            });
         switch (Protocol)
         {
             case ApiProtocol.Anthropic:
@@ -293,10 +354,12 @@ public sealed class ApiConversationClient(ApiConnection connection, ApiTransport
                 body["max_tokens"] = Math.Min(model.MaxOutputTokens ?? 8192, 16384);
                 if (model.AdaptiveThinking) body["thinking"] = new JsonObject { ["type"] = "adaptive" };
                 if (effort is not null) body["output_config"] = new JsonObject { ["effort"] = effort };
+                if (model.PromptCachingEnabled) body["cache_control"] = new JsonObject { ["type"] = "ephemeral" };
                 break;
             case ApiProtocol.Responses:
                 body["input"] = history.DeepClone(); body["instructions"] = instructions; body["store"] = false;
                 body["include"] = new JsonArray("reasoning.encrypted_content");
+                if (model.HostedArtifactsEnabled) body["include"]!.AsArray().Add("code_interpreter_call.outputs");
                 if (effort is not null) body["reasoning"] = new JsonObject { ["effort"] = effort };
                 break;
             case ApiProtocol.Gemini:
@@ -319,9 +382,60 @@ public sealed class ApiConversationClient(ApiConnection connection, ApiTransport
                 break;
         }
         if (tier is not null) body["service_tier"] = tier;
-        if (tools.Count > 0) body["tools"] = Protocol == ApiProtocol.Gemini
+        if (definitions.Count > 0) body["tools"] = Protocol == ApiProtocol.Gemini
             ? new JsonArray(new JsonObject { ["functionDeclarations"] = definitions }) : definitions;
         return body;
+    }
+
+    private static IReadOnlyList<ApiGeneratedArtifact> ExtractOpenAiArtifacts(JsonArray output)
+    {
+        var artifacts = new Dictionary<string, ApiGeneratedArtifact>(StringComparer.Ordinal);
+        foreach (var message in output.OfType<JsonObject>()
+                     .Where(item => ApiModelCatalog.Text(item, "type") == "message"))
+        {
+            if (message["content"] is not JsonArray content) continue;
+            foreach (var part in content.OfType<JsonObject>())
+            {
+                if (part["annotations"] is not JsonArray annotations) continue;
+                foreach (var annotation in annotations.OfType<JsonObject>())
+                {
+                    if (ApiModelCatalog.Text(annotation, "type") != "container_file_citation") continue;
+                    var fileId = ApiModelCatalog.Text(annotation, "file_id");
+                    var containerId = ApiModelCatalog.Text(annotation, "container_id");
+                    if (string.IsNullOrWhiteSpace(fileId) || string.IsNullOrWhiteSpace(containerId)) continue;
+                    var filename = ApiModelCatalog.Text(annotation, "filename");
+                    if (string.IsNullOrWhiteSpace(filename)) filename = fileId;
+                    artifacts[$"{containerId}\n{fileId}"] = new(fileId, filename, null, containerId);
+                }
+            }
+        }
+        return artifacts.Values.ToArray();
+    }
+
+    private static IReadOnlyList<ApiGeneratedArtifact> ExtractAnthropicArtifacts(JsonArray output)
+    {
+        var artifacts = new Dictionary<string, ApiGeneratedArtifact>(StringComparer.Ordinal);
+        foreach (var node in Descendants(output))
+        {
+            if (ApiModelCatalog.Text(node, "type") != "bash_code_execution_output") continue;
+            var fileId = ApiModelCatalog.Text(node, "file_id");
+            if (string.IsNullOrWhiteSpace(fileId)) continue;
+            artifacts[fileId] = new(fileId, fileId, null);
+        }
+        return artifacts.Values.ToArray();
+    }
+
+    private static IEnumerable<JsonObject> Descendants(JsonNode? node)
+    {
+        if (node is JsonObject obj)
+        {
+            yield return obj;
+            foreach (var child in obj.Select(pair => pair.Value))
+                foreach (var descendant in Descendants(child)) yield return descendant;
+        }
+        else if (node is JsonArray array)
+            foreach (var child in array)
+                foreach (var descendant in Descendants(child)) yield return descendant;
     }
 
     public void AddToolResults(JsonArray history, IReadOnlyList<(ApiToolCall Call, string Output)> results)

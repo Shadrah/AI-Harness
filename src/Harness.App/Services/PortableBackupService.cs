@@ -57,6 +57,7 @@ public sealed class PortableBackupService
                 var dataDirectory = Path.GetDirectoryName(store.DatabasePath)!;
                 AddManagedTree(payloads, dataDirectory, "attachments", cancellationToken);
                 AddManagedTree(payloads, dataDirectory, "imports", cancellationToken);
+                AddManagedTree(payloads, dataDirectory, "artifacts", cancellationToken);
 
                 var apiMetadata = _apiMetadataPath;
                 if (!File.Exists(apiMetadata))
@@ -166,6 +167,7 @@ public sealed class PortableBackupService
 
                 CopyPayloadTree(Path.Combine(extractionRoot, "data", "attachments"), Path.Combine(targetData, "attachments"), cancellationToken);
                 CopyPayloadTree(Path.Combine(extractionRoot, "data", "imports"), Path.Combine(targetData, "imports"), cancellationToken);
+                CopyPayloadTree(Path.Combine(extractionRoot, "data", "artifacts"), Path.Combine(targetData, "artifacts"), cancellationToken);
                 Directory.CreateDirectory(targetData);
                 if (File.Exists(targetDatabase)) File.Copy(targetDatabase, targetDatabase + ".before-restore", true);
                 var apiMetadataExisted = File.Exists(_apiMetadataPath);
@@ -416,6 +418,7 @@ public sealed class PortableBackupService
             || path.Equals("skills/installations.json", StringComparison.OrdinalIgnoreCase)
             || path.StartsWith("skills/installed/", StringComparison.OrdinalIgnoreCase)
             || path.StartsWith("data/attachments/", StringComparison.OrdinalIgnoreCase)
+            || path.StartsWith("data/artifacts/", StringComparison.OrdinalIgnoreCase)
             || path.StartsWith("data/imports/", StringComparison.OrdinalIgnoreCase)) return;
         throw new InvalidDataException($"The backup contains an unsupported payload: {path}");
     }

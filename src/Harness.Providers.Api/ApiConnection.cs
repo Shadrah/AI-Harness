@@ -59,7 +59,8 @@ public sealed class ApiTransport : IDisposable
         { BaseAddress = connection.BaseUri, Timeout = TimeSpan.FromMinutes(10) };
     }
 
-    public async Task<HttpResponseMessage> SendAsync(string path, JsonNode? body, CancellationToken cancellationToken)
+    public async Task<HttpResponseMessage> SendAsync(string path, JsonNode? body, CancellationToken cancellationToken,
+        IReadOnlyList<string>? betaFeatures = null)
     {
         using var request = new HttpRequestMessage(body is null ? HttpMethod.Get : HttpMethod.Post, path);
         switch (_connection.Definition.Protocol)
@@ -67,6 +68,7 @@ public sealed class ApiTransport : IDisposable
             case ApiProtocol.Anthropic:
                 request.Headers.Add("x-api-key", _key);
                 request.Headers.Add("anthropic-version", "2023-06-01");
+                if (betaFeatures is { Count: > 0 }) request.Headers.Add("anthropic-beta", string.Join(',', betaFeatures));
                 break;
             case ApiProtocol.Gemini:
                 request.Headers.Add("x-goog-api-key", _key);
@@ -92,9 +94,10 @@ public sealed class ApiTransport : IDisposable
         }));
     }
 
-    public async Task<JsonObject> GetAsync(string path, CancellationToken cancellationToken)
+    public async Task<JsonObject> GetAsync(string path, CancellationToken cancellationToken,
+        IReadOnlyList<string>? betaFeatures = null)
     {
-        using var response = await SendAsync(path, null, cancellationToken).ConfigureAwait(false);
+        using var response = await SendAsync(path, null, cancellationToken, betaFeatures).ConfigureAwait(false);
         return await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
     }
 
@@ -102,6 +105,35 @@ public sealed class ApiTransport : IDisposable
     {
         using var response = await SendAsync(path, body, cancellationToken).ConfigureAwait(false);
         return await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<(string? MediaType, long ByteLength)> DownloadToFileAsync(
+        string path,
+        string destinationPath,
+        long maximumBytes,
+        CancellationToken cancellationToken,
+        IReadOnlyList<string>? betaFeatures = null)
+    {
+        if (maximumBytes <= 0) throw new ArgumentOutOfRangeException(nameof(maximumBytes));
+        using var response = await SendAsync(path, null, cancellationToken, betaFeatures).ConfigureAwait(false);
+        var reported = response.Content.Headers.ContentLength;
+        if (reported.HasValue && reported.Value > maximumBytes)
+            throw new InvalidOperationException($"Provider artifact exceeds Harness's {maximumBytes / 1024 / 1024} MiB download limit.");
+        await using var input = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        await using var output = new FileStream(destinationPath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+            128 * 1024, FileOptions.Asynchronous | FileOptions.WriteThrough);
+        var buffer = new byte[128 * 1024];
+        long total = 0;
+        int read;
+        while ((read = await input.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
+        {
+            total += read;
+            if (total > maximumBytes)
+                throw new InvalidOperationException($"Provider artifact exceeds Harness's {maximumBytes / 1024 / 1024} MiB download limit.");
+            await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+        }
+        await output.FlushAsync(cancellationToken).ConfigureAwait(false);
+        return (response.Content.Headers.ContentType?.MediaType, total);
     }
 
     private static async Task<JsonObject> ReadJsonAsync(HttpResponseMessage response, CancellationToken cancellationToken)

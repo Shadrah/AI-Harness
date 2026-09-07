@@ -308,11 +308,17 @@ public sealed class MainWindowViewModel : ObservableObject
             RaisePropertyChanged(nameof(ActiveModelName));
             RaisePropertyChanged(nameof(ActiveProviderLabel));
             RaisePropertyChanged(nameof(SupportsVision));
+            RaisePropertyChanged(nameof(SupportsPdfInput));
+            RaisePropertyChanged(nameof(SupportsAudioInput));
             RaisePropertyChanged(nameof(SupportsVideoInput));
             RaisePropertyChanged(nameof(CanAttachImage));
+            RaisePropertyChanged(nameof(CanAttachPdf));
+            RaisePropertyChanged(nameof(CanAttachAudio));
             RaisePropertyChanged(nameof(CanAttachVideo));
             RaisePropertyChanged(nameof(CanAttachText));
             RaisePropertyChanged(nameof(ImageAttachmentAvailability));
+            RaisePropertyChanged(nameof(PdfAttachmentAvailability));
+            RaisePropertyChanged(nameof(AudioAttachmentAvailability));
             RaisePropertyChanged(nameof(VideoAttachmentAvailability));
             RaisePropertyChanged(nameof(TextAttachmentAvailability));
             RaisePropertyChanged(nameof(AttachmentStatus));
@@ -380,6 +386,8 @@ public sealed class MainWindowViewModel : ObservableObject
                 RaisePropertyChanged(nameof(CanUseRepositoryActions));
                 RaisePropertyChanged(nameof(CanUseRemoteActions));
                 RaisePropertyChanged(nameof(CanAttachImage));
+                RaisePropertyChanged(nameof(CanAttachPdf));
+                RaisePropertyChanged(nameof(CanAttachAudio));
                 RaisePropertyChanged(nameof(CanAttachVideo));
                 RaisePropertyChanged(nameof(CanAttachText));
             }
@@ -437,14 +445,20 @@ public sealed class MainWindowViewModel : ObservableObject
     public string ActiveModelName => SelectedModel?.ModelName ?? "No model connected";
     public string ActiveProviderLabel => SelectedModel?.ProviderLabel ?? "RUNTIME UNAVAILABLE";
     public bool SupportsVision => SelectedModel?.Capabilities.Contains("VISION") == true;
+    public bool SupportsPdfInput => SelectedModel?.Capabilities.Contains("PDF") == true;
+    public bool SupportsAudioInput => SelectedModel?.Capabilities.Contains("AUDIO IN") == true;
     public bool SupportsVideoInput => SelectedModel?.Capabilities.Contains("VIDEO IN") == true;
     public bool CanAttachImage => SelectedModel is not null && SupportsVision && !IsRunning;
+    public bool CanAttachPdf => SelectedModel is not null && SupportsPdfInput && !IsRunning;
+    public bool CanAttachAudio => SelectedModel is not null && SupportsAudioInput && !IsRunning;
     public bool CanAttachVideo => SelectedModel is not null && SupportsVideoInput && !IsRunning;
     public bool CanAttachText => SelectedModel?.Capabilities.Contains("TEXT") == true && !IsRunning;
     public bool HasTurnAttachments => TurnAttachments.Count > 0;
     public bool HasUnsupportedTurnAttachments => TurnAttachments.Any(attachment => !IsTurnAttachmentSupported(attachment));
     public bool ShowAttachmentWarning => HasUnsupportedTurnAttachments;
     public string ImageAttachmentAvailability => SupportsVision ? "NATIVE INPUT" : "NOT SUPPORTED BY MODEL";
+    public string PdfAttachmentAvailability => SupportsPdfInput ? "NATIVE INPUT" : "NOT SUPPORTED BY MODEL";
+    public string AudioAttachmentAvailability => SupportsAudioInput ? "NATIVE INPUT" : "NOT SUPPORTED BY MODEL";
     public string VideoAttachmentAvailability => SupportsVideoInput ? "NATIVE INPUT" : "NOT SUPPORTED BY RUNTIME";
     public string TextAttachmentAvailability => SelectedModel?.Capabilities.Contains("TEXT") == true ? "FILE REFERENCE" : "NOT SUPPORTED BY MODEL";
     public string AttachmentStatus => SelectedModel is null
@@ -879,6 +893,8 @@ public sealed class MainWindowViewModel : ObservableObject
     private bool IsTurnAttachmentSupported(TurnAttachmentItem attachment) => attachment.Kind switch
     {
         "image" => SupportsVision,
+        "pdf" => SupportsPdfInput,
+        "audio" => SupportsAudioInput,
         "video" => SupportsVideoInput,
         _ => SelectedModel?.Capabilities.Contains("TEXT") == true
     };
@@ -973,18 +989,40 @@ public sealed class MainWindowViewModel : ObservableObject
     }
 
     public void AddGeneratedImages(IEnumerable<string> paths)
+        => AddGeneratedArtifacts(paths, "Generated image output:", "Generated image");
+
+    public void AddGeneratedArtifacts(IEnumerable<string> paths)
+        => AddGeneratedArtifacts(paths, "Generated artifacts:", "Open artifact");
+
+    private void AddGeneratedArtifacts(IEnumerable<string> paths, string heading, string fallbackLabel)
     {
-        var links = paths
-            .Where(File.Exists)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Select(path => $"[Generated image](<{Path.GetFullPath(path).Replace('\\', '/') }>)")
-            .ToArray();
-        if (links.Length == 0) return;
-        var message = ChatMessageItem.Assistant($"Generated image output:{Environment.NewLine}{Environment.NewLine}{string.Join(Environment.NewLine, links)}");
+        var text = FormatGeneratedArtifactMessage(paths, heading, fallbackLabel);
+        if (text is null) return;
+        var message = ChatMessageItem.Assistant(text);
         message.SetStatus(IsRunning ? "DELIVERED" : "COMPLETED");
         Messages.Add(message);
         RequestMessagePersistence(message);
         ConversationAdvanced?.Invoke(this, EventArgs.Empty);
+    }
+
+    internal static string? FormatGeneratedArtifactMessage(
+        IEnumerable<string> paths,
+        string heading = "Generated artifacts:",
+        string fallbackLabel = "Open artifact")
+    {
+        var links = paths
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(path =>
+            {
+                var fullPath = Path.GetFullPath(path);
+                var label = Path.GetFileName(fullPath);
+                if (string.IsNullOrWhiteSpace(label)) label = fallbackLabel;
+                return $"[{label}](<{fullPath.Replace('\\', '/') }>)";
+            })
+            .ToArray();
+        return links.Length == 0 ? null
+            : $"{heading}{Environment.NewLine}{Environment.NewLine}{string.Join(Environment.NewLine, links)}";
     }
 
     public void StartExecutionItem(
@@ -1831,6 +1869,8 @@ public sealed record TurnAttachmentItem(
             normalizedKind switch
             {
                 "image" => "IMAGE",
+                "pdf" => "PDF",
+                "audio" => "AUDIO",
                 "video" => "VIDEO",
                 _ => "FILE"
             },
@@ -1855,13 +1895,25 @@ public sealed record TurnAttachmentItem(
         {
             return extension.ToLowerInvariant() switch
             {
-                ".mov" => "video/quicktime",
+                ".mov" => "video/mov",
                 ".webm" => "video/webm",
-                ".mkv" => "video/x-matroska",
-                ".avi" => "video/x-msvideo",
+                ".avi" => "video/avi",
                 _ => "video/mp4"
             };
         }
+        if (kind == "audio")
+        {
+            return extension.ToLowerInvariant() switch
+            {
+                ".wav" => "audio/wav",
+                ".m4a" => "audio/mp4",
+                ".ogg" => "audio/ogg",
+                ".flac" => "audio/flac",
+                ".aac" => "audio/aac",
+                _ => "audio/mpeg"
+            };
+        }
+        if (kind == "pdf") return "application/pdf";
         return extension.ToLowerInvariant() switch
         {
             ".md" => "text/markdown",

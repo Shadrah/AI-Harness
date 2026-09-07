@@ -4,10 +4,12 @@ using System.Text.Json.Nodes;
 namespace Harness.Providers.Api;
 
 public sealed record ApiModelConfiguration(string ModelId, bool Tools, bool Images, int? ContextWindow,
-    string[] ReasoningLevels, string[] ServiceTiers);
+    string[] ReasoningLevels, string[] ServiceTiers, bool Audio = false, bool Video = false, bool Pdf = false,
+    bool PromptCaching = false, bool HostedArtifacts = false);
 
 public sealed record ApiModel(ModelDescriptor Descriptor, JsonObject Metadata, bool CapabilityMetadataReported,
-    int? MaxOutputTokens, bool AdaptiveThinking, IReadOnlySet<ModelCapability>? ReportedCapabilityFields = null)
+    int? MaxOutputTokens, bool AdaptiveThinking, IReadOnlySet<ModelCapability>? ReportedCapabilityFields = null,
+    bool PromptCachingEnabled = false, bool HostedArtifactsEnabled = false)
 {
     public override string ToString() => Descriptor.DisplayName;
 }
@@ -57,15 +59,23 @@ public static class ApiModelCatalog
             var caps = model.Descriptor.Capabilities;
             caps = config.Tools ? caps | ModelCapability.ToolUse : caps & ~ModelCapability.ToolUse;
             caps = config.Images ? caps | ModelCapability.Vision : caps & ~ModelCapability.Vision;
+            caps = config.Audio ? caps | ModelCapability.AudioInput : caps & ~ModelCapability.AudioInput;
+            caps = config.Video ? caps | ModelCapability.VideoInput : caps & ~ModelCapability.VideoInput;
+            caps = config.Pdf ? caps | ModelCapability.PdfInput : caps & ~ModelCapability.PdfInput;
+            if (config.PromptCaching) caps |= ModelCapability.PromptCaching;
+            caps = config.HostedArtifacts ? caps | ModelCapability.GeneratedArtifacts : caps & ~ModelCapability.GeneratedArtifacts;
             caps = config.ReasoningLevels.Length > 0 ? caps | ModelCapability.Reasoning : caps & ~ModelCapability.Reasoning;
             var reportedFields = (model.ReportedCapabilityFields ?? new HashSet<ModelCapability>()).ToHashSet();
-            reportedFields.UnionWith([ModelCapability.Text, ModelCapability.ToolUse, ModelCapability.Vision, ModelCapability.Reasoning]);
+            reportedFields.UnionWith([ModelCapability.Text, ModelCapability.ToolUse, ModelCapability.Vision,
+                ModelCapability.AudioInput, ModelCapability.VideoInput, ModelCapability.PdfInput,
+                ModelCapability.Reasoning, ModelCapability.GeneratedArtifacts]);
             models[config.ModelId] = model with { Descriptor = model.Descriptor with
             {
                 Capabilities = caps, ContextWindow = config.ContextWindow ?? model.Descriptor.ContextWindow,
                 ReasoningLevels = config.ReasoningLevels.Select(id => new ReasoningLevelDescriptor(id, id, "User-configured API value")).ToArray(),
                 ServiceTiers = config.ServiceTiers.Select(id => new ServiceTierDescriptor(id, id, "User-configured API value")).ToArray()
-            }, ReportedCapabilityFields = reportedFields };
+            }, ReportedCapabilityFields = reportedFields, PromptCachingEnabled = config.PromptCaching,
+                HostedArtifactsEnabled = config.HostedArtifacts };
         }
         return models.Values.OrderBy(model => model.Descriptor.DisplayName, StringComparer.OrdinalIgnoreCase).ToArray();
     }
@@ -150,7 +160,8 @@ public static class ApiModelCatalog
         var reported = capabilities is not null || input is not null || output is not null || parameterNode is not null;
         var reportedFields = new HashSet<ModelCapability> { ModelCapability.Text };
         if (input is not null) reportedFields.UnionWith([ModelCapability.Vision, ModelCapability.AudioInput, ModelCapability.VideoInput, ModelCapability.PdfInput]);
-        if (output is not null) reportedFields.UnionWith([ModelCapability.AudioOutput, ModelCapability.ImageGeneration]);
+        if (output is not null) reportedFields.UnionWith([ModelCapability.AudioOutput, ModelCapability.ImageGeneration,
+            ModelCapability.GeneratedArtifacts]);
         if (parameterNode is not null) reportedFields.UnionWith([ModelCapability.ToolUse, ModelCapability.Reasoning, ModelCapability.StructuredOutput, ModelCapability.PromptCaching]);
         MarkReported(capabilities, reportedFields, ModelCapability.Vision, "vision", "image_input");
         MarkReported(capabilities, reportedFields, ModelCapability.AudioInput, "audio_input");
@@ -165,6 +176,8 @@ public static class ApiModelCatalog
         MarkReported(capabilities, reportedFields, ModelCapability.Citations, "citations");
         MarkReported(capabilities, reportedFields, ModelCapability.ContextManagement, "context_management");
         MarkReported(capabilities, reportedFields, ModelCapability.ComputerUse, "computer_use");
+        MarkReported(capabilities, reportedFields, ModelCapability.GeneratedArtifacts,
+            "generated_artifacts", "artifact_generation", "file_output", "code_interpreter");
         if (node["supported_reasoning_levels"] is JsonArray) reportedFields.Add(ModelCapability.Reasoning);
         var caps = ModelCapability.Text;
         if (Strings(input).Contains("image") || Supported(capabilities?["vision"]) || Supported(capabilities?["image_input"])) caps |= ModelCapability.Vision;
@@ -191,6 +204,11 @@ public static class ApiModelCatalog
         if (Supported(capabilities?["citations"])) caps |= ModelCapability.Citations;
         if (Supported(capabilities?["context_management"])) caps |= ModelCapability.ContextManagement;
         if (Supported(capabilities?["computer_use"])) caps |= ModelCapability.ComputerUse;
+        if (Strings(output).Any(value => value is "file" or "document")
+            || Supported(capabilities?["generated_artifacts"])
+            || Supported(capabilities?["artifact_generation"])
+            || Supported(capabilities?["file_output"])
+            || Supported(capabilities?["code_interpreter"])) caps |= ModelCapability.GeneratedArtifacts;
         var tiers = Strings(node["supported_service_tiers"] as JsonArray)
             .Select(tier => new ServiceTierDescriptor(tier, tier, "Reported by the model catalog")).ToArray();
         var context = Number(node, "max_input_tokens") ?? Number(node, "inputTokenLimit") ?? Number(node, "context_length")

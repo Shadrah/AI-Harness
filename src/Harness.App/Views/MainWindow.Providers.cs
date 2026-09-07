@@ -1,15 +1,18 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Security.Cryptography;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
 using Harness.App.Services;
+using Harness.App.ViewModels;
 using Harness.Core.Models;
 using Harness.Core.Browser;
 using Harness.Providers.Api;
+using Harness.Storage;
 using Harness.Workspace;
 
 namespace Harness.App.Views;
@@ -72,7 +75,7 @@ public sealed partial class MainWindow
                     _apiConnections[connection.Id] = (result.Saved, result.Models);
                     ViewModel.ApplyProviderModels(connection.Id, result.Models.Select(model =>
                     {
-                        var report = ApiCapabilityConformance.Evaluate(model);
+                        var report = ApiCapabilityConformance.Evaluate(connection, model);
                         return model.Descriptor with { Capabilities = report.ReadyCapabilities };
                     }).ToArray(), connection.Name, "DIRECT API");
                 }
@@ -100,6 +103,7 @@ public sealed partial class MainWindow
         var entry = _apiConnections[model.Descriptor.ProviderId];
         var connection = entry.Saved.Connection;
         var sessionId = _activeSession.Id;
+        var projectId = _activeSession.ProjectId;
         var workspace = ViewModel.WorkspacePath;
         var stateEvent = $"harness/apiState/v1/{connection.Id}/{model.Descriptor.ModelId}";
         var lastMessageId = ViewModel.Messages.LastOrDefault()?.Id;
@@ -174,6 +178,41 @@ public sealed partial class MainWindow
                 cumulative = cumulative is not null && reply.InputTokens is not null && reply.OutputTokens is not null
                     ? cumulative + reply.InputTokens + reply.OutputTokens : null;
                 ViewModel.ApplyApiUsage(reply.InputTokens, reply.OutputTokens, cumulative, model.Descriptor.ContextWindow);
+                if (reply.CacheReadInputTokens is > 0 || reply.CacheWriteInputTokens is > 0)
+                    ViewModel.AddActivity("CACHE",
+                        $"{reply.CacheReadInputTokens.GetValueOrDefault():N0} input tokens reused · {reply.CacheWriteInputTokens.GetValueOrDefault():N0} cached",
+                        "#65C7D0");
+                if (reply.Artifacts is { Count: > 0 })
+                {
+                    var downloads = await Task.Run(
+                        () => DownloadApiArtifactsAsync(transport, connection, sessionId, reply.Artifacts, token), token);
+                    if (downloads.Paths.Count > 0)
+                    {
+                        var title = $"Saved {downloads.Paths.Count:N0} provider-generated file{(downloads.Paths.Count == 1 ? "" : "s")}";
+                        if (_activeSession?.Id == sessionId)
+                        {
+                            ViewModel.AddGeneratedArtifacts(downloads.Paths);
+                            ViewModel.AddActivity("ARTIFACT", title, "#65C7D0");
+                        }
+                        else
+                        {
+                            var artifactText = MainWindowViewModel.FormatGeneratedArtifactMessage(downloads.Paths);
+                            if (artifactText is not null)
+                                await _store.UpsertMessageAsync(new StoredMessage(Guid.NewGuid().ToString("N"), sessionId, 0,
+                                    "HARNESS", "Response", artifactText, "COMPLETED", "#65C7D0", false, DateTimeOffset.UtcNow), token);
+                            await _store.AppendActivityEventAsync(new StoredActivityEvent(Guid.NewGuid().ToString("N"), projectId,
+                                sessionId, "ARTIFACT", title, string.Empty, "COMPLETED", "#65C7D0", false, DateTimeOffset.UtcNow), token);
+                        }
+                    }
+                    foreach (var failure in downloads.Failures)
+                    {
+                        if (_activeSession?.Id == sessionId)
+                            ViewModel.AddActivity("ARTIFACT", failure, "#E2A84A");
+                        else
+                            await _store.AppendActivityEventAsync(new StoredActivityEvent(Guid.NewGuid().ToString("N"), projectId,
+                                sessionId, "ARTIFACT", failure, string.Empty, "FAILED", "#E2A84A", false, DateTimeOffset.UtcNow), token);
+                    }
+                }
                 if (reply.Calls.Count == 0) break;
                 var results = new List<(ApiToolCall Call, string Output)>();
                 var browserImages = new List<(string CallId, string Data)>();
@@ -270,6 +309,127 @@ public sealed partial class MainWindow
         return text.ToString();
     }
 
+    private async Task<ApiArtifactDownloadResult> DownloadApiArtifactsAsync(
+        ApiTransport transport,
+        ApiConnection connection,
+        string sessionId,
+        IReadOnlyList<ApiGeneratedArtifact> artifacts,
+        CancellationToken cancellationToken)
+    {
+        const long maximumArtifactBytes = 100L * 1024 * 1024;
+        var paths = new List<string>();
+        var failures = new List<string>();
+        var store = _store ?? throw new InvalidOperationException("Harness storage is unavailable.");
+        var root = Path.Combine(Path.GetDirectoryName(store.DatabasePath)!, "artifacts", SafePathSegment(sessionId));
+        Directory.CreateDirectory(root);
+        foreach (var artifact in artifacts.Take(20))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            string? staging = null;
+            try
+            {
+                string endpoint;
+                string filename;
+                string? reportedMediaType = artifact.MediaType;
+                IReadOnlyList<string>? betaFeatures = null;
+                if (connection.ProviderId == "openai-api" && !string.IsNullOrWhiteSpace(artifact.ContainerId))
+                {
+                    filename = SafeArtifactName(artifact.FileName, artifact.ProviderFileId);
+                    endpoint = $"containers/{Uri.EscapeDataString(artifact.ContainerId)}/files/{Uri.EscapeDataString(artifact.ProviderFileId)}/content";
+                }
+                else if (connection.ProviderId == "anthropic-api")
+                {
+                    betaFeatures = ["files-api-2025-04-14"];
+                    var metadata = await transport.GetAsync($"files/{Uri.EscapeDataString(artifact.ProviderFileId)}", cancellationToken, betaFeatures)
+                        .ConfigureAwait(false);
+                    if (metadata["downloadable"] is JsonValue downloadable && downloadable.TryGetValue<bool>(out var canDownload) && !canDownload)
+                        throw new InvalidOperationException("Anthropic marked the generated file as unavailable for download.");
+                    filename = SafeArtifactName(metadata["filename"]?.GetValue<string>() ?? artifact.FileName, artifact.ProviderFileId);
+                    reportedMediaType ??= metadata["mime_type"]?.GetValue<string>();
+                    endpoint = $"files/{Uri.EscapeDataString(artifact.ProviderFileId)}/content";
+                }
+                else throw new InvalidOperationException("This provider's generated-file download path is not implemented.");
+                var destination = UniqueArtifactPath(root, filename);
+                staging = destination + $".{Guid.NewGuid():N}.tmp";
+                var downloaded = await transport.DownloadToFileAsync(endpoint, staging, maximumArtifactBytes, cancellationToken, betaFeatures)
+                    .ConfigureAwait(false);
+                File.Move(staging, destination, false);
+                staging = null;
+                string sha256;
+                await using (var stream = new FileStream(destination, FileMode.Open, FileAccess.Read, FileShare.Read,
+                                 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
+                    sha256 = Convert.ToHexString(await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false)).ToLowerInvariant();
+                await store.AppendProviderEventAsync(sessionId, "harness/artifactCreated", JsonSerializer.Serialize(new
+                {
+                    providerId = connection.Id,
+                    providerFileId = artifact.ProviderFileId,
+                    providerContainerId = artifact.ContainerId,
+                    displayName = filename,
+                    storedPath = destination,
+                    mediaType = reportedMediaType ?? downloaded.MediaType,
+                    byteLength = downloaded.ByteLength,
+                    sha256
+                }), cancellationToken).ConfigureAwait(false);
+                paths.Add(destination);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+                                               or ArgumentException or InvalidOperationException)
+            {
+                failures.Add($"Could not save {SafeArtifactName(artifact.FileName, "generated file")}: {exception.Message}");
+            }
+            finally
+            {
+                if (staging is not null)
+                {
+                    try { File.Delete(staging); }
+                    catch (IOException) { }
+                    catch (UnauthorizedAccessException) { }
+                }
+            }
+        }
+        if (artifacts.Count > 20) failures.Add($"The provider returned {artifacts.Count:N0} files; this turn retained the first 20.");
+        return new(paths, failures);
+    }
+
+    private static string SafeArtifactName(string requestedName, string fallback)
+    {
+        var name = Path.GetFileName(requestedName.Trim());
+        if (string.IsNullOrWhiteSpace(name)) name = Path.GetFileName(fallback.Trim());
+        if (string.IsNullOrWhiteSpace(name)) name = "generated-file";
+        var invalid = Path.GetInvalidFileNameChars().ToHashSet();
+        name = new string(name.Select(character => invalid.Contains(character) || char.IsControl(character) ? '_' : character).ToArray()).Trim();
+        if (name.Length > 160)
+        {
+            var extension = Path.GetExtension(name);
+            if (extension.Length > 16) extension = "";
+            var stem = Path.GetFileNameWithoutExtension(name);
+            var stemLength = Math.Max(1, 160 - extension.Length);
+            name = stem[..Math.Min(stemLength, stem.Length)] + extension;
+        }
+        return string.IsNullOrWhiteSpace(name) ? "generated-file" : name;
+    }
+
+    private static string SafePathSegment(string value)
+    {
+        var cleaned = new string(value.Where(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_').ToArray());
+        return string.IsNullOrWhiteSpace(cleaned) ? "session" : cleaned[..Math.Min(80, cleaned.Length)];
+    }
+
+    private static string UniqueArtifactPath(string root, string filename)
+    {
+        var candidate = Path.Combine(root, filename);
+        if (!File.Exists(candidate)) return candidate;
+        var stem = Path.GetFileNameWithoutExtension(filename);
+        var extension = Path.GetExtension(filename);
+        for (var suffix = 2; suffix <= 1000; suffix++)
+        {
+            candidate = Path.Combine(root, $"{stem}-{suffix}{extension}");
+            if (!File.Exists(candidate)) return candidate;
+        }
+        throw new IOException("The generated-file destination contains too many files with the same name.");
+    }
+
     private async Task<Dictionary<string, string>> ReadApiDiffsAsync(string workspace, CancellationToken cancellationToken)
     {
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -306,4 +466,6 @@ public sealed partial class MainWindow
             return accepted;
         });
     }
+
+    private sealed record ApiArtifactDownloadResult(IReadOnlyList<string> Paths, IReadOnlyList<string> Failures);
 }

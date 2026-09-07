@@ -34,7 +34,7 @@ var fixtures = new Dictionary<string, string>
 {
     ["openai-api"] = Events(
         """{"type":"response.output_text.delta","delta":"I’m working."}""",
-        """{"type":"response.completed","response":{"output":[{"type":"reasoning","id":"r1","encrypted_content":"opaque-signed-state","summary":[]},{"type":"function_call","id":"i1","call_id":"c1","name":"read_file","arguments":"{\"path\":\"a.txt\"}"}],"usage":{"input_tokens":123,"output_tokens":8}}}"""),
+        """{"type":"response.completed","response":{"output":[{"type":"reasoning","id":"r1","encrypted_content":"opaque-signed-state","summary":[]},{"type":"message","id":"m1","role":"assistant","content":[{"type":"output_text","text":"I’m working.","annotations":[{"type":"container_file_citation","container_id":"cntr_fixture","file_id":"cfile_fixture","filename":"report.pdf"}]}]},{"type":"function_call","id":"i1","call_id":"c1","name":"read_file","arguments":"{\"path\":\"a.txt\"}"}],"usage":{"input_tokens":123,"output_tokens":8}}}"""),
     ["anthropic-api"] = Events(
         """{"type":"message_start","message":{"usage":{"input_tokens":23,"cache_read_input_tokens":90,"cache_creation_input_tokens":10}}}""",
         """{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}""",
@@ -45,6 +45,7 @@ var fixtures = new Dictionary<string, string>
         """{"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"c1","name":"read_file","input":{}}}""",
         """{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}""",
         """{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"\"a.txt\"}"}}""",
+        """{"type":"content_block_start","index":3,"content_block":{"type":"bash_code_execution_tool_result","tool_use_id":"srvtoolu_fixture","content":{"type":"bash_code_execution_result","content":[{"type":"bash_code_execution_output","file_id":"file_fixture"}]}}}""",
         """{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":8}}""",
         """{"type":"message_stop"}"""),
     ["gemini-api"] = Events(
@@ -65,6 +66,13 @@ foreach (var (provider, fixture) in fixtures)
     var descriptor = new ModelDescriptor(connection.Id, "provider-reported-fixture-model", "Fixture", ModelCapability.Text | ModelCapability.ToolUse | ModelCapability.Reasoning,
         ReasoningLevels: [new("custom-effort", "Custom effort")]);
     var model = new ApiModel(descriptor, new JsonObject(), false, 8192, provider == "anthropic-api");
+    if (provider == "anthropic-api")
+        model = model with
+        {
+            Descriptor = model.Descriptor with
+            { Capabilities = model.Descriptor.Capabilities | ModelCapability.GeneratedArtifacts },
+            HostedArtifactsEnabled = true
+        };
     var history = new JsonArray();
     await client.AddUserAsync(model, history, "Inspect a.txt", [], default);
     var text = new StringBuilder();
@@ -72,6 +80,16 @@ foreach (var (provider, fixture) in fixtures)
         delta => { text.Append(delta); return Task.CompletedTask; }, default);
     Check(text.ToString() == "I’m working.", $"{provider}: text/reasoning separation or Unicode failed.");
     Check(result.InputTokens == 123 && result.OutputTokens == 8, $"{provider}: usage aggregation failed.");
+    if (provider == "anthropic-api")
+    {
+        Check(result.CacheReadInputTokens == 90 && result.CacheWriteInputTokens == 10,
+            "Anthropic cache hit/write telemetry was not retained.");
+        Check(result.Artifacts is [{ ProviderFileId: "file_fixture" }],
+            "Anthropic generated-file output was not retained as a generated artifact.");
+    }
+    if (provider == "openai-api")
+        Check(result.Artifacts is [{ ProviderFileId: "cfile_fixture", ContainerId: "cntr_fixture", FileName: "report.pdf" }],
+            "OpenAI container-file citation was not retained as a generated artifact.");
     Check(result.Calls.Count == 1 && result.Calls[0].Arguments == "{\"path\":\"a.txt\"}", $"{provider}: tool argument assembly failed.");
     client.AddToolResults(history, [(result.Calls[0], "File contents")]);
     // A serialization round trip is the same boundary used for durable native session state.
@@ -86,6 +104,11 @@ foreach (var (provider, fixture) in fixtures)
     var credentialHeader = provider switch { "anthropic-api" => "x-api-key", "gemini-api" => "x-goog-api-key", _ => "Authorization" };
     Check(handler.Headers.ContainsKey(credentialHeader) && handler.Headers.Count(pair => pair.Value.Contains("fixture-key-not-a-secret", StringComparison.Ordinal)) == 1,
         $"{provider}: incorrect credential header routing.");
+    if (provider == "anthropic-api")
+        Check(handler.Headers.TryGetValue("anthropic-beta", out var betas)
+              && betas.Contains("code-execution-2025-08-25", StringComparison.Ordinal)
+              && betas.Contains("files-api-2025-04-14", StringComparison.Ordinal),
+            "Anthropic hosted artifacts did not request the required native beta contracts.");
     if (provider == "gemini-api") Check(history.Last()?["parts"]?[0]?["functionResponse"]?["id"]?.GetValue<string>() == "c1", "Gemini function ID lost.");
 }
 
@@ -95,23 +118,24 @@ Check(discovered.Descriptor.ReasoningLevels!.Single().Id == "brand-new-level", "
 Check(discovered.Descriptor.Supports(ModelCapability.Vision | ModelCapability.PdfInput | ModelCapability.StructuredOutput
       | ModelCapability.Citations | ModelCapability.ContextManagement)
       && discovered.AdaptiveThinking && discovered.Descriptor.ContextWindow == 456789, "Reported capabilities lost.");
-var conformance = ApiCapabilityConformance.Evaluate(discovered);
-Check(conformance.Ready.Contains(ModelCapability.Vision) && conformance.Ready.Contains(ModelCapability.Reasoning),
+var conformance = ApiCapabilityConformance.Evaluate(anthropic, discovered);
+Check(conformance.Ready.Contains(ModelCapability.Vision) && conformance.Ready.Contains(ModelCapability.Reasoning)
+      && conformance.Ready.Contains(ModelCapability.PdfInput),
     "Implemented reported capabilities were not marked ready.");
-Check(conformance.AdapterGaps.Contains(ModelCapability.PdfInput)
-      && conformance.AdapterGaps.Contains(ModelCapability.StructuredOutput)
+Check(conformance.AdapterGaps.Contains(ModelCapability.StructuredOutput)
       && conformance.AdapterGaps.Contains(ModelCapability.Citations)
       && conformance.AdapterGaps.Contains(ModelCapability.ContextManagement),
     "Reported adapter gaps were incorrectly advertised as ready.");
 var unknown = ApiModelCatalog.Parse(Connection("openai-api"), Obj("""{"id":"unclassified-model"}"""))!;
 Check(!unknown.CapabilityMetadataReported && unknown.Descriptor.Capabilities == ModelCapability.Text && unknown.Descriptor.ReasoningLevels!.Count == 0, "Unreported capabilities were invented.");
-Check(ApiCapabilityConformance.Evaluate(unknown).Findings.Single(finding => finding.Capability == ModelCapability.Vision).State == ApiCapabilityState.Unknown,
+Check(ApiCapabilityConformance.Evaluate(Connection("openai-api"), unknown).Findings.Single(finding => finding.Capability == ModelCapability.Vision).State == ApiCapabilityState.Unknown,
     "Missing catalog metadata was treated as proof that vision is unsupported.");
 var mistral = ApiModelCatalog.Parse(Connection("mistral-api"), Obj("""{"id":"fixture","capabilities":{"completion_chat":true,"function_calling":true,"vision":true},"max_model_len":32000}"""))!;
 Check(mistral.Descriptor.Supports(ModelCapability.ToolUse | ModelCapability.Vision), "Mistral metadata not applied.");
-var parameterized = ApiModelCatalog.Parse(Connection("local-api"), Obj("""{"id":"fixture","input_modalities":["text","image","audio","video","pdf"],"output_modalities":["text","audio"],"supported_parameters":["tools","reasoning_effort","response_format","prompt_cache_key"]}"""))!;
+var parameterized = ApiModelCatalog.Parse(Connection("local-api"), Obj("""{"id":"fixture","input_modalities":["text","image","audio","video","pdf"],"output_modalities":["text","audio","file"],"supported_parameters":["tools","reasoning_effort","response_format","prompt_cache_key"]}"""))!;
 Check(parameterized.Descriptor.Supports(ModelCapability.Vision | ModelCapability.AudioInput | ModelCapability.AudioOutput
-      | ModelCapability.VideoInput | ModelCapability.PdfInput | ModelCapability.ToolUse | ModelCapability.StructuredOutput | ModelCapability.PromptCaching),
+      | ModelCapability.VideoInput | ModelCapability.PdfInput | ModelCapability.ToolUse | ModelCapability.StructuredOutput
+      | ModelCapability.PromptCaching | ModelCapability.GeneratedArtifacts),
     "OpenAI-compatible reported parameters or modalities were lost.");
 Check(ApiModelCatalog.Parse(Connection("gemini-api"), Obj("""{"name":"models/embedding","supportedGenerationMethods":["embedContent"]}""")) is null, "Embedding model appeared as a chat model.");
 
@@ -150,6 +174,51 @@ var strictModel = discovered with { Descriptor = discovered.Descriptor with
     ServiceTiers = [new("priority", "Fast")]
 }};
 ApiCapabilityConformance.ValidateTurn(anthropic, strictModel, "low", "priority", ApiWorkspaceTools.Definitions);
+var cachedAnthropic = strictModel with
+{
+    Descriptor = strictModel.Descriptor with { Capabilities = strictModel.Descriptor.Capabilities | ModelCapability.PromptCaching },
+    PromptCachingEnabled = true
+};
+using (var transport = new ApiTransport(anthropic, "fixture", new FixtureHandler("")))
+{
+    var cacheRequest = new ApiConversationClient(anthropic, transport).BuildRequest(cachedAnthropic, [], "Stable instructions", "low", null, []);
+    Check(cacheRequest["cache_control"]?["type"]?.GetValue<string>() == "ephemeral",
+        "Opt-in Anthropic prompt caching did not use the native top-level cache control.");
+}
+var openAiArtifactModel = unknown with
+{
+    Descriptor = unknown.Descriptor with { Capabilities = ModelCapability.Text | ModelCapability.GeneratedArtifacts },
+    HostedArtifactsEnabled = true
+};
+using (var transport = new ApiTransport(Connection("openai-api"), "fixture", new FixtureHandler("")))
+{
+    var artifactRequest = new ApiConversationClient(Connection("openai-api"), transport)
+        .BuildRequest(openAiArtifactModel, [], "Create the requested document", null, null, []);
+    Check(artifactRequest["tools"] is JsonArray hostedTools
+          && hostedTools.OfType<JsonObject>().Any(tool => tool["type"]?.GetValue<string>() == "code_interpreter")
+          && artifactRequest["include"] is JsonArray includes
+          && includes.OfType<JsonValue>().Any(value => value.GetValue<string>() == "code_interpreter_call.outputs"),
+        "OpenAI hosted artifact opt-in did not request native code-interpreter outputs.");
+    Check(ApiCapabilityConformance.Evaluate(Connection("openai-api"), openAiArtifactModel).Ready.Contains(ModelCapability.GeneratedArtifacts),
+        "OpenAI hosted artifacts were not marked adapter-ready after explicit model verification.");
+}
+var anthropicArtifactModel = strictModel with
+{
+    Descriptor = strictModel.Descriptor with
+    { Capabilities = strictModel.Descriptor.Capabilities | ModelCapability.GeneratedArtifacts },
+    HostedArtifactsEnabled = true
+};
+using (var transport = new ApiTransport(anthropic, "fixture", new FixtureHandler("")))
+{
+    var artifactRequest = new ApiConversationClient(anthropic, transport)
+        .BuildRequest(anthropicArtifactModel, [], "Create the requested document", "low", null, []);
+    Check(artifactRequest["tools"] is JsonArray hostedTools
+          && hostedTools.OfType<JsonObject>().Any(tool => tool["type"]?.GetValue<string>() == "code_execution_20250825"
+                                                       && tool["name"]?.GetValue<string>() == "code_execution"),
+        "Anthropic hosted artifact opt-in did not request native code execution.");
+    Check(ApiCapabilityConformance.Evaluate(anthropic, anthropicArtifactModel).Ready.Contains(ModelCapability.GeneratedArtifacts),
+        "Anthropic hosted artifacts were not marked adapter-ready after explicit model verification.");
+}
 foreach (var invalid in new Action[]
 {
     () => ApiCapabilityConformance.ValidateTurn(anthropic, strictModel, "invented", "priority", []),
@@ -163,8 +232,11 @@ foreach (var invalid in new Action[]
 }
 try
 {
-    ApiCapabilityConformance.ValidateAttachment(discovered, new FilePart("fixture.pdf", "application/pdf"));
-    throw new Exception("Unimplemented PDF delivery was advertised as ready.");
+    var unsupportedAudio = discovered with { Descriptor = discovered.Descriptor with
+    { Capabilities = discovered.Descriptor.Capabilities | ModelCapability.AudioInput } };
+    ApiCapabilityConformance.ValidateAttachment(anthropic, unsupportedAudio,
+        new FilePart("fixture.wav", "audio/wav"));
+    throw new Exception("Unimplemented Anthropic audio delivery was advertised as ready.");
 }
 catch (InvalidOperationException exception)
 {
@@ -205,6 +277,80 @@ Check(new ApiConnection("fixture", "ollama-local", "Fixture", "http://localhost:
 
 var testRoot = Path.Combine(Environment.CurrentDirectory, ".artifacts", "api-check", Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(testRoot);
+var pdfPath = Path.Combine(testRoot, "reference.pdf");
+var audioPath = Path.Combine(testRoot, "reference.wav");
+var videoPath = Path.Combine(testRoot, "reference.mp4");
+await File.WriteAllBytesAsync(pdfPath, "%PDF-1.7 fixture"u8.ToArray());
+await File.WriteAllBytesAsync(audioPath, "RIFF fixture"u8.ToArray());
+await File.WriteAllBytesAsync(videoPath, "video fixture"u8.ToArray());
+var generatedDownloadPath = Path.Combine(testRoot, "provider-report.pdf");
+using (var transport = new ApiTransport(Connection("openai-api"), "fixture",
+           new FixtureHandler("%PDF-1.7 generated fixture")))
+{
+    var download = await transport.DownloadToFileAsync(
+        "containers/cntr_fixture/files/cfile_fixture/content", generatedDownloadPath, 1024 * 1024, default);
+    Check(download.ByteLength > 0 && await File.ReadAllTextAsync(generatedDownloadPath) == "%PDF-1.7 generated fixture",
+        "Provider artifact download did not retain the returned bytes.");
+}
+var anthropicGeneratedDownloadPath = Path.Combine(testRoot, "anthropic-report.docx");
+var anthropicArtifactHandler = new FixtureHandler("", json: true, pages:
+[
+    """{"id":"file_fixture","filename":"anthropic-report.docx","mime_type":"application/vnd.openxmlformats-officedocument.wordprocessingml.document","downloadable":true}""",
+    "anthropic generated fixture"
+]);
+using (var transport = new ApiTransport(anthropic, "fixture", anthropicArtifactHandler))
+{
+    var metadata = await transport.GetAsync("files/file_fixture", default, ["files-api-2025-04-14"]);
+    var download = await transport.DownloadToFileAsync("files/file_fixture/content",
+        anthropicGeneratedDownloadPath, 1024 * 1024, default, ["files-api-2025-04-14"]);
+    Check(metadata["filename"]?.GetValue<string>() == "anthropic-report.docx"
+          && download.ByteLength > 0
+          && await File.ReadAllTextAsync(anthropicGeneratedDownloadPath) == "anthropic generated fixture",
+        "Anthropic artifact metadata/download did not retain the provider filename and bytes.");
+    Check(anthropicArtifactHandler.Headers.TryGetValue("anthropic-beta", out var artifactBetas)
+          && artifactBetas.Contains("files-api-2025-04-14", StringComparison.Ordinal),
+        "Anthropic file download omitted the Files API beta contract.");
+}
+
+var openAiPdfHistory = new JsonArray();
+var openAiPdfModel = unknown with { Descriptor = unknown.Descriptor with { Capabilities = ModelCapability.Text | ModelCapability.PdfInput } };
+using (var transport = new ApiTransport(Connection("openai-api"), "fixture", new FixtureHandler("")))
+{
+    await new ApiConversationClient(Connection("openai-api"), transport).AddUserAsync(openAiPdfModel, openAiPdfHistory,
+        "Inspect the PDF", [new FilePart(pdfPath, "application/pdf", "reference.pdf")], default);
+}
+var openAiPdf = openAiPdfHistory[0]!["content"]![1]!;
+Check(openAiPdf["type"]!.GetValue<string>() == "input_file"
+      && openAiPdf["filename"]!.GetValue<string>() == "reference.pdf"
+      && openAiPdf["file_data"]!.GetValue<string>().StartsWith("data:application/pdf;base64,", StringComparison.Ordinal),
+    "OpenAI Responses PDF input did not use a native input_file block.");
+
+var anthropicPdfHistory = new JsonArray();
+var anthropicPdfModel = discovered with { Descriptor = discovered.Descriptor with { Capabilities = discovered.Descriptor.Capabilities | ModelCapability.PdfInput } };
+using (var transport = new ApiTransport(anthropic, "fixture", new FixtureHandler("")))
+{
+    await new ApiConversationClient(anthropic, transport).AddUserAsync(anthropicPdfModel, anthropicPdfHistory,
+        "Inspect the PDF", [new FilePart(pdfPath, "application/pdf", "reference.pdf")], default);
+}
+var anthropicPdf = anthropicPdfHistory[0]!["content"]![1]!;
+Check(anthropicPdf["type"]!.GetValue<string>() == "document"
+      && anthropicPdf["source"]!["media_type"]!.GetValue<string>() == "application/pdf",
+    "Anthropic PDF input did not use a native document block.");
+
+var geminiMediaHistory = new JsonArray();
+var geminiConnection = Connection("gemini-api");
+var geminiMediaModel = new ApiModel(new ModelDescriptor(geminiConnection.Id, "fixture", "Fixture",
+    ModelCapability.Text | ModelCapability.PdfInput | ModelCapability.AudioInput | ModelCapability.VideoInput), new JsonObject(), true, null, false);
+using (var transport = new ApiTransport(geminiConnection, "fixture", new FixtureHandler("")))
+{
+    await new ApiConversationClient(geminiConnection, transport).AddUserAsync(geminiMediaModel, geminiMediaHistory,
+        "Inspect these files", [new FilePart(pdfPath, "application/pdf"), new FilePart(audioPath, "audio/wav"), new FilePart(videoPath, "video/mp4")], default);
+}
+var geminiParts = geminiMediaHistory[0]!["parts"]!.AsArray();
+Check(geminiParts.Skip(1).Select(part => part!["inlineData"]!["mimeType"]!.GetValue<string>())
+        .SequenceEqual(["application/pdf", "audio/wav", "video/mp4"]),
+    "Gemini PDF/audio/video input did not use native inlineData blocks.");
+
 var identityRoot = Path.Combine(testRoot, "identity-store");
 var identityStore = new SubscriptionIdentityStore(identityRoot);
 var primaryIdentities = await identityStore.LoadAsync();
@@ -325,6 +471,9 @@ await using (var portableSourceStore = new Harness.Storage.HarnessStore(portable
     Directory.CreateDirectory(portableSourceRoot);
     await File.WriteAllTextAsync(contextSource, "portable context");
     await portableSourceStore.AddAttachmentAsync(portableSessionId, contextSource);
+    var portableArtifact = Path.Combine(portableSourceRoot, "data", "artifacts", portableSessionId, "report.pdf");
+    Directory.CreateDirectory(Path.GetDirectoryName(portableArtifact)!);
+    await File.WriteAllTextAsync(portableArtifact, "%PDF portable artifact");
     var portableSkill = new SkillCatalogEntry(
         "portable-skill", "portable-skill", "Portable backup fixture", "Testing", "fixture/skills",
         "skills/portable-skill/SKILL.md", "fixture-revision", "https://example.invalid/portable-skill",
@@ -399,6 +548,7 @@ await using (var restoredStore = new Harness.Storage.HarnessStore(portableTarget
           && restoredSession.Attachments.Count == 1
           && restoredSession.Attachments[0].StoredPath.StartsWith(Path.Combine(portableTargetRoot, "data"), StringComparison.OrdinalIgnoreCase)
           && await File.ReadAllTextAsync(restoredSession.Attachments[0].StoredPath) == "portable context"
+          && await File.ReadAllTextAsync(Path.Combine(portableTargetRoot, "data", "artifacts", portableSessionId, "report.pdf")) == "%PDF portable artifact"
           && restoredGlobalSkill.Enabled
           && restoredGlobalSkill.InstallPath.StartsWith(portableTargetSkills, StringComparison.OrdinalIgnoreCase)
           && File.Exists(Path.Combine(restoredGlobalSkill.InstallPath, "SKILL.md"))
@@ -516,6 +666,12 @@ var uiThread = new Thread(() =>
         Check(settings.FindControl<TextBox>("ApiKey")!.PasswordChar != '\0', "API key input is not masked.");
         Check(settings.FindControl<Button>("ApiDetectLocalButton") is not null,
             "Native local-runtime discovery is missing from Providers settings.");
+        Check(settings.FindControl<CheckBox>("ApiModelPdf") is not null
+              && settings.FindControl<CheckBox>("ApiModelAudio") is not null
+              && settings.FindControl<CheckBox>("ApiModelVideo") is not null
+              && settings.FindControl<CheckBox>("ApiModelCaching") is not null
+              && settings.FindControl<CheckBox>("ApiModelHostedArtifacts") is not null,
+            "Per-model PDF/audio/video/cache/hosted-artifact controls are missing from Providers settings.");
         Check(settings.FindControl<Border>("CodexConnectionPanel") is not null
             && settings.FindControl<Button>("CodexSignInButton") is not null
             && settings.FindControl<Button>("CodexSignOutButton") is not null
@@ -575,7 +731,7 @@ var uiThread = new Thread(() =>
 });
 uiThread.Start(); uiThread.Join();
 if (uiFailure is not null) throw uiFailure;
-Console.WriteLine("API checks passed: four native wire formats, native Ollama/llama.cpp discovery, capability conformance/preflight, reasoning/tool replay, Unicode, usage, pagination, unknown capabilities, failure handling, credential routing, approval boundaries, catalog merging, isolated subscription profiles and handoff UI, portable backup round-trip, unsafe-archive rejection, delayed PowerShell Write-Host plus rendered terminal output, and Providers UI. No live API calls made.");
+Console.WriteLine("API checks passed: four native wire formats, native PDF/audio/video inputs, opt-in prompt caching and cache telemetry, OpenAI and Anthropic hosted-artifact request/citation/download handling, native Ollama/llama.cpp discovery, capability conformance/preflight, reasoning/tool replay, Unicode, usage, pagination, unknown capabilities, failure handling, credential routing, approval boundaries, catalog merging, isolated subscription profiles and handoff UI, portable backup round-trip, unsafe-archive rejection, delayed PowerShell Write-Host plus rendered terminal output, and Providers UI. No live API calls made.");
 
 sealed class FixtureHandler(string content, bool json = false, string[]? pages = null, HttpStatusCode status = HttpStatusCode.OK) : HttpMessageHandler
 {

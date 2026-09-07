@@ -51,9 +51,10 @@ capability/content contracts:
   connected provider's model descriptor, with provider-confirmed effective
   settings shown in the inspector;
 - a stable turn-attachment menu for image, video, and text/code: native image
-  delivery for vision-capable Codex models, native file references for text and
-  code, removable multi-file chips, and visible disabled rows for modalities the
-  connected runtime cannot accept;
+  delivery for vision-capable Codex models, native PDF delivery for OpenAI,
+  Anthropic, and Gemini APIs, native Gemini audio/video input, native file
+  references for text and code, removable multi-file chips, and visible disabled
+  rows for modalities the connected model/adapter cannot accept;
 - generated-image links rendered as durable inline previews with open and
   copy-path actions;
 - rolling and weekly usage-window surfaces backed by authenticated runtime data;
@@ -66,6 +67,12 @@ capability/content contracts:
   task without merging quotas or spending the source account on a summary;
 - provider-neutral model-picker preferences for visibility, favorites, and
   ordering, retained across catalog refreshes, restarts, and provider reconnects;
+- opt-in, per-model Anthropic prompt caching with native cache-read/write token
+  telemetry in Activity rather than estimated savings;
+- opt-in OpenAI Responses and Anthropic hosted artifact generation: native
+  code-execution output references are downloaded with bounded atomic writes,
+  retained in Harness data, backed up, and delivered as clickable local file
+  links;
 - a shared direct-API conformance layer that keeps provider-reported capability
   metadata separate from Harness adapter readiness, enables only their verified
   intersection, and rejects stale models or unsupported tools, attachments,

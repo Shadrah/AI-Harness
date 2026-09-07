@@ -1097,7 +1097,26 @@ public sealed partial class MainWindow : Window
             "Attach videos to this turn",
             new FilePickerFileType("Videos")
             {
-                Patterns = ["*.mp4", "*.mov", "*.webm", "*.mkv", "*.avi", "*.m4v"]
+                Patterns = ["*.mp4", "*.mov", "*.webm", "*.avi", "*.m4v"]
+            });
+    }
+
+    private async void AttachPdf_OnClick(object? sender, RoutedEventArgs e)
+    {
+        await AttachTurnFilesAsync(
+            "pdf",
+            "Attach PDFs to this turn",
+            new FilePickerFileType("PDF documents") { Patterns = ["*.pdf"] });
+    }
+
+    private async void AttachAudio_OnClick(object? sender, RoutedEventArgs e)
+    {
+        await AttachTurnFilesAsync(
+            "audio",
+            "Attach audio to this turn",
+            new FilePickerFileType("Audio")
+            {
+                Patterns = ["*.mp3", "*.wav", "*.m4a", "*.ogg", "*.flac", "*.aac"]
             });
     }
 

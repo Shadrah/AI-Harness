@@ -374,7 +374,13 @@ public sealed partial class SettingsWindow
         if (ApiModelPicker.SelectedItem is not ApiModel model) return;
         var descriptor = model.Descriptor;
         var overridden = _savedApiConnections.FirstOrDefault(saved => saved.Connection.Id == _editingApiConnection)?.Models.Any(config => config.ModelId == descriptor.ModelId) == true;
-        var report = ApiCapabilityConformance.Evaluate(model);
+        var connection = _savedApiConnections.FirstOrDefault(saved => saved.Connection.Id == _editingApiConnection)?.Connection;
+        if (connection is null)
+        {
+            ApiModelMetadataStatus.Text = "The selected provider connection is no longer available.";
+            return;
+        }
+        var report = ApiCapabilityConformance.Evaluate(connection, model);
         var ready = string.Join(", ", report.Ready.Select(ApiCapabilityConformance.Name));
         var gaps = string.Join(", ", report.AdapterGaps.Select(ApiCapabilityConformance.Name));
         var source = overridden ? "Using your explicit model override."
@@ -384,6 +390,11 @@ public sealed partial class SettingsWindow
             + (gaps.Length == 0 ? "" : $" Reported but not implemented yet: {gaps}.");
         ApiModelTools.IsChecked = descriptor.Supports(ModelCapability.ToolUse);
         ApiModelImages.IsChecked = descriptor.Supports(ModelCapability.Vision);
+        ApiModelAudio.IsChecked = descriptor.Supports(ModelCapability.AudioInput);
+        ApiModelVideo.IsChecked = descriptor.Supports(ModelCapability.VideoInput);
+        ApiModelPdf.IsChecked = descriptor.Supports(ModelCapability.PdfInput);
+        ApiModelCaching.IsChecked = model.PromptCachingEnabled;
+        ApiModelHostedArtifacts.IsChecked = model.HostedArtifactsEnabled;
         ApiModelContext.Text = descriptor.ContextWindow?.ToString() ?? "";
         ApiModelReasoning.Text = string.Join(", ", descriptor.ReasoningLevels?.Select(level => level.Id) ?? []);
         ApiModelTiers.Text = string.Join(", ", descriptor.ServiceTiers?.Select(tier => tier.Id).OfType<string>() ?? []);
@@ -402,8 +413,16 @@ public sealed partial class SettingsWindow
             if (!string.IsNullOrWhiteSpace(ApiModelContext.Text))
                 limit = int.TryParse(ApiModelContext.Text, out var parsed) && parsed > 0 ? parsed : throw new InvalidOperationException("Context limit must be a positive whole number.");
             var configurations = saved.Models.Where(config => config.ModelId != model.Descriptor.ModelId).ToList();
+            if (!reset && ApiModelCaching.IsChecked == true
+                && (ApiCapabilityConformance.ImplementedFor(saved.Connection.Definition.Protocol) & ModelCapability.PromptCaching) == 0)
+                throw new InvalidOperationException("Automatic prompt caching is not implemented for this provider adapter yet.");
+            if (!reset && ApiModelHostedArtifacts.IsChecked == true
+                && (ApiCapabilityConformance.ImplementedFor(saved.Connection) & ModelCapability.GeneratedArtifacts) == 0)
+                throw new InvalidOperationException("Provider-hosted artifact generation is not implemented for this connection yet.");
             if (!reset) configurations.Add(new(model.Descriptor.ModelId, ApiModelTools.IsChecked == true, ApiModelImages.IsChecked == true,
-                limit, Values(ApiModelReasoning.Text), Values(ApiModelTiers.Text)));
+                limit, Values(ApiModelReasoning.Text), Values(ApiModelTiers.Text), ApiModelAudio.IsChecked == true,
+                ApiModelVideo.IsChecked == true, ApiModelPdf.IsChecked == true, ApiModelCaching.IsChecked == true,
+                ApiModelHostedArtifacts.IsChecked == true));
             await Task.Run(() => _apiStore.SaveAsync(saved with { Models = configurations }, null, _lifetime.Token), _lifetime.Token);
             await LoadApiConnectionsAsync();
             if (_apiConnectionsChanged is not null) await _apiConnectionsChanged();
