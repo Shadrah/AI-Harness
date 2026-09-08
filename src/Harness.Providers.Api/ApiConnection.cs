@@ -101,9 +101,10 @@ public sealed class ApiTransport : IDisposable
         return await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task<JsonObject> PostJsonAsync(string path, JsonNode body, CancellationToken cancellationToken)
+    public async Task<JsonObject> PostJsonAsync(string path, JsonNode body, CancellationToken cancellationToken,
+        IReadOnlyList<string>? betaFeatures = null)
     {
-        using var response = await SendAsync(path, body, cancellationToken).ConfigureAwait(false);
+        using var response = await SendAsync(path, body, cancellationToken, betaFeatures).ConfigureAwait(false);
         return await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
     }
 

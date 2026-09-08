@@ -202,6 +202,114 @@ using (var transport = new ApiTransport(Connection("openai-api"), "fixture", new
     Check(ApiCapabilityConformance.Evaluate(Connection("openai-api"), openAiArtifactModel).Ready.Contains(ModelCapability.GeneratedArtifacts),
         "OpenAI hosted artifacts were not marked adapter-ready after explicit model verification.");
 }
+var openAiCompactionModel = unknown with
+{
+    Descriptor = unknown.Descriptor with
+    {
+        Capabilities = ModelCapability.Text | ModelCapability.ContextManagement,
+        ServiceTiers = [new("priority", "Fast")]
+    },
+    ContextManagementEnabled = true
+};
+var compactHandler = new RouteFixtureHandler(async request =>
+{
+    Check(request.RequestUri!.AbsolutePath == "/v1/responses/compact",
+        "OpenAI compaction used the wrong endpoint.");
+    var requestBody = JsonNode.Parse(await request.Content!.ReadAsStringAsync())!.AsObject();
+    Check(requestBody["model"]?.GetValue<string>() == "unclassified-model"
+          && requestBody["input"] is JsonArray { Count: 2 }
+          && requestBody["instructions"]?.GetValue<string>() == "Stable instructions"
+          && requestBody["service_tier"]?.GetValue<string>() == "priority",
+        "OpenAI compaction did not preserve model, native history, instructions, or service tier.");
+    return """{"id":"cmp_fixture","object":"response.compaction","output":[{"id":"msg_fixture","type":"message","role":"user","status":"completed","content":[{"type":"input_text","text":"Continue the task"}]},{"id":"cmp_item_fixture","type":"compaction","encrypted_content":"opaque-compacted-state"}],"usage":{"input_tokens":800,"output_tokens":120,"total_tokens":920}}""";
+});
+using (var transport = new ApiTransport(Connection("openai-api"), "fixture", compactHandler))
+{
+    var compacted = await new ApiConversationClient(Connection("openai-api"), transport).CompactAsync(
+        openAiCompactionModel,
+        new JsonArray(new JsonObject { ["role"] = "user", ["content"] = "Continue the task" },
+            new JsonObject { ["type"] = "message", ["role"] = "assistant", ["content"] = new JsonArray() }),
+        "Stable instructions", "priority", default);
+    Check(compacted.History.Count == 2
+          && compacted.History[1]?["type"]?.GetValue<string>() == "compaction"
+          && compacted.History[1]?["encrypted_content"]?.GetValue<string>() == "opaque-compacted-state"
+          && compacted.TotalTokens == 920,
+        "OpenAI native compaction state or usage was not retained.");
+    Check(ApiCapabilityConformance.Evaluate(Connection("openai-api"), openAiCompactionModel).Ready.Contains(ModelCapability.ContextManagement),
+        "OpenAI native compaction was not marked adapter-ready after explicit model verification.");
+}
+
+var openAiCountHandler = new RouteFixtureHandler(async request =>
+{
+    Check(request.RequestUri!.AbsolutePath == "/v1/responses/input_tokens",
+        "OpenAI input counting used the wrong endpoint.");
+    var body = JsonNode.Parse(await request.Content!.ReadAsStringAsync())!.AsObject();
+    Check(body["model"]?.GetValue<string>() == "unclassified-model"
+          && body["input"] is JsonArray { Count: 1 }
+          && body["instructions"]?.GetValue<string>() == "Stable instructions"
+          && body["stream"] is null && body["store"] is null && body["include"] is null
+          && body["service_tier"] is null,
+        "OpenAI preflight did not preserve the countable request or remove generation-only fields.");
+    return """{"object":"response.input_tokens","input_tokens":321}""";
+});
+using (var transport = new ApiTransport(Connection("openai-api"), "fixture", openAiCountHandler))
+{
+    var count = await new ApiConversationClient(Connection("openai-api"), transport).CountInputTokensAsync(
+        openAiCompactionModel, new JsonArray(new JsonObject { ["role"] = "user", ["content"] = "Count this" }),
+        "Stable instructions", null, "priority", [], default);
+    Check(count.InputTokens == 321, "OpenAI provider-reported input count was not retained.");
+}
+
+var anthropicCountHandler = new RouteFixtureHandler(async request =>
+{
+    Check(request.RequestUri!.AbsolutePath == "/v1/messages/count_tokens",
+        "Anthropic input counting used the wrong endpoint.");
+    var body = JsonNode.Parse(await request.Content!.ReadAsStringAsync())!.AsObject();
+    Check(body["model"]?.GetValue<string>() == "future-model"
+          && body["messages"] is JsonArray { Count: 1 }
+          && body["system"]?.GetValue<string>() == "Stable instructions"
+          && body["output_config"]?["effort"]?.GetValue<string>() == "low"
+          && body["tools"] is JsonArray { Count: > 0 }
+          && body["stream"] is null && body["max_tokens"] is null,
+        "Anthropic preflight was not the same native message, system, reasoning, and tool request.");
+    return """{"input_tokens":654}""";
+});
+using (var transport = new ApiTransport(anthropic, "fixture", anthropicCountHandler))
+{
+    var count = await new ApiConversationClient(anthropic, transport).CountInputTokensAsync(
+        strictModel, new JsonArray(new JsonObject { ["role"] = "user", ["content"] = "Count this" }),
+        "Stable instructions", "low", null, ApiWorkspaceTools.Definitions, default);
+    Check(count.InputTokens == 654, "Anthropic provider-reported input count was not retained.");
+}
+
+var geminiCountConnection = Connection("gemini-api");
+var geminiCountModel = new ApiModel(new ModelDescriptor(geminiCountConnection.Id, "gemini-fixture", "Gemini fixture",
+    ModelCapability.Text | ModelCapability.ToolUse | ModelCapability.Reasoning,
+    ReasoningLevels: [new("high", "High")]), new JsonObject(), false, 8192, false);
+var geminiCountHandler = new RouteFixtureHandler(async request =>
+{
+    Check(request.RequestUri!.AbsolutePath == "/v1beta/models/gemini-fixture:countTokens",
+        "Gemini input counting used the wrong endpoint.");
+    var body = JsonNode.Parse(await request.Content!.ReadAsStringAsync())!.AsObject();
+    var generation = body["generateContentRequest"]?.AsObject();
+    Check(body.Count == 1 && generation?["model"]?.GetValue<string>() == "models/gemini-fixture"
+          && generation["contents"] is JsonArray { Count: 1 }
+          && generation["systemInstruction"]?["parts"] is JsonArray { Count: 1 }
+          && generation["generationConfig"]?["thinkingConfig"]?["thinkingLevel"]?.GetValue<string>() == "high"
+          && generation["tools"] is JsonArray { Count: > 0 },
+        "Gemini preflight did not wrap the full native generation request.");
+    return """{"totalTokens":987,"promptTokensDetails":[{"modality":"TEXT","tokenCount":987}]}""";
+});
+using (var transport = new ApiTransport(geminiCountConnection, "fixture", geminiCountHandler))
+{
+    var count = await new ApiConversationClient(geminiCountConnection, transport).CountInputTokensAsync(
+        geminiCountModel, new JsonArray(new JsonObject { ["role"] = "user", ["parts"] = new JsonArray(new JsonObject { ["text"] = "Count this" }) }),
+        "Stable instructions", "high", null, ApiWorkspaceTools.Definitions, default);
+    Check(count.InputTokens == 987, "Gemini provider-reported input count was not retained.");
+}
+Check(!ApiConversationClient.SupportsInputTokenCounting(Connection("openrouter-api")),
+    "A generic compatible endpoint was incorrectly advertised as having a native count contract.");
+
 var anthropicArtifactModel = strictModel with
 {
     Descriptor = strictModel.Descriptor with
@@ -648,7 +756,16 @@ var uiThread = new Thread(() =>
         Check(vm.SelectedReasoningLevel?.Id == "", "API catalog silently selected a reasoning level instead of provider default.");
         vm.ApplyApiUsage(12, 3, 1000, 500);
         Check(vm.ContextUsagePercent == 2.4 && vm.UsageWindows.Count == 0, "API throughput confused with context or subscription limits.");
-        vm.PromptText = "fixture"; vm.BeginTurn(); vm.CompleteTurn("Fixture API failure");
+        vm.SetContextCountSupport(true);
+        vm.ApplyApiContextPreview(250, 500);
+        Check(vm.CanCheckContext && vm.ContextUsagePercent == 50
+              && vm.ContextWindowStatus.Contains("provider preflight", StringComparison.Ordinal),
+            "Provider preflight was not presented as pending context.");
+        vm.PromptText = "fixture";
+        Check(vm.ContextUsagePercent == 2.4
+              && !vm.ContextWindowStatus.Contains("provider preflight", StringComparison.Ordinal),
+            "Editing the pending request did not invalidate its provider count.");
+        vm.BeginTurn(); vm.CompleteTurn("Fixture API failure");
         Check(vm.Messages.Any(message => message.Text.Contains("Fixture API failure", StringComparison.Ordinal)), "API error hidden from chat.");
         var settings = new SettingsWindow(usePreviewData: true) { Width = 1300, Height = 850 };
         ((SettingsWindowViewModel)settings.DataContext!).SetModelPreferences([
@@ -670,8 +787,9 @@ var uiThread = new Thread(() =>
               && settings.FindControl<CheckBox>("ApiModelAudio") is not null
               && settings.FindControl<CheckBox>("ApiModelVideo") is not null
               && settings.FindControl<CheckBox>("ApiModelCaching") is not null
-              && settings.FindControl<CheckBox>("ApiModelHostedArtifacts") is not null,
-            "Per-model PDF/audio/video/cache/hosted-artifact controls are missing from Providers settings.");
+              && settings.FindControl<CheckBox>("ApiModelHostedArtifacts") is not null
+              && settings.FindControl<CheckBox>("ApiModelContextManagement") is not null,
+            "Per-model PDF/audio/video/cache/hosted-artifact/context controls are missing from Providers settings.");
         Check(settings.FindControl<Border>("CodexConnectionPanel") is not null
             && settings.FindControl<Button>("CodexSignInButton") is not null
             && settings.FindControl<Button>("CodexSignOutButton") is not null
@@ -731,7 +849,7 @@ var uiThread = new Thread(() =>
 });
 uiThread.Start(); uiThread.Join();
 if (uiFailure is not null) throw uiFailure;
-Console.WriteLine("API checks passed: four native wire formats, native PDF/audio/video inputs, opt-in prompt caching and cache telemetry, OpenAI and Anthropic hosted-artifact request/citation/download handling, native Ollama/llama.cpp discovery, capability conformance/preflight, reasoning/tool replay, Unicode, usage, pagination, unknown capabilities, failure handling, credential routing, approval boundaries, catalog merging, isolated subscription profiles and handoff UI, portable backup round-trip, unsafe-archive rejection, delayed PowerShell Write-Host plus rendered terminal output, and Providers UI. No live API calls made.");
+Console.WriteLine("API checks passed: four native wire formats, provider-native OpenAI/Anthropic/Gemini input-token preflight, native PDF/audio/video inputs, opt-in prompt caching and cache telemetry, OpenAI native context compaction, OpenAI and Anthropic hosted-artifact request/citation/download handling, native Ollama/llama.cpp discovery, capability conformance/preflight, reasoning/tool replay, Unicode, usage, pagination, unknown capabilities, failure handling, credential routing, approval boundaries, catalog merging, isolated subscription profiles and handoff UI, portable backup round-trip, unsafe-archive rejection, delayed PowerShell Write-Host plus rendered terminal output, and Providers UI. No live API calls made.");
 
 sealed class FixtureHandler(string content, bool json = false, string[]? pages = null, HttpStatusCode status = HttpStatusCode.OK) : HttpMessageHandler
 {

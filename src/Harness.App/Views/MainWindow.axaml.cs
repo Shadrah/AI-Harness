@@ -67,7 +67,7 @@ public sealed partial class MainWindow : Window
     private Task? _startupTask;
     private Task? _skillWarmTask;
     private Task? _usageRefreshTask;
-    private string? _usageProviderId;
+    private string? _usageSelectionKey;
     private Task<CrashRecoveryNotice?>? _diagnosticsStartupTask;
     private ProviderUsageSnapshot? _pendingHandoffUsage;
     private string? _activeHandoffNoticeKey;
@@ -346,15 +346,30 @@ public sealed partial class MainWindow : Window
         ViewModel.AddActivity("PERMISSIONS", selected.Description, selected.Id == "full" ? "#E2A84A" : "#65C7D0");
     }
 
-    private void SessionModelSetting_OnChanged(object? sender, SelectionChangedEventArgs e)
+    private async void SessionModelSetting_OnChanged(object? sender, SelectionChangedEventArgs e)
     {
         if (_applyingProviderModels) return;
+        RefreshApiContextCountAvailability();
         var providerId = ViewModel.SelectedModel?.ProviderId;
-        if (_usageProviderId != providerId)
+        var usageSelectionKey = $"{_activeSession?.Id}\n{providerId}\n{ViewModel.SelectedModel?.ModelName}";
+        if (_usageSelectionKey != usageSelectionKey)
         {
-            _usageProviderId = providerId;
+            _usageSelectionKey = usageSelectionKey;
             if (providerId?.StartsWith("api-", StringComparison.Ordinal) == true)
-                ViewModel.ApplyApiUsage(null, null, null, FindSelectedApiModel()?.Descriptor.ContextWindow);
+            {
+                if (FindSelectedApiModel() is { } apiModel)
+                {
+                    try { await RestoreSelectedApiUsageAsync(apiModel, _lifetime.Token); }
+                    catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+                    catch (Exception exception)
+                    {
+                        ViewModel.ApplyApiUsage(null, null, null, apiModel.Descriptor.ContextWindow);
+                        ViewModel.AddActivity("CONTEXT", $"Saved context telemetry could not be restored: {CleanError(exception)}", "#E2A84A");
+                    }
+                }
+                else
+                    ViewModel.ApplyApiUsage(null, null, null, null);
+            }
             else _ = RefreshUsageAsync();
         }
         QueueSessionModelSettingsPersistence();
@@ -3100,7 +3115,7 @@ public sealed partial class MainWindow : Window
             {
                 ViewModel.ApplyProviderModels(client.Id, models, "OpenAI Codex", client.Runtime.SourceLabel);
                 if (restoreSavedModel && _activeSession is not null) ViewModel.ApplySessionModelSettings(_activeSession);
-                _usageProviderId = ViewModel.SelectedModel?.ProviderId;
+                _usageSelectionKey = null;
             }
             finally { _applyingProviderModels = false; }
         });

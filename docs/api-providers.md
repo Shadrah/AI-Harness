@@ -79,6 +79,11 @@ consumer subscriptions are not silently treated as API credits either.
 - Provider-reported input/output tokens, with latest input separated from
   cumulative processed tokens. Unknown account quotas and context limits remain
   unknown; no simulated five-hour/weekly meters for API connections.
+- Explicit pending-request context checks use each provider's native count
+  endpoint for OpenAI Responses, Anthropic Messages, and Gemini GenerateContent.
+  The exact request includes instructions, tools, native history, and supported
+  attachments; edits immediately invalidate the result. Generic compatible
+  endpoints stay unknown because there is no common count contract.
 - Per-model, opt-in Anthropic automatic prompt caching using the native five-minute
   cache control. Cache-read and cache-write token counts come from provider usage
   events and are recorded in Activity; Harness does not estimate cache hits.
@@ -88,6 +93,11 @@ consumer subscriptions are not silently treated as API credits either.
   through the authenticated provider endpoint, uses atomic local writes, retains
   hashes and provider IDs in the native event stream, and adds clickable local
   links. Harness does not render or synthesize PDF, DOCX, or HTML itself.
+- Per-model, opt-in OpenAI Responses native compaction. After a completed
+  client-tool loop reaches 85% of the provider-reported context window, Harness
+  calls `/responses/compact`, validates the returned compaction item, replaces
+  only the native continuation history, records provider usage and item counts,
+  and persists the result across restarts. Failure retains the previous history.
 - Current Git working-tree diffs for changed dirty files (up to 100 files).
   These may include pre-existing edits, and are labeled accordingly.
 - No automatic billable retries or replay of interrupted tool calls. An interrupted
@@ -100,7 +110,7 @@ consumer subscriptions are not silently treated as API credits either.
   limited API keys, stream interruptions, reasoning variants, and quota failures.
 - Native audio/video delivery for non-Gemini protocols, image generation, hosted
   search/computer tools, generated-file downloads for other protocols, citations,
-  provider-native compaction, and additional
+  provider-native compaction for other protocols, and additional
   sampling/budget controls. These are not advertised as working capabilities in
   the new adapter.
 - Prompt-cache controls for non-Anthropic protocols, manual token-budget thinking
@@ -111,7 +121,7 @@ consumer subscriptions are not silently treated as API credits either.
   bounded client-tool loop (40 requests per turn, 2-minute command timeout,
   24 MiB serialized request safety limit), not Codex's execution environment.
 - API Skills Library activation/discovery, non-Git file-change snapshots, exact
-  turn-only diffs across shell operations, context preflight and compaction, and
+  turn-only diffs across shell operations, and
   cross-platform OS credential vaults. Skill installation currently targets Codex.
 - Stream-error details with safe structured redaction. HTTP failures currently
   report status and remediation without dumping potentially sensitive response
@@ -131,6 +141,7 @@ query plans and timings, never message contents or credentials.
 
 This uses synthetic in-memory HTTP responses, never real credentials or model
 calls. It covers four wire formats, native PDF/audio/video payloads,
+provider-native OpenAI/Anthropic/Gemini input-token preflight,
 native Ollama/llama.cpp discovery,
 native-state replay, model metadata/pagination,
 model/adapter conformance and request preflight,
@@ -138,6 +149,9 @@ tool approval boundaries, credential routing failures, Unicode, usage separation
 catalog coexistence, and a headless Providers settings preview.
 
 Contract references: [OpenAI Responses](https://developers.openai.com/api/reference/cli/resources/responses/methods/create),
+[OpenAI input-token counts](https://developers.openai.com/api/reference/typescript/resources/responses/subresources/input_tokens/methods/count),
+[Anthropic token counts](https://platform.claude.com/docs/en/api/http/messages/count_tokens),
+[Gemini token counts](https://ai.google.dev/api/tokens),
 [Anthropic models](https://platform.claude.com/docs/en/api/http/models),
 [Gemini models](https://ai.google.dev/api/models),
 [xAI models](https://docs.x.ai/developers/rest-api-reference/inference/models),

@@ -187,16 +187,26 @@ latest input-token footprint as active context occupancy and keeps cumulative
 thread throughput separate; treating the cumulative counter as occupancy can
 incorrectly fill the meter after only a few turns. The active value is compared
 with the provider-reported model context window, with no guessed per-model limit
-table. At the configured safety threshold, the adapter
-requests the provider's native thread compaction so its continuation summary and
-tool state remain protocol-compatible.
+table. Before sending, the user can explicitly ask OpenAI Responses, Anthropic
+Messages, or Gemini GenerateContent to count the exact pending native request,
+including current instructions, tools, history, and supported attachments. The
+provider result is labeled as a pending-request preflight and is invalidated by
+any composition or model-setting change. Compatible APIs without a documented
+count endpoint remain unknown rather than receiving a local estimate. Counting,
+serialization, credential access, and context-file reads stay off the UI thread.
+At the configured safety threshold, the Codex runtime requests native
+thread compaction. An explicitly enabled OpenAI Responses model uses
+`POST /responses/compact` and replaces its saved native history only after a
+valid opaque compaction item is returned. The prior history survives a rejected,
+cancelled, or malformed compaction response. Compaction usage and item counts are
+auditable events; opaque provider state is never rewritten by Harness.
 
 Turn attachments are capability-gated without changing the menu's structure.
-Image, Video, and Text or code remain visible in a fixed order; unsupported
-modalities are disabled with the provider/runtime reason. Images use native
-visual input, text and code use native file mentions, and video is enabled only
-for an adapter whose runtime protocol explicitly exposes video input. Harness
-does not reinterpret an unsupported video as text or silently extract frames.
+Image, PDF, Audio, Video, and Text or code remain visible in a fixed order;
+unsupported modalities are disabled with the provider/runtime reason. Each file
+uses the selected adapter's native input block, and video is enabled only for an
+adapter whose runtime protocol explicitly exposes video input. Harness does not
+reinterpret unsupported media as text or silently extract frames.
 
 Detected history is grouped by source harness and normalized project path before
 the user chooses anything. A project import opens or creates that Harness

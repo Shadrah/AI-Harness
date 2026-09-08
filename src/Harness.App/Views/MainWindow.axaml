@@ -444,6 +444,11 @@
                 </Grid>
                 <ProgressBar Minimum="0" Maximum="100" Value="{Binding ContextUsagePercent}" Height="4" Foreground="#65C7D0" Background="#29313C" />
                 <TextBlock Text="{Binding ContextWindowStatus}" Classes="muted" FontSize="9" TextWrapping="Wrap" />
+                <Button Content="{Binding ContextCheckLabel}"
+                        HorizontalAlignment="Stretch"
+                        IsEnabled="{Binding CanCheckContext}"
+                        Click="CheckContext_OnClick"
+                        ToolTip.Tip="{Binding ContextCheckToolTip}" />
                 <TextBlock Text="ATTACHED FILES" Classes="micro" FontSize="8" Margin="0,5,0,0" />
                 <TextBlock Text="No context files are attached to this session."
                            IsVisible="{Binding !HasContextFiles}"

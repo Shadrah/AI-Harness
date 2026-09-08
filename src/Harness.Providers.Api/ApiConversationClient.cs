@@ -12,12 +12,21 @@ public sealed record ApiGeneratedArtifact(string ProviderFileId, string FileName
 public sealed record ApiReply(IReadOnlyList<ApiToolCall> Calls, long? InputTokens, long? OutputTokens, string? StopReason,
     long? CacheReadInputTokens = null, long? CacheWriteInputTokens = null,
     IReadOnlyList<ApiGeneratedArtifact>? Artifacts = null);
+public sealed record ApiCompaction(JsonArray History, long? InputTokens, long? OutputTokens, long? TotalTokens);
+public sealed record ApiInputTokenCount(long InputTokens);
 
 /// <summary>Provider-native state, including signed/encrypted reasoning and tool-call IDs, is kept intact.
 /// No account credentials or HTTP headers belong in this state.</summary>
 public sealed class ApiConversationClient(ApiConnection connection, ApiTransport transport)
 {
     private ApiProtocol Protocol => connection.Definition.Protocol;
+
+    public static bool SupportsInputTokenCounting(ApiConnection candidate) => candidate.Definition.Protocol switch
+    {
+        ApiProtocol.Responses => candidate.ProviderId == "openai-api",
+        ApiProtocol.Anthropic or ApiProtocol.Gemini => true,
+        _ => false
+    };
 
     public async Task AddUserAsync(ApiModel model, JsonArray history, string text, IReadOnlyList<FilePart> files, CancellationToken cancellationToken)
     {
@@ -385,6 +394,86 @@ public sealed class ApiConversationClient(ApiConnection connection, ApiTransport
         if (definitions.Count > 0) body["tools"] = Protocol == ApiProtocol.Gemini
             ? new JsonArray(new JsonObject { ["functionDeclarations"] = definitions }) : definitions;
         return body;
+    }
+
+    /// <summary>Counts the exact provider-native request without creating a model response.
+    /// Providers without a documented count contract remain unsupported rather than estimated.</summary>
+    public async Task<ApiInputTokenCount> CountInputTokensAsync(ApiModel model, JsonArray history, string instructions,
+        string? effort, string? tier, IReadOnlyList<ApiTool> tools, CancellationToken cancellationToken)
+    {
+        if (!SupportsInputTokenCounting(connection))
+            throw new InvalidOperationException("This provider does not expose a native input-token count contract to Harness.");
+        if (history.Count == 0) throw new InvalidOperationException("There is no provider context to count.");
+
+        var request = BuildRequest(model, history, instructions, effort, tier, tools);
+        string path;
+        IReadOnlyList<string>? betaFeatures = null;
+        switch (Protocol)
+        {
+            case ApiProtocol.Responses:
+                path = "responses/input_tokens";
+                request.Remove("stream");
+                request.Remove("store");
+                request.Remove("include");
+                request.Remove("service_tier");
+                break;
+            case ApiProtocol.Anthropic:
+                path = "messages/count_tokens";
+                request.Remove("stream");
+                request.Remove("max_tokens");
+                request.Remove("service_tier");
+                betaFeatures = model.HostedArtifactsEnabled
+                    ? new[] { "code-execution-2025-08-25", "files-api-2025-04-14" }
+                    : null;
+                break;
+            case ApiProtocol.Gemini:
+                path = $"models/{Uri.EscapeDataString(model.Descriptor.ModelId)}:countTokens";
+                request["model"] = $"models/{model.Descriptor.ModelId}";
+                request = new JsonObject { ["generateContentRequest"] = request };
+                break;
+            default:
+                throw new InvalidOperationException("This provider does not expose a native input-token count contract to Harness.");
+        }
+
+        var response = await transport.PostJsonAsync(path, request, cancellationToken, betaFeatures).ConfigureAwait(false);
+        var tokens = Protocol switch
+        {
+            ApiProtocol.Responses when ApiModelCatalog.Text(response, "object") == "response.input_tokens"
+                => Long(response, "input_tokens"),
+            ApiProtocol.Anthropic => Long(response, "input_tokens"),
+            ApiProtocol.Gemini => Long(response, "totalTokens"),
+            _ => null
+        };
+        if (tokens is null or < 0)
+            throw new IOException($"{connection.Name} returned an invalid input-token count.");
+        return new ApiInputTokenCount(tokens.Value);
+    }
+
+    public async Task<ApiCompaction> CompactAsync(ApiModel model, JsonArray history, string instructions,
+        string? tier, CancellationToken cancellationToken)
+    {
+        if (Protocol != ApiProtocol.Responses || connection.ProviderId != "openai-api")
+            throw new InvalidOperationException("This connection does not implement provider-native context compaction.");
+        if (!model.ContextManagementEnabled)
+            throw new InvalidOperationException("Native context compaction is not enabled for this model.");
+        ApiCapabilityConformance.ValidateTurn(connection, model, null, tier, []);
+        if (history.Count == 0) throw new InvalidOperationException("There is no provider history to compact.");
+
+        var body = new JsonObject
+        {
+            ["model"] = model.Descriptor.ModelId,
+            ["input"] = history.DeepClone(),
+            ["instructions"] = instructions
+        };
+        if (tier is not null) body["service_tier"] = tier;
+        var response = await transport.PostJsonAsync("responses/compact", body, cancellationToken).ConfigureAwait(false);
+        if (ApiModelCatalog.Text(response, "object") != "response.compaction"
+            || response["output"] is not JsonArray output
+            || !output.OfType<JsonObject>().Any(item => ApiModelCatalog.Text(item, "type") == "compaction"))
+            throw new IOException("OpenAI returned an invalid compaction response; the existing context was retained.");
+        var compacted = output.DeepClone().AsArray();
+        var usage = response["usage"];
+        return new(compacted, Long(usage, "input_tokens"), Long(usage, "output_tokens"), Long(usage, "total_tokens"));
     }
 
     private static IReadOnlyList<ApiGeneratedArtifact> ExtractOpenAiArtifacts(JsonArray output)

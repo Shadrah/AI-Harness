@@ -5,11 +5,11 @@ namespace Harness.Providers.Api;
 
 public sealed record ApiModelConfiguration(string ModelId, bool Tools, bool Images, int? ContextWindow,
     string[] ReasoningLevels, string[] ServiceTiers, bool Audio = false, bool Video = false, bool Pdf = false,
-    bool PromptCaching = false, bool HostedArtifacts = false);
+    bool PromptCaching = false, bool HostedArtifacts = false, bool ContextManagement = false);
 
 public sealed record ApiModel(ModelDescriptor Descriptor, JsonObject Metadata, bool CapabilityMetadataReported,
     int? MaxOutputTokens, bool AdaptiveThinking, IReadOnlySet<ModelCapability>? ReportedCapabilityFields = null,
-    bool PromptCachingEnabled = false, bool HostedArtifactsEnabled = false)
+    bool PromptCachingEnabled = false, bool HostedArtifactsEnabled = false, bool ContextManagementEnabled = false)
 {
     public override string ToString() => Descriptor.DisplayName;
 }
@@ -64,18 +64,19 @@ public static class ApiModelCatalog
             caps = config.Pdf ? caps | ModelCapability.PdfInput : caps & ~ModelCapability.PdfInput;
             if (config.PromptCaching) caps |= ModelCapability.PromptCaching;
             caps = config.HostedArtifacts ? caps | ModelCapability.GeneratedArtifacts : caps & ~ModelCapability.GeneratedArtifacts;
+            caps = config.ContextManagement ? caps | ModelCapability.ContextManagement : caps & ~ModelCapability.ContextManagement;
             caps = config.ReasoningLevels.Length > 0 ? caps | ModelCapability.Reasoning : caps & ~ModelCapability.Reasoning;
             var reportedFields = (model.ReportedCapabilityFields ?? new HashSet<ModelCapability>()).ToHashSet();
             reportedFields.UnionWith([ModelCapability.Text, ModelCapability.ToolUse, ModelCapability.Vision,
                 ModelCapability.AudioInput, ModelCapability.VideoInput, ModelCapability.PdfInput,
-                ModelCapability.Reasoning, ModelCapability.GeneratedArtifacts]);
+                ModelCapability.Reasoning, ModelCapability.GeneratedArtifacts, ModelCapability.ContextManagement]);
             models[config.ModelId] = model with { Descriptor = model.Descriptor with
             {
                 Capabilities = caps, ContextWindow = config.ContextWindow ?? model.Descriptor.ContextWindow,
                 ReasoningLevels = config.ReasoningLevels.Select(id => new ReasoningLevelDescriptor(id, id, "User-configured API value")).ToArray(),
                 ServiceTiers = config.ServiceTiers.Select(id => new ServiceTierDescriptor(id, id, "User-configured API value")).ToArray()
             }, ReportedCapabilityFields = reportedFields, PromptCachingEnabled = config.PromptCaching,
-                HostedArtifactsEnabled = config.HostedArtifacts };
+                HostedArtifactsEnabled = config.HostedArtifacts, ContextManagementEnabled = config.ContextManagement };
         }
         return models.Values.OrderBy(model => model.Descriptor.DisplayName, StringComparer.OrdinalIgnoreCase).ToArray();
     }

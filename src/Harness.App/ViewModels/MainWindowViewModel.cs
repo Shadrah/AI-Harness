@@ -21,6 +21,9 @@ public sealed class MainWindowViewModel : ObservableObject
     private long? _cumulativeTokens;
     private long? _contextWindowTokens;
     private bool _isCompactingContext;
+    private long? _preflightContextTokens;
+    private bool _isCheckingContext;
+    private bool _contextCountSupported;
     private long? _lastCompactionTokenTotal;
     private readonly Dictionary<string, ChatMessageItem> _streamingAssistantMessages = [];
     private string _workspacePath;
@@ -287,6 +290,7 @@ public sealed class MainWindowViewModel : ObservableObject
     public void ApplyApplicationSettings(HarnessApplicationSettings settings)
     {
         _applicationSettings = settings;
+        ClearContextPreview();
         ShowActivityTrace = settings.ShowActivityTrace;
         ShowUsageInspector = settings.ShowUsageInspector;
         ShowContextInspector = settings.ShowContextInspector;
@@ -331,6 +335,7 @@ public sealed class MainWindowViewModel : ObservableObject
             SelectedReasoningLevel = value is null ? null : GetDefaultReasoningLevel(value);
             SelectedServiceTier = value is null ? null : GetDefaultServiceTier(value);
             RefreshCapabilities();
+            ClearContextPreview();
             RaisePropertyChanged(nameof(CanSend));
         }
     }
@@ -342,6 +347,7 @@ public sealed class MainWindowViewModel : ObservableObject
         {
             if (SetProperty(ref _selectedReasoningLevel, value))
             {
+                ClearContextPreview();
                 _effectiveReasoning = "PENDING NEXT TURN";
                 RaisePropertyChanged(nameof(ModelSettingsStatus));
             }
@@ -355,6 +361,7 @@ public sealed class MainWindowViewModel : ObservableObject
         {
             if (SetProperty(ref _selectedServiceTier, value))
             {
+                ClearContextPreview();
                 _effectiveServiceTier = "PENDING NEXT TURN";
                 RaisePropertyChanged(nameof(ModelSettingsStatus));
             }
@@ -368,6 +375,7 @@ public sealed class MainWindowViewModel : ObservableObject
         {
             if (SetProperty(ref _promptText, value))
             {
+                ClearContextPreview();
                 RaisePropertyChanged(nameof(CanSend));
             }
         }
@@ -390,6 +398,7 @@ public sealed class MainWindowViewModel : ObservableObject
                 RaisePropertyChanged(nameof(CanAttachAudio));
                 RaisePropertyChanged(nameof(CanAttachVideo));
                 RaisePropertyChanged(nameof(CanAttachText));
+                RaisePropertyChanged(nameof(CanCheckContext));
             }
         }
     }
@@ -474,16 +483,22 @@ public sealed class MainWindowViewModel : ObservableObject
     public string RuntimeActionLabel => IsInstallingRuntime
         ? "UPDATING RUNTIME…"
         : "INSTALL / UPDATE CODEX RUNTIME";
-    public string TokenStatus => _activeContextTokens is { } tokens
+    public string TokenStatus => (_preflightContextTokens ?? _activeContextTokens) is { } tokens
         ? _contextWindowTokens is { } window && window > 0
             ? $"CONTEXT  {Math.Clamp(tokens * 100d / window, 0, 100):0}% · {tokens:N0} / {window:N0}"
             : $"CONTEXT  {tokens:N0} / LIMIT NOT REPORTED"
         : "CONTEXT  —";
-    public double ContextUsagePercent => _activeContextTokens is { } tokens
+    public double ContextUsagePercent => (_preflightContextTokens ?? _activeContextTokens) is { } tokens
         && _contextWindowTokens is { } window && window > 0
             ? Math.Clamp(tokens * 100d / window, 0, 100)
             : 0;
-    public string ContextWindowStatus => _isCompactingContext
+    public string ContextWindowStatus => _isCheckingContext
+        ? "Asking the provider to count the pending native request…"
+        : _preflightContextTokens is { } preview
+            ? _contextWindowTokens is { } previewWindow && previewWindow > 0
+                ? $"Pending request {preview:N0} of {previewWindow:N0} · {Math.Max(0, previewWindow - preview):N0} available · provider preflight"
+                : $"Pending request {preview:N0} input tokens · provider preflight · context limit not reported"
+        : _isCompactingContext
         ? "Compaction requested · waiting for the provider to publish the smaller context"
         : _activeContextTokens is { } tokens && _contextWindowTokens is { } window && window > 0
             ? $"Active input {tokens:N0} of {window:N0} · {Math.Max(0, window - tokens):N0} available"
@@ -491,6 +506,11 @@ public sealed class MainWindowViewModel : ObservableObject
             : "The provider has not reported this session's context limit yet.";
     public bool HasContextWindow => _contextWindowTokens is > 0;
     public bool IsContextCompacting => _isCompactingContext;
+    public bool CanCheckContext => _contextCountSupported && !IsRunning && !_isCheckingContext;
+    public string ContextCheckLabel => _isCheckingContext ? "CHECKING…" : "CHECK CONTEXT";
+    public string ContextCheckToolTip => _contextCountSupported
+        ? "Ask the provider to count the exact pending request without generating a response"
+        : "The selected runtime has not exposed a native input-token count contract to Harness";
     public string TurnDiff => _turnDiff;
     public bool HasTurnDiff => !string.IsNullOrWhiteSpace(_turnDiff);
     public string ModelSettingsStatus
@@ -582,12 +602,51 @@ public sealed class MainWindowViewModel : ObservableObject
     {
         UsageWindows.Clear();
         UsageStatus = "API · TOKEN USAGE";
-        UsageDetail = input is null ? "No usage reported yet. Subscription limits and account balance are not exposed by this API."
+        UsageDetail = input is null
+            ? cumulative is > 0
+                ? "Native context was compacted. The provider will report the active input size on the next request; account quota is not exposed by this API."
+                : "No usage reported yet. Subscription limits and account balance are not exposed by this API."
             : $"Last request: {input:N0} input · {(output is null ? "unknown" : output.Value.ToString("N0"))} output tokens. Account quota not reported.";
         ShowAuthenticationAction = false;
+        _preflightContextTokens = null;
         _activeContextTokens = input; _cumulativeTokens = cumulative; _contextWindowTokens = limit;
         RaisePropertyChanged(nameof(TokenStatus)); RaisePropertyChanged(nameof(ContextUsagePercent));
         RaisePropertyChanged(nameof(ContextWindowStatus)); RaisePropertyChanged(nameof(HasContextWindow));
+    }
+
+    public void SetContextCountSupport(bool supported)
+    {
+        _contextCountSupported = supported;
+        if (!supported) ClearContextPreview();
+        RaisePropertyChanged(nameof(CanCheckContext));
+        RaisePropertyChanged(nameof(ContextCheckToolTip));
+    }
+
+    public void SetContextCounting(bool active)
+    {
+        _isCheckingContext = active;
+        RaisePropertyChanged(nameof(CanCheckContext));
+        RaisePropertyChanged(nameof(ContextCheckLabel));
+        RaisePropertyChanged(nameof(ContextWindowStatus));
+    }
+
+    public void ApplyApiContextPreview(long inputTokens, int? contextWindow)
+    {
+        _preflightContextTokens = inputTokens;
+        if (contextWindow is > 0) _contextWindowTokens = contextWindow;
+        RaisePropertyChanged(nameof(TokenStatus));
+        RaisePropertyChanged(nameof(ContextUsagePercent));
+        RaisePropertyChanged(nameof(ContextWindowStatus));
+        RaisePropertyChanged(nameof(HasContextWindow));
+    }
+
+    private void ClearContextPreview()
+    {
+        if (_preflightContextTokens is null) return;
+        _preflightContextTokens = null;
+        RaisePropertyChanged(nameof(TokenStatus));
+        RaisePropertyChanged(nameof(ContextUsagePercent));
+        RaisePropertyChanged(nameof(ContextWindowStatus));
     }
 
     public void SetApiSettingsSubmitted()
@@ -680,6 +739,8 @@ public sealed class MainWindowViewModel : ObservableObject
         _cumulativeTokens = null;
         _contextWindowTokens = null;
         _isCompactingContext = false;
+        _preflightContextTokens = null;
+        _isCheckingContext = false;
         _lastCompactionTokenTotal = null;
         TurnActivityStatus = "READY";
         ClearTurnAttachments();
@@ -687,6 +748,8 @@ public sealed class MainWindowViewModel : ObservableObject
         RaisePropertyChanged(nameof(ContextUsagePercent));
         RaisePropertyChanged(nameof(ContextWindowStatus));
         RaisePropertyChanged(nameof(HasContextWindow));
+        RaisePropertyChanged(nameof(CanCheckContext));
+        RaisePropertyChanged(nameof(ContextCheckLabel));
         ConversationRestored?.Invoke(this, EventArgs.Empty);
     }
 
@@ -709,6 +772,7 @@ public sealed class MainWindowViewModel : ObservableObject
         }
 
         ContextFiles.Add(ContextFileItem.FromStored(attachment));
+        ClearContextPreview();
         RaisePropertyChanged(nameof(HasContextFiles));
         RaisePropertyChanged(nameof(ContextStatus));
         AddActivity("CONTEXT", $"Attached {attachment.DisplayName}", "#65C7D0");
@@ -723,6 +787,7 @@ public sealed class MainWindowViewModel : ObservableObject
         }
 
         ContextFiles.Remove(item);
+        ClearContextPreview();
         RaisePropertyChanged(nameof(HasContextFiles));
         RaisePropertyChanged(nameof(ContextStatus));
         AddActivity("CONTEXT", $"Detached {item.DisplayName}", "#8993A3");
@@ -882,6 +947,7 @@ public sealed class MainWindowViewModel : ObservableObject
 
     private void RaiseTurnAttachmentProperties()
     {
+        ClearContextPreview();
         RaisePropertyChanged(nameof(HasTurnAttachments));
         RaisePropertyChanged(nameof(HasUnsupportedTurnAttachments));
         RaisePropertyChanged(nameof(ShowAttachmentWarning));
@@ -922,6 +988,8 @@ public sealed class MainWindowViewModel : ObservableObject
         _cumulativeTokens = null;
         _contextWindowTokens = null;
         _isCompactingContext = false;
+        _preflightContextTokens = null;
+        _isCheckingContext = false;
         _lastCompactionTokenTotal = null;
         TurnActivityStatus = "READY";
         ClearTurnAttachments();
@@ -932,6 +1000,8 @@ public sealed class MainWindowViewModel : ObservableObject
         RaisePropertyChanged(nameof(ContextUsagePercent));
         RaisePropertyChanged(nameof(ContextWindowStatus));
         RaisePropertyChanged(nameof(HasContextWindow));
+        RaisePropertyChanged(nameof(CanCheckContext));
+        RaisePropertyChanged(nameof(ContextCheckLabel));
     }
 
     private void ClearMessages()
@@ -1288,6 +1358,7 @@ public sealed class MainWindowViewModel : ObservableObject
         long? cumulativeTokens,
         long? contextWindowTokens = null)
     {
+        _preflightContextTokens = null;
         if (activeContextTokens is > 0) _activeContextTokens = activeContextTokens;
         if (cumulativeTokens is >= 0) _cumulativeTokens = cumulativeTokens;
         if (contextWindowTokens is > 0) _contextWindowTokens = contextWindowTokens;

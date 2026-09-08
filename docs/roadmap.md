@@ -31,6 +31,8 @@ driver without keeping that driver installed?
   and turn configuration.
 - Active context occupancy is separated from cumulative provider throughput;
   chat streams auto-follow and expose a compact turn-level working phase.
+  OpenAI Responses, Anthropic Messages, and Gemini expose explicit native
+  pending-request token preflight; providers without a count contract remain unknown.
 - Loss-aware transcript import for Markdown, text, JSON, and JSONL with preview,
   normalized durable messages, provenance, and a retained source copy.
 - Installed-history detection for Codex and Claude Code, including selectable
@@ -63,8 +65,10 @@ driver without keeping that driver installed?
   controls from being sent. Offline fixtures cover current streaming, vision,
   tools, reasoning, metadata, native PDF delivery, Gemini audio/video input, and
   opt-in Anthropic prompt caching with provider-reported cache telemetry, OpenAI
-  and Anthropic hosted artifact references/downloads, plus native-state paths across four wire
-  formats.
+  and Anthropic hosted artifact references/downloads, opt-in OpenAI Responses
+  native compaction with restart-safe usage state, provider-native OpenAI,
+  Anthropic, and Gemini input-token preflight, plus native-state paths across four
+  wire formats.
 - Complete the adapters and conformance fixtures for streaming, vision,
   tools, reasoning controls, structured output, caching, audio, and generated
   artifacts wherever the provider exposes them.

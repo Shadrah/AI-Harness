@@ -99,7 +99,9 @@ public static class ApiCapabilityConformance
     public static ModelCapability ImplementedFor(ApiConnection connection) =>
         ImplementedFor(connection.Definition.Protocol)
         | (connection.ProviderId is "openai-api" or "anthropic-api"
-            ? ModelCapability.GeneratedArtifacts : ModelCapability.None);
+            ? ModelCapability.GeneratedArtifacts : ModelCapability.None)
+        | (connection.ProviderId == "openai-api"
+            ? ModelCapability.ContextManagement : ModelCapability.None);
 
     public static string Name(ModelCapability capability) => capability switch
     {
@@ -147,6 +149,8 @@ public static class ApiCapabilityConformance
             RequireReady(connection, model, ModelCapability.PromptCaching, "automatic prompt caching");
         if (model.HostedArtifactsEnabled)
             RequireReady(connection, model, ModelCapability.GeneratedArtifacts, "provider-hosted artifact generation");
+        if (model.ContextManagementEnabled)
+            RequireReady(connection, model, ModelCapability.ContextManagement, "provider-native context compaction");
     }
 
     public static void ValidateAttachment(ApiConnection connection, ApiModel model, FilePart file)

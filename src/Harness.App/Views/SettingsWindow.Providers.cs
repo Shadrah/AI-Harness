@@ -395,6 +395,7 @@ public sealed partial class SettingsWindow
         ApiModelPdf.IsChecked = descriptor.Supports(ModelCapability.PdfInput);
         ApiModelCaching.IsChecked = model.PromptCachingEnabled;
         ApiModelHostedArtifacts.IsChecked = model.HostedArtifactsEnabled;
+        ApiModelContextManagement.IsChecked = model.ContextManagementEnabled;
         ApiModelContext.Text = descriptor.ContextWindow?.ToString() ?? "";
         ApiModelReasoning.Text = string.Join(", ", descriptor.ReasoningLevels?.Select(level => level.Id) ?? []);
         ApiModelTiers.Text = string.Join(", ", descriptor.ServiceTiers?.Select(tier => tier.Id).OfType<string>() ?? []);
@@ -419,10 +420,13 @@ public sealed partial class SettingsWindow
             if (!reset && ApiModelHostedArtifacts.IsChecked == true
                 && (ApiCapabilityConformance.ImplementedFor(saved.Connection) & ModelCapability.GeneratedArtifacts) == 0)
                 throw new InvalidOperationException("Provider-hosted artifact generation is not implemented for this connection yet.");
+            if (!reset && ApiModelContextManagement.IsChecked == true
+                && (ApiCapabilityConformance.ImplementedFor(saved.Connection) & ModelCapability.ContextManagement) == 0)
+                throw new InvalidOperationException("Provider-native context compaction is not implemented for this connection yet.");
             if (!reset) configurations.Add(new(model.Descriptor.ModelId, ApiModelTools.IsChecked == true, ApiModelImages.IsChecked == true,
                 limit, Values(ApiModelReasoning.Text), Values(ApiModelTiers.Text), ApiModelAudio.IsChecked == true,
                 ApiModelVideo.IsChecked == true, ApiModelPdf.IsChecked == true, ApiModelCaching.IsChecked == true,
-                ApiModelHostedArtifacts.IsChecked == true));
+                ApiModelHostedArtifacts.IsChecked == true, ApiModelContextManagement.IsChecked == true));
             await Task.Run(() => _apiStore.SaveAsync(saved with { Models = configurations }, null, _lifetime.Token), _lifetime.Token);
             await LoadApiConnectionsAsync();
             if (_apiConnectionsChanged is not null) await _apiConnectionsChanged();

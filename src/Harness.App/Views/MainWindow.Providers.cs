@@ -30,6 +30,15 @@ public sealed partial class MainWindow
         && _apiConnections.TryGetValue(selected.ProviderId, out var entry)
             ? entry.Models.FirstOrDefault(model => model.Descriptor.ModelId == selected.ModelName) : null;
 
+    private void RefreshApiContextCountAvailability()
+    {
+        var supported = FindSelectedApiModel() is not null
+            && ViewModel.SelectedModel is { } selected
+            && _apiConnections.TryGetValue(selected.ProviderId, out var entry)
+            && ApiConversationClient.SupportsInputTokenCounting(entry.Saved.Connection);
+        ViewModel.SetContextCountSupport(supported);
+    }
+
     private async Task RefreshApiConnectionsAsync()
     {
         if (ViewModel.IsRunning) throw new InvalidOperationException("The connection is saved. Finish or stop the active turn, then refresh to apply catalog changes.");
@@ -86,7 +95,12 @@ public sealed partial class MainWindow
                     ViewModel.SelectedServiceTier = ViewModel.ServiceTiers.FirstOrDefault(tier => tier.Id == tiers) ?? ViewModel.SelectedServiceTier;
                 }
                 else if (_activeSession is not null) ViewModel.ApplySessionModelSettings(_activeSession);
-                if (FindSelectedApiModel() is { } apiModel && !ViewModel.IsRunning) ViewModel.ApplyApiUsage(null, null, null, apiModel.Descriptor.ContextWindow);
+                if (FindSelectedApiModel() is { } apiModel && !ViewModel.IsRunning)
+                {
+                    await RestoreSelectedApiUsageAsync(apiModel, _lifetime.Token);
+                    _usageSelectionKey = $"{_activeSession?.Id}\n{apiModel.Descriptor.ProviderId}\n{apiModel.Descriptor.ModelId}";
+                }
+                RefreshApiContextCountAvailability();
             }
             finally { _applyingProviderModels = false; }
         }
@@ -95,7 +109,36 @@ public sealed partial class MainWindow
         finally { _apiRefreshGate.Release(); }
     }
 
-    private sealed record ApiSavedState(JsonArray History, string? LastMessageId, string[] AppliedFiles, long? CumulativeTokens);
+    private sealed record ApiSavedState(JsonArray History, string? LastMessageId, string[] AppliedFiles,
+        long? CumulativeTokens, long? ActiveContextTokens = null, int? ContextWindowTokens = null);
+    private sealed record ApiContextState(JsonArray History, long? CumulativeTokens, long? ActiveContextTokens);
+
+    private async Task RestoreSelectedApiUsageAsync(ApiModel model, CancellationToken cancellationToken)
+    {
+        var store = _store;
+        var session = _activeSession;
+        var visibleLastMessageId = ViewModel.Messages.LastOrDefault()?.Id;
+        if (store is null || session is null
+            || !string.Equals(session.ProviderId, model.Descriptor.ProviderId, StringComparison.Ordinal)
+            || !string.Equals(session.ModelId, model.Descriptor.ModelId, StringComparison.Ordinal))
+        {
+            ViewModel.ApplyApiUsage(null, null, null, model.Descriptor.ContextWindow);
+            return;
+        }
+
+        var eventType = $"harness/apiState/v1/{session.ProviderId}/{model.Descriptor.ModelId}";
+        var payload = await Task.Run(() => store.GetLatestProviderEventPayloadAsync(session.Id, eventType, cancellationToken), cancellationToken);
+        var state = payload is null ? null : await Task.Run(() => JsonSerializer.Deserialize<ApiSavedState>(payload), cancellationToken);
+        if (_activeSession?.Id != session.Id
+            || ViewModel.SelectedModel?.ProviderId != model.Descriptor.ProviderId
+            || ViewModel.SelectedModel?.ModelName != model.Descriptor.ModelId)
+            return;
+        if (state is null || state.LastMessageId != visibleLastMessageId)
+            ViewModel.ApplyApiUsage(null, null, null, model.Descriptor.ContextWindow);
+        else
+            ViewModel.ApplyApiUsage(state.ActiveContextTokens, null, state.CumulativeTokens,
+                model.Descriptor.ContextWindow ?? state.ContextWindowTokens);
+    }
 
     private async Task SendApiPromptAsync()
     {
@@ -119,6 +162,7 @@ public sealed partial class MainWindow
         var history = new JsonArray();
         var applied = new HashSet<string>(StringComparer.Ordinal);
         long? cumulative = 0;
+        long? activeContextTokens = null;
         var beganTurn = false;
         var toolsMayHaveChangedFiles = false;
         Dictionary<string, string>? beforeDiffs = null;
@@ -134,7 +178,12 @@ public sealed partial class MainWindow
             var serialized = await _store.GetLatestProviderEventPayloadAsync(sessionId, stateEvent, token);
             var state = serialized is null ? null : await Task.Run(() => JsonSerializer.Deserialize<ApiSavedState>(serialized), token);
             if (state is not null && state.LastMessageId == lastMessageId)
-            { history = state.History; applied.UnionWith(state.AppliedFiles); cumulative = state.CumulativeTokens; }
+            {
+                history = state.History;
+                applied.UnionWith(state.AppliedFiles);
+                cumulative = state.CumulativeTokens;
+                activeContextTokens = state.ActiveContextTokens;
+            }
             string? continuity = null;
             if (history.Count == 0)
             {
@@ -153,7 +202,7 @@ public sealed partial class MainWindow
             var client = new ApiConversationClient(connection, transport);
             await Task.Run(() => client.AddUserAsync(model, history, continuity is null ? prompt : $"{continuity}\n# Current request\n{prompt}", turnFiles, token), token);
             if (await Task.Run(() => history.ToJsonString().Length > 24 * 1024 * 1024, token))
-                throw new InvalidOperationException("API history exceeds the 24 MiB local request limit. Start a new chat with a continuity brief. Native API compaction is not enabled yet.");
+                throw new InvalidOperationException("API history exceeds the 24 MiB local request limit before provider compaction can run. Start a new chat with a continuity brief or attach a smaller file.");
             var instructions = await Task.Run(() => BuildApiInstructionsAsync(workspace, model.Descriptor.Supports(ModelCapability.ToolUse), token), token);
             ViewModel.ClearTurnAttachments();
             ViewModel.SetApiSettingsSubmitted();
@@ -175,6 +224,7 @@ public sealed partial class MainWindow
                 var reply = await Task.Run(() => client.CompleteAsync(model, history, instructions, effort, tier, tools,
                     async delta => await Dispatcher.UIThread.InvokeAsync(() => ViewModel.AppendAssistantDelta(itemId, delta)), token), token);
                 ViewModel.CompleteAssistant(itemId);
+                activeContextTokens = reply.InputTokens;
                 cumulative = cumulative is not null && reply.InputTokens is not null && reply.OutputTokens is not null
                     ? cumulative + reply.InputTokens + reply.OutputTokens : null;
                 ViewModel.ApplyApiUsage(reply.InputTokens, reply.OutputTokens, cumulative, model.Descriptor.ContextWindow);
@@ -213,7 +263,15 @@ public sealed partial class MainWindow
                                 sessionId, "ARTIFACT", failure, string.Empty, "FAILED", "#E2A84A", false, DateTimeOffset.UtcNow), token);
                     }
                 }
-                if (reply.Calls.Count == 0) break;
+                if (reply.Calls.Count == 0)
+                {
+                    var compacted = await CompactApiContextIfNeededAsync(client, connection, model, history,
+                        instructions, tier, reply.InputTokens, cumulative, sessionId, projectId, token);
+                    history = compacted.History;
+                    cumulative = compacted.CumulativeTokens;
+                    activeContextTokens = compacted.ActiveContextTokens;
+                    break;
+                }
                 var results = new List<(ApiToolCall Call, string Output)>();
                 var browserImages = new List<(string CallId, string Data)>();
                 foreach (var call in reply.Calls)
@@ -284,7 +342,8 @@ public sealed partial class MainWindow
                 try
                 {
                     var stateToSave = new ApiSavedState(savedHistory, ViewModel.Messages.LastOrDefault()?.Id,
-                        savedHistory.Count == 0 ? [] : applied.ToArray(), cumulative);
+                        savedHistory.Count == 0 ? [] : applied.ToArray(), cumulative,
+                        savedHistory.Count == 0 ? null : activeContextTokens, model.Descriptor.ContextWindow);
                     var payload = await Task.Run(() => JsonSerializer.Serialize(stateToSave));
                     await _store.AppendProviderEventAsync(sessionId, stateEvent, payload);
                     await _store.UpdateSessionModelSettingsAsync(sessionId, connection.Id, model.Descriptor.ModelId, effort, tier);
@@ -294,6 +353,123 @@ public sealed partial class MainWindow
             }
             else if (error is not null) ViewModel.CompleteTurn(error);
             _apiTurnCancellation = null;
+        }
+    }
+
+    private async void CheckContext_OnClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        var store = _store;
+        var session = _activeSession;
+        var model = FindSelectedApiModel();
+        if (store is null || session is null || model is null
+            || !_apiConnections.TryGetValue(model.Descriptor.ProviderId, out var entry))
+            return;
+        var connection = entry.Saved.Connection;
+        if (!ApiConversationClient.SupportsInputTokenCounting(connection))
+        {
+            ViewModel.AddActivity("CONTEXT", "This provider has not exposed a native input-token counting contract to Harness.", "#E2A84A");
+            return;
+        }
+
+        var sessionId = session.Id;
+        var modelId = model.Descriptor.ModelId;
+        var providerId = model.Descriptor.ProviderId;
+        var visibleLastMessageId = ViewModel.Messages.LastOrDefault()?.Id;
+        var prompt = ViewModel.PromptText;
+        var effort = string.IsNullOrWhiteSpace(ViewModel.SelectedReasoningLevel?.Id) ? null : ViewModel.SelectedReasoningLevel.Id;
+        var tier = ViewModel.SelectedServiceTier?.Id;
+        var turnAttachments = ViewModel.TurnAttachments.ToArray();
+        var contextFiles = ViewModel.ContextFiles.ToArray();
+        var turnIds = turnAttachments.Select(item => item.Id).ToArray();
+        var contextIds = contextFiles.Select(item => item.Id).ToArray();
+        ViewModel.SetContextCounting(true);
+        try
+        {
+            using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+            cancellation.CancelAfter(TimeSpan.FromSeconds(45));
+            var token = cancellation.Token;
+            var stateEvent = $"harness/apiState/v1/{connection.Id}/{modelId}";
+            var serialized = await Task.Run(
+                () => store.GetLatestProviderEventPayloadAsync(sessionId, stateEvent, token), token);
+            var state = serialized is null
+                ? null
+                : await Task.Run(() => JsonSerializer.Deserialize<ApiSavedState>(serialized), token);
+            var restored = await Task.Run(() => state is not null && state.LastMessageId == visibleLastMessageId
+                ? (History: state.History.DeepClone().AsArray(),
+                    Applied: state.AppliedFiles.ToHashSet(StringComparer.Ordinal))
+                : (History: new JsonArray(), Applied: new HashSet<string>(StringComparer.Ordinal)), token);
+            var history = restored.History;
+            var applied = restored.Applied;
+
+            string? continuity = null;
+            if (history.Count == 0)
+            {
+                var snapshot = await Task.Run(() => store.LoadSessionAsync(sessionId, token), token);
+                if (snapshot.Messages.Count > 0)
+                    continuity = await Task.Run(
+                        () => ImportedConversationContextBuilder.Build(_activeImportSource, snapshot.Messages).Text, token);
+            }
+
+            var files = turnAttachments
+                .Select(file => new FilePart(file.FullPath, file.MediaType, file.DisplayName, file.Id))
+                .ToList();
+            files.AddRange(contextFiles.Where(file => !applied.Contains(file.Sha256))
+                .Select(file => new FilePart(file.StoredPath, file.MediaType, file.DisplayName, file.Sha256)));
+            if (files.Any(file => file.MediaType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) == true)
+                && !model.Descriptor.Supports(ModelCapability.Vision))
+                throw new InvalidOperationException("This model does not have image input enabled. Remove the image or verify model support in Settings → Providers.");
+
+            var message = continuity is null
+                ? prompt
+                : string.IsNullOrWhiteSpace(prompt) ? continuity : $"{continuity}\n# Current request\n{prompt}";
+            var credential = await Task.Run(() => ApiConnectionStore.ReadCredential(connection.Id), token);
+            using var transport = new ApiTransport(connection, credential);
+            var client = new ApiConversationClient(connection, transport);
+            if (!string.IsNullOrWhiteSpace(message) || files.Count > 0)
+                await Task.Run(() => client.AddUserAsync(model, history, message, files, token), token);
+            if (history.Count == 0)
+                throw new InvalidOperationException("There is no saved or pending context to count.");
+            if (await Task.Run(() => history.ToJsonString().Length > 24 * 1024 * 1024, token))
+                throw new InvalidOperationException("The pending native request exceeds Harness's 24 MiB local safety limit.");
+            var instructions = await Task.Run(
+                () => BuildApiInstructionsAsync(ViewModel.WorkspacePath, model.Descriptor.Supports(ModelCapability.ToolUse), token), token);
+            var tools = model.Descriptor.Supports(ModelCapability.ToolUse)
+                ? ApiWorkspaceTools.Definitions.ToList()
+                : [];
+            if (tools.Count > 0 && OperatingSystem.IsWindows())
+                tools.Add(new ApiTool(BrowserTools.Name, BrowserTools.Description,
+                    JsonNode.Parse(BrowserTools.Schema.GetRawText())!.AsObject()));
+            var count = await Task.Run(
+                () => client.CountInputTokensAsync(model, history, instructions, effort, tier, tools, token), token);
+
+            if (_activeSession?.Id != sessionId
+                || ViewModel.SelectedModel?.ProviderId != providerId
+                || ViewModel.SelectedModel?.ModelName != modelId
+                || ViewModel.PromptText != prompt
+                || ViewModel.SelectedReasoningLevel?.Id != effort
+                || ViewModel.SelectedServiceTier?.Id != tier
+                || !ViewModel.TurnAttachments.Select(item => item.Id).SequenceEqual(turnIds)
+                || !ViewModel.ContextFiles.Select(item => item.Id).SequenceEqual(contextIds))
+                return;
+            ViewModel.ApplyApiContextPreview(count.InputTokens, model.Descriptor.ContextWindow);
+            ViewModel.AddActivity("CONTEXT",
+                $"{connection.Name} counted the pending native request at {count.InputTokens:N0} input tokens",
+                "#65C7D0");
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (OperationCanceledException)
+        {
+            if (_activeSession?.Id == sessionId)
+                ViewModel.AddActivity("CONTEXT", "Provider context counting timed out.", "#E2A84A");
+        }
+        catch (Exception exception)
+        {
+            if (_activeSession?.Id == sessionId)
+                ViewModel.AddActivity("CONTEXT", $"Could not count the pending request: {CleanError(exception)}", "#E2A84A");
+        }
+        finally
+        {
+            ViewModel.SetContextCounting(false);
         }
     }
 
@@ -307,6 +483,99 @@ public sealed partial class MainWindow
         if (File.Exists(instructions) && (File.GetAttributes(instructions) & FileAttributes.ReparsePoint) == 0 && new FileInfo(instructions).Length <= 128 * 1024)
             text.AppendLine("Project instructions (AGENTS.md):\n" + await File.ReadAllTextAsync(instructions, cancellationToken));
         return text.ToString();
+    }
+
+    private async Task<ApiContextState> CompactApiContextIfNeededAsync(
+        ApiConversationClient client,
+        ApiConnection connection,
+        ApiModel model,
+        JsonArray history,
+        string instructions,
+        string? tier,
+        long? activeInputTokens,
+        long? cumulativeTokens,
+        string sessionId,
+        string projectId,
+        CancellationToken cancellationToken)
+    {
+        const int thresholdPercent = 85;
+        if (!model.ContextManagementEnabled
+            || connection.ProviderId != "openai-api"
+            || activeInputTokens is not > 0
+            || model.Descriptor.ContextWindow is not > 0
+            || activeInputTokens.Value * 100d / model.Descriptor.ContextWindow.Value < thresholdPercent)
+            return new(history, cumulativeTokens, activeInputTokens);
+
+        var isActive = _activeSession?.Id == sessionId;
+        if (isActive)
+        {
+            ViewModel.SetContextCompaction(true);
+            ViewModel.AddActivity("CONTEXT", $"Active context reached {activeInputTokens.Value * 100d / model.Descriptor.ContextWindow.Value:0.#}%; compacting with OpenAI", "#E2A84A");
+        }
+        try
+        {
+            var beforeItems = history.Count;
+            var compacted = await Task.Run(
+                () => client.CompactAsync(model, history, instructions, tier, cancellationToken), cancellationToken);
+            var compactionTokens = compacted.TotalTokens
+                ?? (compacted.InputTokens is not null && compacted.OutputTokens is not null
+                    ? compacted.InputTokens + compacted.OutputTokens : null);
+            if (cumulativeTokens is not null && compactionTokens is not null)
+                cumulativeTokens += compactionTokens;
+            await _store!.AppendProviderEventAsync(sessionId, "harness/apiContextCompacted/v1", JsonSerializer.Serialize(new
+            {
+                connectionId = connection.Id,
+                modelId = model.Descriptor.ModelId,
+                thresholdPercent,
+                activeInputTokens,
+                beforeItems,
+                afterItems = compacted.History.Count,
+                compactionInputTokens = compacted.InputTokens,
+                compactionOutputTokens = compacted.OutputTokens,
+                compactionTotalTokens = compactionTokens,
+                compactedAt = DateTimeOffset.UtcNow
+            }), cancellationToken);
+
+            if (_activeSession?.Id == sessionId)
+            {
+                ViewModel.ConfirmContextCompacted();
+                ViewModel.UpdateTokenUsage(null, cumulativeTokens, model.Descriptor.ContextWindow);
+                ViewModel.AddActivity("CONTEXT",
+                    $"OpenAI compacted {beforeItems:N0} native items into {compacted.History.Count:N0}; the opaque continuation state was saved",
+                    "#65C7D0");
+            }
+            else
+            {
+                await _store.AppendActivityEventAsync(new StoredActivityEvent(Guid.NewGuid().ToString("N"), projectId,
+                    sessionId, "CONTEXT", "OpenAI native context compaction completed",
+                    $"{beforeItems:N0} native items → {compacted.History.Count:N0}", "COMPLETED", "#65C7D0", false, DateTimeOffset.UtcNow), cancellationToken);
+            }
+            return new(compacted.History, cumulativeTokens, null);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            if (_activeSession?.Id == sessionId)
+            {
+                ViewModel.SetContextCompaction(false);
+                ViewModel.AddActivity("CONTEXT", "Context compaction stopped; the prior native history was retained", "#E2A84A");
+            }
+            return new(history, cumulativeTokens, activeInputTokens);
+        }
+        catch (Exception exception)
+        {
+            var detail = $"Context compaction failed; the prior native history was retained: {CleanError(exception)}";
+            if (_activeSession?.Id == sessionId)
+            {
+                ViewModel.SetContextCompaction(false);
+                ViewModel.AddActivity("CONTEXT", detail, "#E2A84A");
+            }
+            else
+            {
+                await _store!.AppendActivityEventAsync(new StoredActivityEvent(Guid.NewGuid().ToString("N"), projectId,
+                    sessionId, "CONTEXT", detail, string.Empty, "FAILED", "#E2A84A", false, DateTimeOffset.UtcNow));
+            }
+            return new(history, cumulativeTokens, activeInputTokens);
+        }
     }
 
     private async Task<ApiArtifactDownloadResult> DownloadApiArtifactsAsync(

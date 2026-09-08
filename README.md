@@ -73,6 +73,9 @@ capability/content contracts:
   code-execution output references are downloaded with bounded atomic writes,
   retained in Harness data, backed up, and delivered as clickable local file
   links;
+- opt-in OpenAI Responses native compaction at 85% of the provider-reported
+  context window, preserving opaque continuation state and exact provider usage
+  across restarts instead of dropping old messages;
 - a shared direct-API conformance layer that keeps provider-reported capability
   metadata separate from Harness adapter readiness, enables only their verified
   intersection, and rejects stale models or unsupported tools, attachments,
@@ -90,6 +93,9 @@ capability/content contracts:
 - active-context tracking from the provider's latest input footprint (kept
   distinct from cumulative thread throughput), native compaction requests, and
   restart restoration from retained provider telemetry;
+- an explicit context check for OpenAI Responses, Anthropic Messages, and Gemini
+  that asks the provider to count the exact pending native request without
+  generating a response; unsupported compatible APIs remain honestly unknown;
 - persistent Ask, Approve for me, and Full access modes mapped to the provider's
   native reviewer, approval, and sandbox controls;
 - native developer-instruction delivery for saved personalization without
