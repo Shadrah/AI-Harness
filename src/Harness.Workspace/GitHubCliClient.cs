@@ -522,16 +522,43 @@ public sealed class GitHubCliClient
     {
         var root = Path.GetFullPath(packageRoot);
         Directory.CreateDirectory(root);
-        var destination = Path.Combine(root, SkillManifestParser.Slug(skill.Name), skill.SourceRevision);
+        if (string.IsNullOrWhiteSpace(skill.SourceRevision)
+            || skill.SourceRevision is "." or ".."
+            || skill.SourceRevision.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0
+            || skill.SourceRevision.Contains(Path.DirectorySeparatorChar)
+            || skill.SourceRevision.Contains(Path.AltDirectorySeparatorChar))
+            throw new InvalidOperationException("The catalog returned an unsafe source revision; Harness did not access the package cache.");
+        var safeCatalogId = SkillManifestParser.Slug(skill.Id);
+        if (string.IsNullOrWhiteSpace(safeCatalogId))
+            safeCatalogId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{skill.Repository}\0{skill.SkillPath}"))).ToLowerInvariant();
+        var cacheKey = SkillManifestParser.Slug(skill.Name) + "--"
+            + safeCatalogId[..Math.Min(12, safeCatalogId.Length)].ToLowerInvariant();
+        var destination = Path.GetFullPath(Path.Combine(root, cacheKey, skill.SourceRevision));
+        var pathComparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        if (!destination.StartsWith(root + Path.DirectorySeparatorChar, pathComparison))
+            throw new InvalidOperationException("The catalog package path escapes Harness-owned storage.");
         var markerPath = Path.Combine(destination, ".harness-package.json");
         if (File.Exists(markerPath))
         {
             using var existing = JsonDocument.Parse(await File.ReadAllTextAsync(markerPath, cancellationToken));
+            var marker = existing.RootElement;
+            if (!marker.TryGetProperty("Id", out var id) || id.GetString() != skill.Id
+                || !marker.TryGetProperty("Repository", out var repository) || repository.GetString() != skill.Repository
+                || !marker.TryGetProperty("SkillPath", out var skillPath) || skillPath.GetString() != skill.SkillPath
+                || !marker.TryGetProperty("SourceRevision", out var revision) || revision.GetString() != skill.SourceRevision)
+                throw new InvalidOperationException("The cached skill package provenance does not match this catalog entry. Harness did not reuse it.");
+            var verified = await ComputePackageContentAsync(destination, cancellationToken);
+            var expectedHash = marker.GetProperty("contentSha256").GetString() ?? string.Empty;
+            var expectedCount = marker.GetProperty("fileCount").GetInt32();
+            var expectedBytes = marker.GetProperty("byteLength").GetInt64();
+            if (!verified.Hash.Equals(expectedHash, StringComparison.OrdinalIgnoreCase)
+                || verified.FileCount != expectedCount || verified.ByteLength != expectedBytes)
+                throw new InvalidOperationException("The cached skill package failed its content-integrity check. Remove that cached version before retrying.");
             return new DownloadedSkillPackage(
                 destination,
-                existing.RootElement.GetProperty("contentSha256").GetString() ?? string.Empty,
-                existing.RootElement.GetProperty("fileCount").GetInt32(),
-                existing.RootElement.GetProperty("byteLength").GetInt64());
+                expectedHash,
+                expectedCount,
+                expectedBytes);
         }
 
         var pending = Path.Combine(root, $".pending-{Guid.NewGuid():N}");
@@ -578,6 +605,56 @@ public sealed class GitHubCliClient
             if (Directory.Exists(pending)) Directory.Delete(pending, recursive: true);
             throw;
         }
+    }
+
+    private static async Task<(string Hash, int FileCount, long ByteLength)> ComputePackageContentAsync(
+        string packagePath,
+        CancellationToken cancellationToken)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(packagePath));
+        var files = EnumerateCachedFilesSafely(root)
+            .Where(path => !Path.GetFileName(path).Equals(".harness-package.json", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(path => Path.GetRelativePath(root, path), StringComparer.Ordinal)
+            .ToArray();
+        long total = 0;
+        foreach (var file in files)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if ((File.GetAttributes(file) & FileAttributes.ReparsePoint) != 0)
+                throw new UnauthorizedAccessException("A cached skill package contains a symbolic link.");
+            var relative = Path.GetRelativePath(root, file).Replace(Path.DirectorySeparatorChar, '/');
+            var bytes = await File.ReadAllBytesAsync(file, cancellationToken);
+            total += bytes.Length;
+            if (files.Length > 250 || total > 25L * 1024 * 1024)
+                throw new InvalidOperationException("The cached skill package exceeds Harness's safety limits.");
+            hash.AppendData(Encoding.UTF8.GetBytes(relative));
+            hash.AppendData([0]);
+            hash.AppendData(bytes);
+        }
+        return (Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant(), files.Length, total);
+    }
+
+    private static IReadOnlyList<string> EnumerateCachedFilesSafely(string root)
+    {
+        var files = new List<string>();
+        var pending = new Stack<string>();
+        pending.Push(root);
+        while (pending.Count > 0)
+        {
+            var directory = pending.Pop();
+            if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0)
+                throw new UnauthorizedAccessException("A cached skill package contains a symbolic link or junction.");
+            foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
+            {
+                var attributes = File.GetAttributes(entry);
+                if ((attributes & FileAttributes.ReparsePoint) != 0)
+                    throw new UnauthorizedAccessException("A cached skill package contains a symbolic link or junction.");
+                if ((attributes & FileAttributes.Directory) != 0) pending.Push(entry);
+                else files.Add(entry);
+            }
+        }
+        return files;
     }
 
     private async Task<string> ReadBlobTextAsync(string repository, string sha, CancellationToken cancellationToken) =>

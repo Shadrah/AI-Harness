@@ -50,8 +50,10 @@ public sealed record SkillInstallTarget(
     string ProviderId,
     string DisplayName,
     string? ModelId = null,
-    string SetupKind = "filesystem")
+    string SetupKind = "filesystem",
+    string? CompatibilityProviderId = null)
 {
+    public string CompatibilityId => CompatibilityProviderId ?? ProviderId;
     public override string ToString() => DisplayName;
 }
 

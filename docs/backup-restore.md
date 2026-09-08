@@ -28,11 +28,12 @@ browser cookies and profiles, crash diagnostics, managed runtimes, or project
 source trees. These remain in their existing
 provider, operating-system credential, workspace, or machine-specific boundary.
 
-Global installed skills are restored beneath the current user's agent-skills
-directory. Workspace-scoped skills are restored only when that project folder
-exists. If it moved, Harness retains the package as disabled managed content and
-activates it when the restored workspace is selected or relinked. Existing unrelated skill
-folders are never overwritten; a collision receives a restored suffix.
+Global Codex skills are restored beneath the current user's agent-skills
+directory; direct-API skills return to Harness's connection/model-scoped active
+store. Workspace-scoped skills are restored only after that project is selected
+or relinked. Until then Harness retains the package as disabled managed content.
+Existing unrelated skill folders are never overwritten; a collision receives a
+restored suffix.
 
 The archive does contain conversations and retained context and is not
 encrypted by Harness. Store it with the same care as private source code.

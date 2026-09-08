@@ -117,8 +117,10 @@ capability/content contracts:
 - a Skills Library inside Settings with a bookshelf shortcut, repository-level
   GitHub tree indexes beyond code-search limits, progressively cached searchable
   descriptions, topic/source/status/connected-model filtering, collision-safe
-  provider identities, explicit package inspection, pinned downloads, and Codex
-  user/workspace installation;
+  provider identities, explicit package inspection, pinned downloads, Codex
+  filesystem delivery, and connection/model-scoped direct-API discovery with
+  on-demand skill resource loading, integrity-aware updates, reversible disable,
+  and recoverable removal;
 - live Git branch and working-tree inspection with staged, unstaged, and
   untracked status; full per-file diff review; file- and hunk-level stage and
   unstage actions; and confirmed file or hunk discard actions that preserve a

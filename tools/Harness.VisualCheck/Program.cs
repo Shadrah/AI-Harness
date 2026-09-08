@@ -1250,7 +1250,15 @@ settingsViewModel.SetCompatibilityTargets(
     new SkillCompatibilityOption("anthropic-claude:claude-opus", "anthropic-claude", "claude-opus", "Anthropic Claude · Opus")
 ]);
 settingsViewModel.SelectedSkillCompatibility = settingsViewModel.SkillCompatibilityOptions[1];
-settingsViewModel.ReplaceSkills(previewSkills, [], previewSources);
+var previewInstallation = new InstalledSkill(
+    "preview-installation", previewSkills[0].Id, previewSkills[0].Name, "1234567890older",
+    Path.Combine(Path.GetTempPath(), "preview-skill-package"), Path.Combine(Path.GetTempPath(), "preview-skill-install"),
+    "WORKSPACE", Environment.CurrentDirectory, "openai-codex", null, "preview-hash", true, DateTimeOffset.UtcNow);
+settingsViewModel.ReplaceSkills(previewSkills, [previewInstallation], previewSources,
+[
+    new SkillInstallTarget("openai-codex", "OpenAI Codex · filesystem runtime", SetupKind: "filesystem",
+        CompatibilityProviderId: "openai-codex")
+]);
 settingsTabs.SelectedIndex = 5;
 _ = settingsWindow.FindControl<TextBox>("SkillSearchBox")
     ?? throw new InvalidOperationException("Skills settings did not expose catalog search.");
@@ -1258,6 +1266,12 @@ _ = settingsWindow.FindControl<Button>("SkillInstallButton")
     ?? throw new InvalidOperationException("Skills settings did not expose explicit installation.");
 _ = settingsWindow.FindControl<Button>("SkillSyncButton")
     ?? throw new InvalidOperationException("Skills settings did not expose repository inventory sync.");
+_ = settingsWindow.FindControl<Button>("SkillUpdateButton")
+    ?? throw new InvalidOperationException("Skills settings did not expose installed-skill updates.");
+_ = settingsWindow.FindControl<Button>("SkillEnableButton")
+    ?? throw new InvalidOperationException("Skills settings did not expose enable and disable controls.");
+_ = settingsWindow.FindControl<Button>("SkillRemoveButton")
+    ?? throw new InvalidOperationException("Skills settings did not expose recoverable removal.");
 var skillsSettingsPath = Path.Combine(
     Path.GetDirectoryName(Path.GetFullPath(outputPath))!,
     $"{Path.GetFileNameWithoutExtension(outputPath)}-skills{Path.GetExtension(outputPath)}");

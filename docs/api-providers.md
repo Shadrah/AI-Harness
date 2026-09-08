@@ -120,9 +120,8 @@ consumer subscriptions are not silently treated as API credits either.
 - Shared sandbox/automatic-risk-review parity with Codex. The API runner is a
   bounded client-tool loop (40 requests per turn, 2-minute command timeout,
   24 MiB serialized request safety limit), not Codex's execution environment.
-- API Skills Library activation/discovery, non-Git file-change snapshots, exact
-  turn-only diffs across shell operations, and
-  cross-platform OS credential vaults. Skill installation currently targets Codex.
+- Non-Git file-change snapshots, exact turn-only diffs across shell operations,
+  and cross-platform OS credential vaults.
 - Stream-error details with safe structured redaction. HTTP failures currently
   report status and remediation without dumping potentially sensitive response
   bodies. Submitted reasoning/tier values are not called provider-confirmed.

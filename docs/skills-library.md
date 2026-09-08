@@ -116,8 +116,9 @@ catalog result. Harness first resolves the package's declared compatibility:
 - A provider- or model-specific skill has its target fixed and clearly labeled.
   Harness blocks installation when that target is not connected or compatible.
 - A portable skill presents the compatible connected providers and models. The
-  user chooses one or more targets and whether installation applies globally or
-  only to the current workspace.
+  user chooses a target and whether installation applies globally or only to the
+  current workspace. `ADD TARGET` repeats the reviewed install for another
+  connection, model, or scope without conflating their state.
 - A skill with missing or unverified compatibility can be installed only through
   an advanced flow that explains what is unknown; Harness does not guess that it
   works with every model.
@@ -145,15 +146,40 @@ a local provider index. Codex reads names and descriptions from `.agents/skills`
 and loads the full instructions only when selected; installed skills therefore
 become discoverable without adding every skill body to every chat turn.
 
+For a compatible direct-API connection, Harness keeps a separate provider-facing
+copy keyed by connection, optional model, and user/workspace scope. A tool-capable
+model receives two read-only tools: `list_skills` searches the active installed
+catalog, and `read_skill_resource` loads `SKILL.md` or another bounded UTF-8 file
+only when needed. The active set is rebuilt off the UI thread for each turn, so
+installing a skill makes it available on the next turn without restarting or
+rewriting another skill. Traversal, junctions/symlinks, binary content, Harness
+metadata, and resources over 512 KiB are rejected. Package scripts are never run
+by this adapter and skill text grants no tools, permissions, or higher authority.
+
 Provider setup may copy files, upload a native bundle, or register instructions,
 but it may not install external dependencies, execute package scripts, or request
 new privileges without a separate visible approval. A failed multi-target setup
 does not pretend the skill is universally installed; Harness records each target's
 state independently and offers retry or rollback.
 
-Removing a source repository never breaks an installed version. Updates are a
-new immutable version with a reviewable diff; local modifications require an
-explicit fork or conflict decision.
+Removing a source repository never breaks an installed version. For an update,
+Harness compares the cached old package with the new revision's Git metadata and
+shows added, changed, and removed paths before downloading. Installations created
+with an integrity baseline are re-hashed before update or removal; a modified copy
+gets an explicit destructive warning, while older installations with no baseline
+are labeled unknown rather than assumed clean. The active folder swap retains a
+rollback copy until its database record commits.
+
+Pinned package-cache directories are namespaced by catalog identity and revision.
+Harness rechecks their provenance, file count, byte count, and aggregate content
+hash before reuse; unsafe revision paths, altered cache content, and reparse points
+are rejected instead of silently becoming an installation or update.
+
+Disabling moves the provider-facing copy outside its active discovery directory
+without deleting the pinned package or provenance; enabling moves it back and
+rebuilds the provider index. Removal moves the copy to a local recovery directory
+before deleting its installed-state record. A storage failure restores the copy
+and index so the filesystem and database do not silently diverge.
 
 ## Provider delivery
 
@@ -164,12 +190,12 @@ Each provider adapter declares the skill mechanisms it supports:
 - inline instructions and approved supporting files;
 - unsupported, with an explicit reason.
 
-OpenAI's API exposes project skills as versioned bundles that can be created,
-listed, downloaded, updated by default-version pointer, and referenced by version.
-Harness may use that native path for an authenticated API connection while still
-retaining its own local pinned copy and provenance. Subscription runtimes and
-other providers use their supported delivery mechanisms rather than an assumed
-common protocol.
+Harness currently implements Codex filesystem delivery and provider-neutral
+direct-API delivery for models whose verified adapter surface includes tool use.
+The latter does not claim a provider-native skill API: Harness supplies its own
+bounded read tools while retaining the pinned local package and provenance.
+Future native provider bundles can be added behind the same adapter contract when
+a provider documents and exposes them.
 
 ## Catalog integrity
 
@@ -188,5 +214,6 @@ common protocol.
    search, cache, facets, refresh status, and detail preview.
 3. Explicit install confirmation, target provider/model and scope selection,
    pinned archive download, validation, setup, rollback, and removal.
-4. Codex and Claude filesystem delivery adapters plus provider conformance tests.
+4. Direct-API on-demand delivery, followed by additional provider-native or
+   filesystem adapters as their contracts are implemented and verified.
 5. Updates, diffs, signing, community catalogs, ratings, and reporting.

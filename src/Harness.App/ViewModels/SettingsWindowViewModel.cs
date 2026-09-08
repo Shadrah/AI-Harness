@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using Harness.Core.Models;
+using Harness.Workspace;
 
 namespace Harness.App.ViewModels;
 
@@ -32,6 +33,9 @@ public sealed class SettingsWindowViewModel : ObservableObject
     private string _selectedSkillSort = "Recently indexed";
     private SkillCompatibilityOption _selectedSkillCompatibility = SkillCompatibilityOption.All;
     private SkillCatalogItem? _selectedSkill;
+    private InstalledSkillItem? _selectedSkillInstallation;
+    private IReadOnlyList<InstalledSkill> _installedSkills = [];
+    private IReadOnlyList<SkillInstallTarget> _skillInstallTargets = [];
     private readonly HashSet<string> _storedHiddenModels;
     private readonly HashSet<string> _storedFavoriteModels;
     private readonly List<string> _storedModelOrder;
@@ -82,6 +86,7 @@ public sealed class SettingsWindowViewModel : ObservableObject
     public double SubscriptionHandoffThresholdPercent { get => _subscriptionHandoffThresholdPercent; set => SetProperty(ref _subscriptionHandoffThresholdPercent, Math.Clamp(value, 1, 25)); }
     public string? ActiveCodexIdentityId { get => _activeCodexIdentityId; set => SetProperty(ref _activeCodexIdentityId, value); }
     public BatchObservableCollection<SkillCatalogItem> Skills { get; } = [];
+    public BatchObservableCollection<InstalledSkillItem> SelectedSkillInstallations { get; } = [];
     public BatchObservableCollection<ModelPreferenceItem> ModelPreferences { get; } = [];
     public bool HasModelPreferences => ModelPreferences.Count > 0;
     public BatchObservableCollection<SkillSourceItem> SkillSourceLedger { get; } = [];
@@ -112,10 +117,27 @@ public sealed class SettingsWindowViewModel : ObservableObject
             if (!SetProperty(ref _selectedSkill, value)) return;
             RaisePropertyChanged(nameof(HasSelectedSkill));
             RaisePropertyChanged(nameof(CanInstallSelectedSkill));
+            RaisePropertyChanged(nameof(SkillInstallButtonLabel));
+            RefreshSelectedSkillInstallations();
         }
     }
     public bool HasSelectedSkill => SelectedSkill is not null;
-    public bool CanInstallSelectedSkill => SelectedSkill is { IsInstalled: false };
+    public bool CanInstallSelectedSkill => SelectedSkill is not null;
+    public string SkillInstallButtonLabel => SelectedSkill?.IsInstalled == true ? "ADD TARGET…" : "INSTALL…";
+    public InstalledSkillItem? SelectedSkillInstallation
+    {
+        get => _selectedSkillInstallation;
+        set
+        {
+            if (!SetProperty(ref _selectedSkillInstallation, value)) return;
+            RaisePropertyChanged(nameof(HasSelectedSkillInstallation));
+            RaisePropertyChanged(nameof(CanUpdateSelectedSkill));
+            RaisePropertyChanged(nameof(SkillEnableButtonLabel));
+        }
+    }
+    public bool HasSelectedSkillInstallation => SelectedSkillInstallation is not null;
+    public bool CanUpdateSelectedSkill => SelectedSkillInstallation?.HasUpdate == true;
+    public string SkillEnableButtonLabel => SelectedSkillInstallation?.Installation.Enabled == true ? "DISABLE" : "ENABLE";
 
     public void SetCompatibilityTargets(IEnumerable<SkillCompatibilityOption> targets)
     {
@@ -169,13 +191,22 @@ public sealed class SettingsWindowViewModel : ObservableObject
     public void ReplaceSkills(
         IEnumerable<SkillCatalogEntry> entries,
         IReadOnlyList<InstalledSkill> installed,
-        IReadOnlyList<SkillCatalogSource>? sources = null)
+        IReadOnlyList<SkillCatalogSource>? sources = null,
+        IReadOnlyList<SkillInstallTarget>? installTargets = null)
     {
+        _installedSkills = installed;
+        if (installTargets is not null) _skillInstallTargets = installTargets;
         var selectedId = SelectedSkill?.Entry.Id;
-        var installedIds = installed.Where(item => item.Enabled).Select(item => item.CatalogId).ToHashSet(StringComparer.Ordinal);
+        var relevantInstallations = installed.ToArray();
         var filtered = entries.Select(entry => new SkillCatalogItem(
             entry,
-            installedIds.Contains(entry.Id),
+            relevantInstallations.Any(item => item.CatalogId.Equals(entry.Id, StringComparison.Ordinal)
+                && (SelectedSkillCompatibility.IsAll
+                    || (item.ProviderId.Equals(SelectedSkillCompatibility.ProviderId, StringComparison.Ordinal)
+                        && (string.IsNullOrWhiteSpace(item.ModelId)
+                            || item.ModelId.Equals(SelectedSkillCompatibility.ModelId, StringComparison.Ordinal))
+                        && (!item.Scope.Equals("WORKSPACE", StringComparison.OrdinalIgnoreCase)
+                            || PathsEqual(item.WorkspacePath, WorkspacePath))))),
             SelectedSkillCompatibility));
         if (!string.Equals(SelectedSkillSource, "All sources", StringComparison.OrdinalIgnoreCase))
             filtered = filtered.Where(item => item.Repository.Equals(SelectedSkillSource, StringComparison.OrdinalIgnoreCase));
@@ -195,7 +226,9 @@ public sealed class SettingsWindowViewModel : ObservableObject
             _ => filtered.OrderByDescending(item => item.Entry.RefreshedAt).ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
         };
         Skills.ReplaceAll(filtered);
-        SelectedSkill = Skills.FirstOrDefault(item => item.Entry.Id == selectedId) ?? Skills.FirstOrDefault();
+        var nextSelectedSkill = Skills.FirstOrDefault(item => item.Entry.Id == selectedId) ?? Skills.FirstOrDefault();
+        SelectedSkill = null;
+        SelectedSkill = nextSelectedSkill;
         SkillResultSummary = $"{Skills.Count:N0} MATCH{(Skills.Count == 1 ? string.Empty : "ES")}";
         if (sources is not null)
         {
@@ -210,6 +243,55 @@ public sealed class SettingsWindowViewModel : ObservableObject
         SkillCatalogStatus = Skills.Count == 0
             ? "No cached skills match. Search GitHub to discover more."
             : "Showing cached descriptions from indexed sources. Search narrows GitHub directly; packages download only after Install is confirmed.";
+    }
+
+    private void RefreshSelectedSkillInstallations()
+    {
+        var selectedInstallationId = SelectedSkillInstallation?.Installation.Id;
+        if (SelectedSkill is null)
+        {
+            SelectedSkillInstallations.Clear();
+            SelectedSkillInstallation = null;
+            return;
+        }
+        var currentRevision = SelectedSkill.Entry.SourceRevision;
+        var items = _installedSkills
+            .Where(item => item.CatalogId.Equals(SelectedSkill.Entry.Id, StringComparison.Ordinal))
+            .Where(item => !item.Scope.Equals("WORKSPACE", StringComparison.OrdinalIgnoreCase)
+                           || PathsEqual(item.WorkspacePath, WorkspacePath))
+            .Select(item => new InstalledSkillItem(item, ResolveTargetName(item), currentRevision))
+            .OrderByDescending(item => item.Installation.Enabled)
+            .ThenBy(item => item.TargetDisplay, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        SelectedSkillInstallations.ReplaceAll(items);
+        SelectedSkillInstallation = items.FirstOrDefault(item => item.Installation.Id == selectedInstallationId)
+            ?? items.FirstOrDefault();
+    }
+
+    private string ResolveTargetName(InstalledSkill installed)
+    {
+        var target = _skillInstallTargets.FirstOrDefault(item =>
+            item.ProviderId.Equals(installed.ProviderId, StringComparison.Ordinal)
+            && string.Equals(item.ModelId, installed.ModelId, StringComparison.Ordinal));
+        if (target is not null) return target.DisplayName;
+        return string.IsNullOrWhiteSpace(installed.ModelId)
+            ? $"{installed.ProviderId} · all compatible models"
+            : $"{installed.ProviderId} · {installed.ModelId}";
+    }
+
+    private static bool PathsEqual(string? left, string? right)
+    {
+        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right)) return false;
+        try
+        {
+            return string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(left)),
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(right)),
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return false;
+        }
     }
 
     public HarnessApplicationSettings ToSettings()
@@ -245,6 +327,37 @@ public sealed class SettingsWindowViewModel : ObservableObject
             PromptForSubscriptionHandoff,
             SubscriptionHandoffThresholdPercent);
     }
+}
+
+public sealed class InstalledSkillItem : ObservableObject
+{
+    private string _integrityStatus = "Integrity not checked";
+
+    public InstalledSkillItem(InstalledSkill installation, string targetDisplay, string currentRevision)
+    {
+        Installation = installation;
+        TargetDisplay = targetDisplay;
+        CurrentRevision = currentRevision;
+    }
+
+    public InstalledSkill Installation { get; }
+    public string TargetDisplay { get; }
+    public string CurrentRevision { get; }
+    public bool HasUpdate => !Installation.SourceRevision.Equals(CurrentRevision, StringComparison.Ordinal);
+    public string ScopeStatus => $"{Installation.Scope} · {(Installation.Enabled ? "ENABLED" : "DISABLED")}";
+    public string RevisionStatus => $"Installed {Short(Installation.SourceRevision)}"
+        + (HasUpdate ? $" · Update {Short(CurrentRevision)} available" : " · Current catalog revision");
+    public string IntegrityStatus { get => _integrityStatus; private set => SetProperty(ref _integrityStatus, value); }
+
+    public void SetIntegrity(ManagedSkillIntegrity integrity) => IntegrityStatus = integrity switch
+    {
+        ManagedSkillIntegrity.Unchanged => "Provider copy matches its installed baseline",
+        ManagedSkillIntegrity.Modified => "Provider copy has local modifications",
+        _ => "Integrity baseline unavailable; changes will require confirmation"
+    };
+
+    public override string ToString() => TargetDisplay;
+    private static string Short(string value) => value[..Math.Min(10, value.Length)];
 }
 
 public sealed class ModelPreferenceItem : ObservableObject
@@ -290,7 +403,7 @@ public sealed record SkillCatalogItem(
     bool IsInstalled,
     SkillCompatibilityOption? SelectedCompatibility = null)
 {
-    public bool CanInstall => !IsInstalled;
+    public bool CanInstall => true;
     public string Name => Entry.Name;
     public string Description => Entry.Description;
     public string Category => Entry.Category.ToUpperInvariant();
@@ -299,7 +412,7 @@ public sealed record SkillCatalogItem(
     public string Compatibility => Entry.Compatibility;
     public bool IsCompatibleWithSelectedModel => SelectedCompatibility is null
         || SelectedCompatibility.IsAll
-        || SupportsProvider(Entry.Compatibility, SelectedCompatibility.ProviderId);
+        || SupportsProvider(Entry.Compatibility, SelectedCompatibility.CompatibilityId);
     public int CompatibilityRank => Entry.Compatibility switch
     {
         "Portable Agent Skill" => 0,
@@ -316,7 +429,7 @@ public sealed record SkillCatalogItem(
     public string SourceRevision => Entry.SourceRevision.Length > 10
         ? Entry.SourceRevision[..10]
         : Entry.SourceRevision;
-    public string InstallState => IsInstalled ? "INSTALLED" : "AVAILABLE";
+    public string InstallState => IsInstalled ? "ADD TARGET" : "AVAILABLE";
     public string InstallColor => IsInstalled ? "#65C7D0" : "#8993A3";
     public string SourceLine => $"{Repository}  ·  {SourceRevision}";
     public string SpineColor => Entry.Category switch
@@ -332,11 +445,9 @@ public sealed record SkillCatalogItem(
     {
         if (compatibility.Equals("Portable Agent Skill", StringComparison.OrdinalIgnoreCase)) return true;
         if (compatibility.Equals("Codex extension", StringComparison.OrdinalIgnoreCase))
-            return providerId.Contains("openai", StringComparison.OrdinalIgnoreCase)
-                || providerId.Contains("codex", StringComparison.OrdinalIgnoreCase);
+            return providerId.Equals("openai-codex", StringComparison.OrdinalIgnoreCase);
         if (compatibility.Equals("Claude Code extension", StringComparison.OrdinalIgnoreCase))
-            return providerId.Contains("anthropic", StringComparison.OrdinalIgnoreCase)
-                || providerId.Contains("claude", StringComparison.OrdinalIgnoreCase);
+            return providerId.Equals("anthropic-claude", StringComparison.OrdinalIgnoreCase);
         return false;
     }
 }
@@ -346,10 +457,13 @@ public sealed record SkillCompatibilityOption(
     string ProviderId,
     string ModelId,
     string DisplayName,
-    bool IsAll = false)
+    bool IsAll = false,
+    string? CompatibilityProviderId = null)
 {
     public static SkillCompatibilityOption All { get; } = new(
         "all", "", "", "All connected models", true);
+
+    public string CompatibilityId => CompatibilityProviderId ?? ProviderId;
 
     public override string ToString() => DisplayName;
 }

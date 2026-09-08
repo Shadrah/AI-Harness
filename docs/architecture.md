@@ -284,8 +284,11 @@ contents metadata API. Harness rejects incomplete, linked, credential-like,
 oversized, or path-escaping packages before confirmation. Only confirmation
 downloads the pinned Git blobs into Harness-owned storage and verifies their Git
 object hashes. The Codex adapter then copies the skill to the selected repository
-or user `.agents/skills` scope. Other providers require their own setup adapter;
-Harness does not pretend a Codex filesystem install configured them.
+or user `.agents/skills` scope. Direct-API connections receive a separate
+Harness-managed, connection/model/scope-specific copy. Tool-capable models see
+only a compact `list_skills` / `read_skill_resource` interface and load the
+chosen instructions or reference on demand; Harness never adds every installed
+skill body to every prompt.
 
 Installed skills remain usable if the catalog or original harness disappears.
 Provider-facing copies receive collision-safe namespaced identities and each
@@ -295,7 +298,16 @@ provider extensions, then filtered against live connected model/provider data.
 Updates are explicit and diffable. A skill package is untrusted code and
 instructions: manifests are validated, content is hashed, requested tools and
 permissions are declared, secrets are never bundled, and execution remains under
-the same approval and sandbox policy as any other tool.
+the same approval and sandbox policy as any other tool. Direct-API skill tools are
+read-only, reject traversal and reparse points, bound resource size, and never
+execute scripts from a package.
+
+Installed-target lifecycle operations use the same provenance marker. New copies
+store a hash of their adapted provider-facing content. Update and removal inspect
+that hash, warn instead of guessing for legacy copies, and retain a same-volume
+rollback or recovery directory until durable state is committed. Disabled Codex
+skills live beside—not beneath—the active `skills` directory so runtime discovery
+cannot continue finding them recursively.
 
 ## Dependency policy
 

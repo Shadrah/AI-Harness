@@ -12,6 +12,7 @@ using Harness.App.ViewModels;
 using Harness.App.Views;
 using Harness.Core.Models;
 using Harness.Providers.Api;
+using Harness.Workspace;
 
 if (args.Contains("--startup-profile", StringComparer.Ordinal))
 {
@@ -497,6 +498,162 @@ Check((await runner.ExecuteAsync(new("call", "read_file", """{"path":".git/confi
 await runner.ExecuteAsync(new("call", "run_command", """{"command":"this command must never start"}"""), default);
 Check(approvalCount == 2, "Command bypassed approval.");
 
+var apiSkillWorkspace = Path.Combine(testRoot, "api-skill-workspace");
+var otherApiSkillWorkspace = Path.Combine(testRoot, "other-api-skill-workspace");
+var apiSkillPackage = Path.Combine(testRoot, "api-skill-package");
+Directory.CreateDirectory(apiSkillWorkspace);
+Directory.CreateDirectory(otherApiSkillWorkspace);
+Directory.CreateDirectory(apiSkillPackage);
+await File.WriteAllTextAsync(Path.Combine(apiSkillPackage, "SKILL.md"),
+    "---\nname: fixture-skill\ndescription: Explains deterministic fixture testing.\n---\n\nUse the fixture exactly.\n");
+await File.WriteAllTextAsync(Path.Combine(apiSkillPackage, "reference.md"), "reference body");
+var apiSkillCatalog = new SkillCatalogEntry(
+    "api-skill-catalog", "fixture-skill", "Explains deterministic fixture testing.", "Testing", "fixture/api-skills",
+    "fixture/SKILL.md", "revision", "https://example.invalid/api-skill", "Portable Agent Skill", "FIXTURE",
+    DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+var cachedSkillRoot = Path.Combine(testRoot, "cached-skill-packages");
+var cachedSkillDirectory = Path.Combine(cachedSkillRoot,
+    SkillManifestParser.Slug(apiSkillCatalog.Name) + "--" + apiSkillCatalog.Id[..12], apiSkillCatalog.SourceRevision);
+Directory.CreateDirectory(cachedSkillDirectory);
+var cachedSkillBytes = Encoding.UTF8.GetBytes("cached skill body");
+await File.WriteAllBytesAsync(Path.Combine(cachedSkillDirectory, "SKILL.md"), cachedSkillBytes);
+var cachedSkillHashInput = Encoding.UTF8.GetBytes("SKILL.md\0").Concat(cachedSkillBytes).ToArray();
+var cachedSkillHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(cachedSkillHashInput)).ToLowerInvariant();
+await File.WriteAllTextAsync(Path.Combine(cachedSkillDirectory, ".harness-package.json"), JsonSerializer.Serialize(new
+{
+    apiSkillCatalog.Id,
+    apiSkillCatalog.Repository,
+    apiSkillCatalog.SkillPath,
+    apiSkillCatalog.SourceRevision,
+    contentSha256 = cachedSkillHash,
+    fileCount = 1,
+    byteLength = cachedSkillBytes.Length
+}));
+var cachedPackage = await new GitHubCliClient().DownloadSkillPackageAsync(
+    apiSkillCatalog, new SkillPackageInspection([], 0, 0, []), cachedSkillRoot);
+Check(cachedPackage.ContentSha256 == cachedSkillHash, "A valid pinned skill cache was not reused.");
+await File.WriteAllTextAsync(Path.Combine(cachedSkillDirectory, "SKILL.md"), "tampered skill body");
+var tamperedCacheRejected = false;
+try
+{
+    await new GitHubCliClient().DownloadSkillPackageAsync(
+        apiSkillCatalog, new SkillPackageInspection([], 0, 0, []), cachedSkillRoot);
+}
+catch (InvalidOperationException) { tamperedCacheRejected = true; }
+Check(tamperedCacheRejected, "A modified pinned skill cache was reused without verifying its content hash.");
+var unsafeSkillRevisionRejected = false;
+try
+{
+    await new GitHubCliClient().DownloadSkillPackageAsync(
+        apiSkillCatalog with { SourceRevision = "../escape" }, new SkillPackageInspection([], 0, 0, []), cachedSkillRoot);
+}
+catch (InvalidOperationException) { unsafeSkillRevisionRejected = true; }
+Check(unsafeSkillRevisionRejected, "An unsafe catalog revision escaped or reached the skill package cache.");
+var apiSkillInstallPath = await SkillPackageInstaller.InstallHarnessApiAsync(
+    new DownloadedSkillPackage(apiSkillPackage, "fixture-content", 2, 100), apiSkillCatalog,
+    "api-connection-one", "WORKSPACE", apiSkillWorkspace, "fixture-model");
+var apiSkillInstallation = new InstalledSkill(
+    SkillPackageInstaller.CreateInstallId(apiSkillCatalog.Id, "api-connection-one", "WORKSPACE", apiSkillWorkspace, "fixture-model"),
+    apiSkillCatalog.Id, apiSkillCatalog.Name, apiSkillCatalog.SourceRevision, apiSkillPackage, apiSkillInstallPath,
+    "WORKSPACE", apiSkillWorkspace, "api-connection-one", "fixture-model", "fixture-content", true, DateTimeOffset.UtcNow);
+var apiSkills = await ApiSkillTools.CreateAsync([apiSkillInstallation], "api-connection-one", "fixture-model", apiSkillWorkspace);
+Check(apiSkills.Count == 1 && ApiSkillTools.Definitions.Count == 2,
+    "A direct-API skill was not activated with its discovery/read tools.");
+var listedSkills = await apiSkills.ExecuteAsync(new("skills", ApiSkillTools.ListName, """{"query":"deterministic"}"""));
+Check(listedSkills.Contains(Path.GetFileName(apiSkillInstallPath), StringComparison.Ordinal)
+      && listedSkills.Contains("fixture testing", StringComparison.OrdinalIgnoreCase),
+    "The direct-API skill catalog did not expose its stable ID and description.");
+var readSkill = await apiSkills.ExecuteAsync(new("skill", ApiSkillTools.ReadName,
+    $$"""{"skill_id":"{{Path.GetFileName(apiSkillInstallPath)}}","path":"reference.md"}"""));
+Check(readSkill.Contains("reference body", StringComparison.Ordinal)
+      && (await apiSkills.ExecuteAsync(new("escape", ApiSkillTools.ReadName,
+          $$"""{"skill_id":"{{Path.GetFileName(apiSkillInstallPath)}}","path":"../outside.txt"}"""))).StartsWith("Tool failed", StringComparison.Ordinal),
+    "Skill resource reads failed or escaped the installed package.");
+Check((await ApiSkillTools.CreateAsync([apiSkillInstallation], "different-connection", "fixture-model", apiSkillWorkspace)).Count == 0
+      && (await ApiSkillTools.CreateAsync([apiSkillInstallation], "api-connection-one", "different-model", apiSkillWorkspace)).Count == 0
+      && (await ApiSkillTools.CreateAsync([apiSkillInstallation], "api-connection-one", "fixture-model", otherApiSkillWorkspace)).Count == 0,
+    "A direct-API skill leaked across provider connections, models, or workspace scope.");
+Check(await SkillPackageInstaller.InspectManagedCopyAsync(apiSkillInstallation) == ManagedSkillIntegrity.Unchanged,
+    "A newly installed skill did not receive a valid integrity baseline.");
+await File.WriteAllTextAsync(Path.Combine(apiSkillInstallation.InstallPath, "reference.md"), "locally modified");
+Check(await SkillPackageInstaller.InspectManagedCopyAsync(apiSkillInstallation) == ManagedSkillIntegrity.Modified,
+    "Local modifications to a provider-facing skill copy were not detected.");
+await File.WriteAllTextAsync(Path.Combine(apiSkillInstallation.InstallPath, "reference.md"), "reference body");
+var disabledApiSkill = await SkillPackageInstaller.SetEnabledAsync(apiSkillInstallation, false);
+Check(!disabledApiSkill.Enabled
+      && !Directory.Exists(apiSkillInstallation.InstallPath)
+      && Directory.Exists(disabledApiSkill.InstallPath)
+      && (await ApiSkillTools.CreateAsync([disabledApiSkill], "api-connection-one", "fixture-model", apiSkillWorkspace)).Count == 0,
+    "Disabling a skill did not remove it from the provider discovery path.");
+apiSkillInstallation = await SkillPackageInstaller.SetEnabledAsync(disabledApiSkill, true);
+Check(apiSkillInstallation.Enabled && Directory.Exists(apiSkillInstallation.InstallPath),
+    "A disabled skill could not be restored to its provider discovery path.");
+var apiSkillPackageV2 = Path.Combine(testRoot, "api-skill-package-v2");
+Directory.CreateDirectory(apiSkillPackageV2);
+await File.WriteAllTextAsync(Path.Combine(apiSkillPackageV2, "SKILL.md"),
+    "---\nname: fixture-skill\ndescription: Explains updated deterministic fixture testing.\n---\n");
+await File.WriteAllTextAsync(Path.Combine(apiSkillPackageV2, "reference.md"), "reference body v2");
+var apiSkillCatalogV2 = apiSkillCatalog with { SourceRevision = "revision-v2", Description = "Updated fixture skill" };
+var apiSkillDownloadV2 = new DownloadedSkillPackage(apiSkillPackageV2, "fixture-content-v2", 2, 110);
+var pendingSkillUpdate = await SkillPackageInstaller.UpdateAsync(apiSkillInstallation, apiSkillDownloadV2, apiSkillCatalogV2);
+Check(Directory.Exists(pendingSkillUpdate.BackupPath)
+      && await File.ReadAllTextAsync(Path.Combine(pendingSkillUpdate.InstallPath, "reference.md")) == "reference body v2",
+    "Skill update did not retain a rollback copy or activate the reviewed revision.");
+await SkillPackageInstaller.RollbackUpdateAsync(pendingSkillUpdate, enabled: true);
+Check(await File.ReadAllTextAsync(Path.Combine(apiSkillInstallation.InstallPath, "reference.md")) == "reference body",
+    "A failed skill update could not roll back its provider-facing copy.");
+pendingSkillUpdate = await SkillPackageInstaller.UpdateAsync(apiSkillInstallation, apiSkillDownloadV2, apiSkillCatalogV2);
+apiSkillInstallation = apiSkillInstallation with
+{
+    SourceRevision = apiSkillCatalogV2.SourceRevision,
+    PackagePath = apiSkillDownloadV2.PackagePath,
+    ContentSha256 = apiSkillDownloadV2.ContentSha256,
+    InstallPath = pendingSkillUpdate.InstallPath
+};
+SkillPackageInstaller.CommitUpdate(pendingSkillUpdate);
+Check(!Directory.Exists(pendingSkillUpdate.BackupPath)
+      && await SkillPackageInstaller.InspectManagedCopyAsync(apiSkillInstallation) == ManagedSkillIntegrity.Unchanged,
+    "Committing a skill update retained its rollback directory or lost its integrity baseline.");
+var removedApiSkill = await SkillPackageInstaller.RemoveRecoverablyAsync(apiSkillInstallation);
+Check(!Directory.Exists(apiSkillInstallation.InstallPath) && Directory.Exists(removedApiSkill),
+    "Skill removal did not leave a recoverable local copy.");
+await SkillPackageInstaller.RestoreRemovedAsync(removedApiSkill, apiSkillInstallation);
+Check(Directory.Exists(apiSkillInstallation.InstallPath), "A recoverably removed skill could not be restored after a storage failure.");
+await using (var skillLifecycleStore = new Harness.Storage.HarnessStore(Path.Combine(testRoot, "skill-lifecycle.db")))
+{
+    await skillLifecycleStore.InitializeAsync();
+    await skillLifecycleStore.UpsertSkillCatalogAsync([apiSkillCatalogV2]);
+    await skillLifecycleStore.SaveInstalledSkillAsync(apiSkillInstallation);
+    await skillLifecycleStore.DeleteInstalledSkillAsync(apiSkillInstallation.Id);
+    Check((await skillLifecycleStore.ListInstalledSkillsAsync()).Count == 0,
+        "Removing an installed-skill record did not persist.");
+}
+var skillCompatibilityProbe = new SettingsWindowViewModel(new HarnessApplicationSettings(), apiSkillWorkspace);
+var apiCompatibility = new SkillCompatibilityOption(
+    "api-connection-one:fixture-model", "api-connection-one", "fixture-model", "Fixture API · Model",
+    CompatibilityProviderId: "openai-api");
+skillCompatibilityProbe.SetCompatibilityTargets([apiCompatibility]);
+skillCompatibilityProbe.SelectedSkillCompatibility = skillCompatibilityProbe.SkillCompatibilityOptions[1];
+var codexOnlyCatalog = apiSkillCatalog with { Id = "codex-only", Name = "codex-only", Compatibility = "Codex extension" };
+skillCompatibilityProbe.ReplaceSkills([apiSkillCatalogV2, codexOnlyCatalog], [apiSkillInstallation], installTargets:
+[
+    new SkillInstallTarget("api-connection-one", "Fixture API · Model", "fixture-model", "harness-api", "openai-api")
+]);
+Check(skillCompatibilityProbe.Skills.Count == 1
+      && skillCompatibilityProbe.Skills[0].Entry.Id == apiSkillCatalogV2.Id
+      && skillCompatibilityProbe.Skills[0].IsInstalled,
+    "Direct-API model filtering exposed a Codex-only extension or lost target-specific install state.");
+skillCompatibilityProbe.ReplaceSkills([apiSkillCatalogV2], [apiSkillInstallation with { Enabled = false }]);
+Check(skillCompatibilityProbe.Skills.Single().IsInstalled
+      && skillCompatibilityProbe.SelectedSkillInstallation?.Installation.Enabled == false,
+    "A disabled skill disappeared from installed-target management and could not be re-enabled.");
+var otherModelCompatibility = apiCompatibility with { Id = "api-connection-one:other-model", ModelId = "other-model" };
+skillCompatibilityProbe.SetCompatibilityTargets([otherModelCompatibility]);
+skillCompatibilityProbe.SelectedSkillCompatibility = skillCompatibilityProbe.SkillCompatibilityOptions[1];
+skillCompatibilityProbe.ReplaceSkills([apiSkillCatalogV2], [apiSkillInstallation]);
+Check(skillCompatibilityProbe.Skills.Single().InstallState == "AVAILABLE",
+    "A model-specific installation was presented as installed for another model.");
+
 var alphaKey = MainWindowViewModel.ModelPreferenceKey("openai-codex", "alpha");
 var betaKey = MainWindowViewModel.ModelPreferenceKey("openai-codex", "beta");
 var gammaKey = MainWindowViewModel.ModelPreferenceKey("api-fixture", "gamma");
@@ -603,6 +760,38 @@ await using (var portableSourceStore = new Harness.Storage.HarnessStore(portable
         "portable-skill-install", portableSkill.Id, portableSkill.Name, portableSkill.SourceRevision,
         portableSkillPath, portableSkillPath, "GLOBAL", null, "openai-codex", null,
         "fixture-content", true, DateTimeOffset.UtcNow));
+    var portableApiSkillPath = Path.Combine(portableSourceRoot, "api-active", "portable-api-skill");
+    Directory.CreateDirectory(portableApiSkillPath);
+    await File.WriteAllTextAsync(Path.Combine(portableApiSkillPath, "SKILL.md"), "---\nname: portable-api-skill\n---\n");
+    await File.WriteAllTextAsync(Path.Combine(portableApiSkillPath, ".harness-source.json"), JsonSerializer.Serialize(new
+    {
+        catalogId = portableSkill.Id,
+        installedName = "portable-api-skill",
+        originalName = portableSkill.Name,
+        portableSkill.Repository,
+        portableSkill.SkillPath,
+        portableSkill.SourceRevision
+    }));
+    await portableSourceStore.SaveInstalledSkillAsync(new InstalledSkill(
+        "portable-api-skill-install", portableSkill.Id, portableSkill.Name, portableSkill.SourceRevision,
+        portableApiSkillPath, portableApiSkillPath, "USER", null, "portable-api-connection", "fixture-model",
+        "fixture-api-content", true, DateTimeOffset.UtcNow));
+    var portableDisabledSkillPath = Path.Combine(portableSourceRoot, "disabled-skills", "portable-disabled-skill");
+    Directory.CreateDirectory(portableDisabledSkillPath);
+    await File.WriteAllTextAsync(Path.Combine(portableDisabledSkillPath, "SKILL.md"), "---\nname: portable-disabled-skill\n---\n");
+    await File.WriteAllTextAsync(Path.Combine(portableDisabledSkillPath, ".harness-source.json"), JsonSerializer.Serialize(new
+    {
+        catalogId = portableSkill.Id,
+        installedName = "portable-disabled-skill",
+        originalName = portableSkill.Name,
+        portableSkill.Repository,
+        portableSkill.SkillPath,
+        portableSkill.SourceRevision
+    }));
+    await portableSourceStore.SaveInstalledSkillAsync(new InstalledSkill(
+        "portable-disabled-install", portableSkill.Id, portableSkill.Name, portableSkill.SourceRevision,
+        portableDisabledSkillPath, portableDisabledSkillPath, "GLOBAL", null, "openai-codex", "disabled-model",
+        "fixture-disabled-content", false, DateTimeOffset.UtcNow));
     var portableWorkspaceSkillPath = Path.Combine(portableWorkspaceRoot, ".agents", "skills", "portable-workspace-skill");
     Directory.CreateDirectory(portableWorkspaceSkillPath);
     await File.WriteAllTextAsync(Path.Combine(portableWorkspaceSkillPath, "SKILL.md"), "---\nname: portable-workspace-skill\n---\n");
@@ -632,12 +821,14 @@ var portableTargetRoot = Path.Combine(testRoot, "portable-target");
 var portableTargetDatabase = Path.Combine(portableTargetRoot, "data", "harness.db");
 var portableTargetApi = Path.Combine(portableTargetRoot, "api-connections.json");
 var portableTargetSkills = Path.Combine(portableTargetRoot, "global-skills");
+var portableTargetApiSkills = Path.Combine(portableTargetRoot, "api-skills");
 await using (var previousTargetStore = new Harness.Storage.HarnessStore(portableTargetDatabase))
 {
     await previousTargetStore.InitializeAsync();
     await previousTargetStore.SaveApplicationSettingsAsync(new HarnessApplicationSettings(PersonalInstructions: "replace me"));
 }
-var restoreService = new PortableBackupService(null, portableTargetRoot, portableTargetDatabase, portableTargetApi, portableTargetSkills);
+var restoreService = new PortableBackupService(null, portableTargetRoot, portableTargetDatabase, portableTargetApi,
+    portableTargetSkills, portableTargetApiSkills);
 var staged = await restoreService.StageRestoreAsync(portableArchive);
 Check(restoreService.HasPendingRestore && staged.PayloadCount >= 3, "Portable restore was not staged after archive validation.");
 var applied = await restoreService.ApplyPendingRestoreAsync();
@@ -649,7 +840,9 @@ await using (var restoredStore = new Harness.Storage.HarnessStore(portableTarget
     var restoredSettings = await restoredStore.LoadApplicationSettingsAsync();
     var restoredSession = await restoredStore.LoadSessionAsync(portableSessionId);
     var restoredSkills = await restoredStore.ListInstalledSkillsAsync();
-    var restoredGlobalSkill = restoredSkills.Single(skill => skill.Scope == "GLOBAL");
+    var restoredGlobalSkill = restoredSkills.Single(skill => skill.Id == "portable-skill-install");
+    var restoredApiSkill = restoredSkills.Single(skill => skill.ProviderId == "portable-api-connection");
+    var restoredDisabledSkill = restoredSkills.Single(skill => skill.Id == "portable-disabled-install");
     var deferredWorkspaceSkill = restoredSkills.Single(skill => skill.Scope == "WORKSPACE");
     Check(restoredSettings.PersonalInstructions == "portable fixture"
           && restoredSession.Messages.Any(message => message.Text == "portable message")
@@ -660,6 +853,13 @@ await using (var restoredStore = new Harness.Storage.HarnessStore(portableTarget
           && restoredGlobalSkill.Enabled
           && restoredGlobalSkill.InstallPath.StartsWith(portableTargetSkills, StringComparison.OrdinalIgnoreCase)
           && File.Exists(Path.Combine(restoredGlobalSkill.InstallPath, "SKILL.md"))
+          && restoredApiSkill.Enabled
+          && restoredApiSkill.ModelId == "fixture-model"
+          && restoredApiSkill.InstallPath.StartsWith(portableTargetApiSkills, StringComparison.OrdinalIgnoreCase)
+          && File.Exists(Path.Combine(restoredApiSkill.InstallPath, "SKILL.md"))
+          && !restoredDisabledSkill.Enabled
+          && restoredDisabledSkill.InstallPath.Contains(".harness-disabled-skills", StringComparison.OrdinalIgnoreCase)
+          && !restoredDisabledSkill.InstallPath.StartsWith(portableTargetSkills, StringComparison.OrdinalIgnoreCase)
           && !deferredWorkspaceSkill.Enabled
           && deferredWorkspaceSkill.InstallPath.StartsWith(Path.Combine(portableTargetRoot, "data", "deferred-skills"), StringComparison.OrdinalIgnoreCase),
         "Portable restore lost settings, chat history, rebased context, or an installed skill.");
@@ -849,7 +1049,7 @@ var uiThread = new Thread(() =>
 });
 uiThread.Start(); uiThread.Join();
 if (uiFailure is not null) throw uiFailure;
-Console.WriteLine("API checks passed: four native wire formats, provider-native OpenAI/Anthropic/Gemini input-token preflight, native PDF/audio/video inputs, opt-in prompt caching and cache telemetry, OpenAI native context compaction, OpenAI and Anthropic hosted-artifact request/citation/download handling, native Ollama/llama.cpp discovery, capability conformance/preflight, reasoning/tool replay, Unicode, usage, pagination, unknown capabilities, failure handling, credential routing, approval boundaries, catalog merging, isolated subscription profiles and handoff UI, portable backup round-trip, unsafe-archive rejection, delayed PowerShell Write-Host plus rendered terminal output, and Providers UI. No live API calls made.");
+Console.WriteLine("API checks passed: four native wire formats, provider-native OpenAI/Anthropic/Gemini input-token preflight, native PDF/audio/video inputs, opt-in prompt caching and cache telemetry, OpenAI native context compaction, OpenAI and Anthropic hosted-artifact request/citation/download handling, native Ollama/llama.cpp discovery, capability conformance/preflight, reasoning/tool replay, direct-API skill installation/discovery/resource isolation plus integrity/update/disable/removal lifecycle, Unicode, usage, pagination, unknown capabilities, failure handling, credential routing, approval boundaries, catalog merging, isolated subscription profiles and handoff UI, portable backup round-trip, unsafe-archive rejection, delayed PowerShell Write-Host plus rendered terminal output, and Providers UI. No live API calls made.");
 
 sealed class FixtureHandler(string content, bool json = false, string[]? pages = null, HttpStatusCode status = HttpStatusCode.OK) : HttpMessageHandler
 {

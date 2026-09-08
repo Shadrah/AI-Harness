@@ -12,6 +12,7 @@ using Avalonia.VisualTree;
 using Harness.App.ViewModels;
 using Harness.App.Services;
 using Harness.Core.Models;
+using Harness.Providers.Api;
 using Harness.Providers.Codex;
 using Harness.Storage;
 using Harness.Workspace;
@@ -471,9 +472,10 @@ public sealed partial class MainWindow : Window
             _settingsWindow.Activate();
             return;
         }
+        var settingsWorkspace = ViewModel.WorkspacePath;
         var settingsWindow = new SettingsWindow(
             _applicationSettings,
-            ViewModel.WorkspacePath,
+            settingsWorkspace,
             SaveApplicationSettingsAsync,
             ImportConversationAsync,
             ImportHarnessProjectAsync,
@@ -492,7 +494,12 @@ public sealed partial class MainWindow : Window
                 ReadSubscriptionIdentitiesAsync,
                 AddSubscriptionIdentityAsync,
                 (identityId, token) => ActivateSubscriptionIdentityAsync(identityId, "manual", token),
-                RemoveSubscriptionIdentityAsync));
+                RemoveSubscriptionIdentityAsync),
+            BuildSkillInstallTargets,
+            BuildSkillCompatibilityTargets,
+            () => !ViewModel.IsRunning
+                  && string.Equals(Path.GetFullPath(ViewModel.WorkspacePath), Path.GetFullPath(settingsWorkspace),
+                      OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal));
         _settingsWindow = settingsWindow;
         settingsWindow.ActivityRecorded += SettingsWindow_OnActivityRecorded;
         settingsWindow.Closed += (_, _) =>
@@ -503,7 +510,10 @@ public sealed partial class MainWindow : Window
         settingsWindow.Show(this);
     }
 
-    private void SettingsWindow_OnActivityRecorded(object? sender, SettingsActivityEventArgs activity) =>
+    private void SettingsWindow_OnActivityRecorded(object? sender, SettingsActivityEventArgs activity)
+    {
+        if (activity.Kind.Equals("SKILL", StringComparison.OrdinalIgnoreCase))
+            ViewModel.InvalidateContextPreview();
         ViewModel.AddActivity(
             activity.Kind,
             activity.Title,
@@ -511,6 +521,7 @@ public sealed partial class MainWindow : Window
             detail: activity.Detail,
             outcome: activity.Outcome,
             isMilestone: activity.IsMilestone);
+    }
 
     private async Task<PortableBackupSummary> CreatePortableBackupAsync(string destinationPath, CancellationToken cancellationToken)
     {
@@ -522,21 +533,48 @@ public sealed partial class MainWindow : Window
 
     private IReadOnlyList<SkillInstallTarget> BuildSkillInstallTargets()
     {
-        if (ViewModel.Models.Count == 0) return [];
-        return
-        [
-            new SkillInstallTarget(
-                "openai-codex",
-                $"OpenAI Codex · all connected models ({ViewModel.Models.Count})")
-        ];
+        var targets = new List<SkillInstallTarget>();
+        var codexCount = ViewModel.ReportedModels.Count(model => model.ProviderId == "openai-codex");
+        if (codexCount > 0)
+            targets.Add(new SkillInstallTarget("openai-codex",
+                $"OpenAI Codex · filesystem runtime ({codexCount:N0} models)",
+                SetupKind: "filesystem", CompatibilityProviderId: "openai-codex"));
+        foreach (var entry in _apiConnections.Values.OrderBy(item => item.Saved.Connection.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            var connection = entry.Saved.Connection;
+            var supported = entry.Models.Where(model =>
+                    (ApiCapabilityConformance.Evaluate(connection, model).ReadyCapabilities & ModelCapability.ToolUse) != 0)
+                .OrderBy(model => model.Descriptor.DisplayName, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (supported.Length == 0) continue;
+            targets.Add(new SkillInstallTarget(connection.Id,
+                $"{connection.Name} · all tool-capable models ({supported.Length:N0})",
+                SetupKind: "harness-api", CompatibilityProviderId: connection.ProviderId));
+            targets.AddRange(supported.Select(model => new SkillInstallTarget(
+                connection.Id,
+                $"{connection.Name} · {model.Descriptor.DisplayName}",
+                model.Descriptor.ModelId,
+                "harness-api",
+                connection.ProviderId)));
+        }
+        return targets;
     }
 
     private IReadOnlyList<SkillCompatibilityOption> BuildSkillCompatibilityTargets() =>
-        ViewModel.ReportedModels.Select(model => new SkillCompatibilityOption(
-            $"openai-codex:{model.ModelName}",
-            "openai-codex",
-            model.ModelName,
-            model.DisplayName)).ToArray();
+        ViewModel.ReportedModels.Select(model =>
+        {
+            var compatibilityId = model.ProviderId == "openai-codex"
+                ? "openai-codex"
+                : _apiConnections.TryGetValue(model.ProviderId, out var entry)
+                    ? entry.Saved.Connection.ProviderId
+                    : model.ProviderId;
+            return new SkillCompatibilityOption(
+                $"{model.ProviderId}:{model.ModelName}",
+                model.ProviderId,
+                model.ModelName,
+                model.DisplayName,
+                CompatibilityProviderId: compatibilityId);
+        }).ToArray();
 
     private async Task WarmSkillCatalogAsync()
     {

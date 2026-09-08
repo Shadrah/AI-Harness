@@ -78,8 +78,12 @@ driver without keeping that driver installed?
 - Implemented foundation: Settings library and command-strip shortcut, SQLite
   catalog/provenance, repository-level GitHub source totals, progressive
   description indexing, direct source search, topics/source/status filters,
-  pre-download directory inspection, explicit confirmation, content hashing, and
-  Codex user/workspace `.agents/skills` setup.
+  pre-download directory inspection, explicit confirmation, content hashing,
+  Codex user/workspace `.agents/skills` setup, and direct-API connection/model
+  activation through bounded on-demand discovery and resource tools. Installed
+  targets now expose integrity-aware metadata-only update review, atomic provider
+  copy replacement with rollback, reversible disable/enable, and recoverable
+  removal.
 - Implement the complete discovery, compatibility, trust, installation, provider
   delivery, update, and removal contract in [Skills Library](skills-library.md).
 - Search public catalogs and configured GitHub sources by category, capability,
@@ -88,8 +92,8 @@ driver without keeping that driver installed?
   diff before installation.
 - Install pinned, hashed copies into user or workspace scope without requiring
   the source harness or catalog to remain available.
-- Update, disable, fork, export, and remove skills; detect local modifications and
-  avoid overwriting them silently.
+- Add pin, fork, and per-skill export workflows. Update, disable/enable, recoverable
+  removal, and local-modification detection are implemented.
 - Community metadata and discovery remain separate from trust. Popularity is not
   permission, and every skill executes through Harness approvals and sandboxing.
 

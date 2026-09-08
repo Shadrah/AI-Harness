@@ -649,6 +649,8 @@ public sealed class MainWindowViewModel : ObservableObject
         RaisePropertyChanged(nameof(ContextWindowStatus));
     }
 
+    public void InvalidateContextPreview() => ClearContextPreview();
+
     public void SetApiSettingsSubmitted()
     {
         _effectiveReasoning = "SUBMITTED · NOT ECHOED";

@@ -921,6 +921,23 @@ public sealed class HarnessStore : IAsyncDisposable
         }
     }
 
+    public async Task DeleteInstalledSkillAsync(string id, CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
+        try
+        {
+            await using var connection = await OpenConnectionAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = "DELETE FROM installed_skills WHERE id = $id;";
+            command.Parameters.AddWithValue("$id", id);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     public async Task<ConversationImportResult> ImportConversationAsync(
         string projectId,
         ConversationImportPlan plan,

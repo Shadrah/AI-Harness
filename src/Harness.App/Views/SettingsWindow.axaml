@@ -350,12 +350,28 @@
                       <TextBlock Text="PROVENANCE" Classes="micro"/>
                       <TextBlock Text="{Binding SelectedSkill.TrustState}" Foreground="#E2A84A" FontSize="10" TextWrapping="Wrap"/>
                     </StackPanel>
+                    <StackPanel Spacing="7" IsVisible="{Binding HasSelectedSkillInstallation}">
+                      <Border Height="1" Background="#29313C"/>
+                      <TextBlock Text="INSTALLED TARGET" Classes="micro" Foreground="#65C7D0"/>
+                      <ComboBox x:Name="SkillInstallationPicker"
+                                ItemsSource="{Binding SelectedSkillInstallations}"
+                                SelectedItem="{Binding SelectedSkillInstallation, Mode=TwoWay}"
+                                SelectionChanged="SkillInstallation_OnChanged"/>
+                      <TextBlock Text="{Binding SelectedSkillInstallation.ScopeStatus}" Classes="micro"/>
+                      <TextBlock Text="{Binding SelectedSkillInstallation.RevisionStatus}" Classes="muted mono" FontSize="9" TextWrapping="Wrap"/>
+                      <TextBlock Text="{Binding SelectedSkillInstallation.IntegrityStatus}" Classes="muted" FontSize="10" TextWrapping="Wrap"/>
+                      <WrapPanel Orientation="Horizontal">
+                        <Button x:Name="SkillUpdateButton" Content="UPDATE" Margin="0,0,6,6" IsEnabled="{Binding CanUpdateSelectedSkill}" Click="UpdateSkill_OnClick"/>
+                        <Button x:Name="SkillEnableButton" Content="{Binding SkillEnableButtonLabel}" Margin="0,0,6,6" Click="ToggleSkill_OnClick"/>
+                        <Button x:Name="SkillRemoveButton" Content="REMOVE" Margin="0,0,6,6" Click="RemoveSkill_OnClick"/>
+                      </WrapPanel>
+                    </StackPanel>
                     <TextBlock Text="Catalog sync reads SKILL.md metadata only. Install inspects the selected package tree and asks before downloading its files." Classes="muted" FontSize="10" TextWrapping="Wrap"/>
                   </StackPanel>
                 </ScrollViewer>
                 <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8">
                   <Button Content="VIEW SOURCE" Click="ViewSkillSource_OnClick"/>
-                  <Button x:Name="SkillInstallButton" Content="INSTALL…" Classes="primary" IsEnabled="{Binding CanInstallSelectedSkill}" Click="InstallSkill_OnClick"/>
+                  <Button x:Name="SkillInstallButton" Content="{Binding SkillInstallButtonLabel}" Classes="primary" IsEnabled="{Binding CanInstallSelectedSkill}" Click="InstallSkill_OnClick"/>
                 </StackPanel>
               </Grid>
             </Border>

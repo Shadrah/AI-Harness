@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
@@ -22,11 +24,16 @@ public sealed partial class SettingsWindow : Window
     private readonly GitHubCliClient _github = new();
     private readonly CancellationTokenSource _lifetime = new();
     private readonly HarnessStore? _store;
-    private readonly IReadOnlyList<SkillInstallTarget> _skillTargets;
+    private IReadOnlyList<SkillInstallTarget> _skillTargets;
+    private readonly Func<IReadOnlyList<SkillInstallTarget>>? _readSkillTargets;
+    private readonly Func<IReadOnlyList<SkillCompatibilityOption>>? _readSkillCompatibilityTargets;
+    private readonly Func<bool>? _canChangeSkills;
     private readonly bool _openSkillsOnLaunch;
     private readonly Func<string, CancellationToken, Task<PortableBackupSummary>>? _createPortableBackup;
     private readonly SubscriptionIdentityActions? _subscriptionIdentityActions;
     private readonly PortableBackupService _portableBackupService = new();
+    private CancellationTokenSource? _skillIntegrityCancellation;
+    private int _skillLifecycleActive;
     private bool _loadingSkillCatalog;
     public event EventHandler<SettingsActivityEventArgs>? ActivityRecorded;
 
@@ -73,7 +80,10 @@ public sealed partial class SettingsWindow : Window
         Func<CancellationToken, Task<CodexDeviceCodeLoginStart>>? beginCodexSignIn = null,
         Func<CancellationToken, Task>? signOutCodex = null,
         Func<string, CancellationToken, Task<PortableBackupSummary>>? createPortableBackup = null,
-        SubscriptionIdentityActions? subscriptionIdentityActions = null)
+        SubscriptionIdentityActions? subscriptionIdentityActions = null,
+        Func<IReadOnlyList<SkillInstallTarget>>? readSkillTargets = null,
+        Func<IReadOnlyList<SkillCompatibilityOption>>? readSkillCompatibilityTargets = null,
+        Func<bool>? canChangeSkills = null)
     {
         InitializeComponent();
         _save = save;
@@ -83,6 +93,9 @@ public sealed partial class SettingsWindow : Window
         _repositoryChanged = repositoryChanged;
         _store = store;
         _skillTargets = skillTargets ?? [];
+        _readSkillTargets = readSkillTargets;
+        _readSkillCompatibilityTargets = readSkillCompatibilityTargets;
+        _canChangeSkills = canChangeSkills;
         _openSkillsOnLaunch = openSkillsOnLaunch;
         _apiConnectionsChanged = apiConnectionsChanged;
         _readCodexConnection = readCodexConnection;
@@ -476,15 +489,23 @@ public sealed partial class SettingsWindow : Window
         _loadingSkillCatalog = true;
         try
         {
-            var entries = await _store.SearchSkillCatalogAsync(
-                ViewModel.SkillSearchText,
-                ViewModel.SelectedSkillCategory,
-                ViewModel.SelectedSkillSource,
-                ViewModel.SelectedSkillCompatibility.IsAll ? null : ViewModel.SelectedSkillCompatibility.ProviderId,
-                _lifetime.Token);
-            var installed = await _store.ListInstalledSkillsAsync(_lifetime.Token);
-            var sources = await _store.ListSkillSourcesAsync(_lifetime.Token);
-            ViewModel.ReplaceSkills(entries, installed, sources);
+            if (_readSkillCompatibilityTargets is not null)
+                ViewModel.SetCompatibilityTargets(_readSkillCompatibilityTargets());
+            if (_readSkillTargets is not null) _skillTargets = _readSkillTargets();
+            var search = ViewModel.SkillSearchText;
+            var category = ViewModel.SelectedSkillCategory;
+            var source = ViewModel.SelectedSkillSource;
+            var provider = ViewModel.SelectedSkillCompatibility.IsAll
+                ? null
+                : ViewModel.SelectedSkillCompatibility.CompatibilityId;
+            var snapshot = await Task.Run(async () =>
+            {
+                var entries = await _store.SearchSkillCatalogAsync(search, category, source, provider, _lifetime.Token);
+                var installed = await _store.ListInstalledSkillsAsync(_lifetime.Token);
+                var sources = await _store.ListSkillSourcesAsync(_lifetime.Token);
+                return (entries, installed, sources);
+            }, _lifetime.Token);
+            ViewModel.ReplaceSkills(snapshot.entries, snapshot.installed, snapshot.sources, _skillTargets);
         }
         finally
         {
@@ -500,19 +521,27 @@ public sealed partial class SettingsWindow : Window
         await SearchSkillsAsync();
         await RunAsync("Building complete repository path indexes…", async () =>
         {
-            var candidates = await _github.DiscoverSkillSourceCandidatesAsync(18, _lifetime.Token);
-            await _store.UpsertSkillInventoriesAsync(
-                candidates.Select(source => new SkillRepositoryInventory(source, [])).ToArray(),
-                _lifetime.Token);
-            var sources = await _store.ListSkillSourcesAsync(_lifetime.Token);
+            var candidates = await Task.Run(
+                () => _github.DiscoverSkillSourceCandidatesAsync(18, _lifetime.Token), _lifetime.Token);
+            var sources = await Task.Run(async () =>
+            {
+                await _store.UpsertSkillInventoriesAsync(
+                    candidates.Select(source => new SkillRepositoryInventory(source, [])).ToArray(),
+                    _lifetime.Token);
+                return await _store.ListSkillSourcesAsync(_lifetime.Token);
+            }, _lifetime.Token);
             var completed = 0;
             foreach (var source in sources)
             {
                 ViewModel.SkillCatalogStatus = $"Indexing every SKILL.md path in {source.Repository} · {completed}/{sources.Count} sources complete…";
-                var inventory = await _github.IndexSkillRepositoryTreeAsync(source, _lifetime.Token);
-                await _store.UpsertSkillInventoriesAsync([inventory], _lifetime.Token);
-                if (inventory.Skills.Count == 0)
-                    await _store.RemoveSkillSourceIfEmptyAsync(source.Repository, _lifetime.Token);
+                var inventory = await Task.Run(
+                    () => _github.IndexSkillRepositoryTreeAsync(source, _lifetime.Token), _lifetime.Token);
+                await Task.Run(async () =>
+                {
+                    await _store.UpsertSkillInventoriesAsync([inventory], _lifetime.Token);
+                    if (inventory.Skills.Count == 0)
+                        await _store.RemoveSkillSourceIfEmptyAsync(source.Repository, _lifetime.Token);
+                }, _lifetime.Token);
                 completed++;
                 await LoadSkillCatalogAsync();
             }
@@ -554,15 +583,18 @@ public sealed partial class SettingsWindow : Window
         {
             await LoadSkillCatalogAsync();
             ViewModel.SkillCatalogStatus = "Finding repositories, reading their total skill counts, and caching matching descriptions…";
-            var inventories = await _github.DiscoverSkillRepositoriesAsync(
-                ViewModel.SkillSearchText,
-                ViewModel.SelectedSkillCategory,
-                repository: ViewModel.SelectedSkillSource,
+            var searchText = ViewModel.SkillSearchText;
+            var category = ViewModel.SelectedSkillCategory;
+            var selectedSource = ViewModel.SelectedSkillSource;
+            var inventories = await Task.Run(() => _github.DiscoverSkillRepositoriesAsync(
+                searchText,
+                category,
+                repository: selectedSource,
                 maxRepositories: 3,
                 skillsPerRepository: 18,
                 cancellationToken: _lifetime.Token,
-                hydrateMetadata: true);
-            await _store.UpsertSkillInventoriesAsync(inventories, _lifetime.Token);
+                hydrateMetadata: true), _lifetime.Token);
+            await Task.Run(() => _store.UpsertSkillInventoriesAsync(inventories, _lifetime.Token), _lifetime.Token);
             await LoadSkillCatalogAsync();
             var discovered = inventories.Sum(inventory => inventory.Skills.Count);
             var reported = inventories.Sum(inventory => (long)inventory.Source.ReportedSkillCount);
@@ -586,12 +618,13 @@ public sealed partial class SettingsWindow : Window
     {
         if (sender is Button { Tag: SkillCatalogItem item }) ViewModel.SelectedSkill = item;
         if (_store is null || ViewModel.SelectedSkill is not { } selected) return;
-        await RunAsync($"Inspecting {selected.Name} without downloading it…", async () =>
+        await RunSkillLifecycleAsync($"Inspecting {selected.Name} without downloading it…", async () =>
         {
             var compatibleTargets = CompatibleTargets(selected.Entry).ToArray();
             if (compatibleTargets.Length == 0)
                 throw new InvalidOperationException($"No connected provider can install a skill labeled {selected.Compatibility}.");
-            var inspection = await _github.InspectSkillPackageAsync(selected.Entry, _lifetime.Token);
+            var inspection = await Task.Run(
+                () => _github.InspectSkillPackageAsync(selected.Entry, _lifetime.Token), _lifetime.Token);
             var request = await ConfirmSkillInstallAsync(selected.Entry, inspection, compatibleTargets);
             if (request is null)
             {
@@ -599,42 +632,48 @@ public sealed partial class SettingsWindow : Window
                 return;
             }
 
+            var workspaceScope = request.Scope == "WORKSPACE" ? ViewModel.WorkspacePath : null;
+            var installId = SkillPackageInstaller.CreateInstallId(
+                selected.Entry.Id, request.Target.ProviderId, request.Scope, workspaceScope, request.Target.ModelId);
+            var existing = await Task.Run(() => _store.ListInstalledSkillsAsync(_lifetime.Token), _lifetime.Token);
+            if (existing.Any(item => item.Id.Equals(installId, StringComparison.Ordinal)))
+                throw new InvalidOperationException($"{selected.Name} already has that target and scope. Select its installed target to enable or update it.");
+
             ViewModel.SkillCatalogStatus = $"Downloading the confirmed {selected.Name} package…";
-            var package = await _github.DownloadSkillPackageAsync(
+            var package = await Task.Run(() => _github.DownloadSkillPackageAsync(
                 selected.Entry,
                 inspection,
                 SkillPackageInstaller.DefaultPackageRoot,
-                _lifetime.Token);
-            if (!request.Target.ProviderId.Equals("openai-codex", StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException($"The {request.Target.DisplayName} setup adapter is not implemented yet.");
-            var installPath = await SkillPackageInstaller.InstallCodexAsync(
-                package,
-                selected.Entry,
-                request.Scope,
-                ViewModel.WorkspacePath,
-                _lifetime.Token);
+                _lifetime.Token), _lifetime.Token);
+            var installPath = request.Target.SetupKind switch
+            {
+                "filesystem" => await Task.Run(() => SkillPackageInstaller.InstallCodexAsync(
+                    package, selected.Entry, request.Scope, ViewModel.WorkspacePath, _lifetime.Token), _lifetime.Token),
+                "harness-api" => await Task.Run(() => SkillPackageInstaller.InstallHarnessApiAsync(
+                    package, selected.Entry, request.Target.ProviderId, request.Scope, ViewModel.WorkspacePath,
+                    request.Target.ModelId, _lifetime.Token), _lifetime.Token),
+                _ => throw new InvalidOperationException($"The {request.Target.DisplayName} setup adapter is not implemented yet.")
+            };
             var installed = new InstalledSkill(
-                SkillPackageInstaller.CreateInstallId(
-                    selected.Entry.Id,
-                    request.Target.ProviderId,
-                    request.Scope,
-                    request.Scope == "WORKSPACE" ? ViewModel.WorkspacePath : null),
+                installId,
                 selected.Entry.Id,
                 selected.Entry.Name,
                 selected.Entry.SourceRevision,
                 package.PackagePath,
                 installPath,
                 request.Scope,
-                request.Scope == "WORKSPACE" ? ViewModel.WorkspacePath : null,
+                workspaceScope,
                 request.Target.ProviderId,
                 request.Target.ModelId,
                 package.ContentSha256,
                 true,
                 DateTimeOffset.UtcNow);
-            await _store.SaveInstalledSkillAsync(installed, _lifetime.Token);
+            await Task.Run(() => _store.SaveInstalledSkillAsync(installed, _lifetime.Token), _lifetime.Token);
             await LoadSkillCatalogAsync();
             ViewModel.Status = $"Installed {selected.Name} for {request.Target.DisplayName}";
-            ViewModel.SkillCatalogStatus = $"Installed at {installPath}. Codex detects skill changes automatically.";
+            ViewModel.SkillCatalogStatus = request.Target.SetupKind == "harness-api"
+                ? $"Installed at {installPath}. It is available to this connection on the next model turn."
+                : $"Installed at {installPath}. Codex detects skill changes automatically.";
             RecordActivity(
                 "SKILL",
                 $"Installed · {selected.Name}",
@@ -644,14 +683,277 @@ public sealed partial class SettingsWindow : Window
         });
     }
 
+    private async void SkillInstallation_OnChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        _skillIntegrityCancellation?.Cancel();
+        _skillIntegrityCancellation?.Dispose();
+        var selected = ViewModel.SelectedSkillInstallation;
+        if (selected is null) return;
+        var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        _skillIntegrityCancellation = cancellation;
+        try
+        {
+            var integrity = await Task.Run(
+                () => SkillPackageInstaller.InspectManagedCopyAsync(selected.Installation, cancellation.Token),
+                cancellation.Token);
+            if (ReferenceEquals(ViewModel.SelectedSkillInstallation, selected))
+                selected.SetIntegrity(integrity);
+        }
+        catch (OperationCanceledException) { }
+        finally
+        {
+            if (ReferenceEquals(_skillIntegrityCancellation, cancellation)) _skillIntegrityCancellation = null;
+            cancellation.Dispose();
+        }
+    }
+
+    private async void UpdateSkill_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (_store is null || ViewModel.SelectedSkill is not { } selected
+            || ViewModel.SelectedSkillInstallation is not { } target || !target.HasUpdate) return;
+        await RunSkillLifecycleAsync($"Inspecting the {selected.Name} update…", async () =>
+        {
+            var installation = target.Installation;
+            var integrity = await Task.Run(
+                () => SkillPackageInstaller.InspectManagedCopyAsync(installation, _lifetime.Token), _lifetime.Token);
+            target.SetIntegrity(integrity);
+            var inspection = await Task.Run(
+                () => _github.InspectSkillPackageAsync(selected.Entry, _lifetime.Token), _lifetime.Token);
+            var changes = await Task.Run(
+                () => DescribeSkillUpdateAsync(installation.PackagePath, inspection, _lifetime.Token), _lifetime.Token);
+            var warning = IntegrityWarning(integrity);
+            var confirmed = await ConfirmSkillLifecycleAsync(
+                $"Update {selected.Name}",
+                $"TARGET\n{target.TargetDisplay}\n\nVERSION\n{ShortRevision(installation.SourceRevision)} → {ShortRevision(selected.Entry.SourceRevision)}\n\nPACKAGE CHANGES\n{changes}\n\n{warning}\nThe pinned package downloads only after you confirm. Scripts are not run and permissions do not change.",
+                integrity == ManagedSkillIntegrity.Modified ? "REPLACE MODIFIED COPY" : "DOWNLOAD UPDATE");
+            if (!confirmed) { ViewModel.Status = "Skill update canceled before download"; return; }
+            var package = await Task.Run(() => _github.DownloadSkillPackageAsync(
+                selected.Entry, inspection, SkillPackageInstaller.DefaultPackageRoot, _lifetime.Token), _lifetime.Token);
+            var update = await Task.Run(
+                () => SkillPackageInstaller.UpdateAsync(installation, package, selected.Entry, _lifetime.Token),
+                _lifetime.Token);
+            var updated = installation with
+            {
+                Name = selected.Entry.Name,
+                SourceRevision = selected.Entry.SourceRevision,
+                PackagePath = package.PackagePath,
+                InstallPath = update.InstallPath,
+                ContentSha256 = package.ContentSha256,
+                InstalledAt = DateTimeOffset.UtcNow
+            };
+            try
+            {
+                await Task.Run(() => _store.SaveInstalledSkillAsync(updated, _lifetime.Token), _lifetime.Token);
+                SkillPackageInstaller.CommitUpdate(update);
+            }
+            catch
+            {
+                await Task.Run(() => SkillPackageInstaller.RollbackUpdateAsync(update, installation.Enabled, _lifetime.Token), _lifetime.Token);
+                throw;
+            }
+            await LoadSkillCatalogAsync();
+            ViewModel.Status = $"Updated {selected.Name} for {target.TargetDisplay}";
+            ViewModel.SkillCatalogStatus = "The provider-facing copy and provenance now point to the reviewed revision.";
+            RecordActivity("SKILL", $"Updated · {selected.Name}",
+                $"{target.TargetDisplay} · {ShortRevision(installation.SourceRevision)} → {ShortRevision(selected.Entry.SourceRevision)}",
+                "COMPLETED", true);
+        });
+    }
+
+    private async void ToggleSkill_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (_store is null || ViewModel.SelectedSkill is not { } selected
+            || ViewModel.SelectedSkillInstallation is not { } target) return;
+        var enabling = !target.Installation.Enabled;
+        var verb = enabling ? "Enable" : "Disable";
+        await RunSkillLifecycleAsync($"{verb}ing {selected.Name}…", async () =>
+        {
+            if (!await ConfirmSkillLifecycleAsync(
+                    $"{verb} {selected.Name}",
+                    enabling
+                        ? $"Make this skill available to {target.TargetDisplay} in its saved {target.Installation.Scope.ToLowerInvariant()} scope? No package scripts will run."
+                        : $"Remove this skill from {target.TargetDisplay}'s active discovery path? Its files and provenance are retained so it can be enabled again.",
+                    verb.ToUpperInvariant()))
+            {
+                ViewModel.Status = $"Skill {verb.ToLowerInvariant()} canceled";
+                return;
+            }
+            var changed = await Task.Run(
+                () => SkillPackageInstaller.SetEnabledAsync(target.Installation, enabling, _lifetime.Token),
+                _lifetime.Token);
+            try
+            {
+                await Task.Run(() => _store.SaveInstalledSkillAsync(changed, _lifetime.Token), _lifetime.Token);
+            }
+            catch
+            {
+                await Task.Run(() => SkillPackageInstaller.SetEnabledAsync(changed, !enabling, _lifetime.Token), _lifetime.Token);
+                throw;
+            }
+            await LoadSkillCatalogAsync();
+            ViewModel.Status = $"{(enabling ? "Enabled" : "Disabled")} {selected.Name} for {target.TargetDisplay}";
+            RecordActivity("SKILL", $"{(enabling ? "Enabled" : "Disabled")} · {selected.Name}",
+                $"{target.TargetDisplay} · {target.Installation.Scope.ToLowerInvariant()} scope", "COMPLETED", true);
+        });
+    }
+
+    private async void RemoveSkill_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (_store is null || ViewModel.SelectedSkill is not { } selected
+            || ViewModel.SelectedSkillInstallation is not { } target) return;
+        await RunSkillLifecycleAsync($"Inspecting {selected.Name} before removal…", async () =>
+        {
+            var installation = target.Installation;
+            var integrity = await Task.Run(
+                () => SkillPackageInstaller.InspectManagedCopyAsync(installation, _lifetime.Token), _lifetime.Token);
+            target.SetIntegrity(integrity);
+            var copyExists = await Task.Run(() => Directory.Exists(installation.InstallPath), _lifetime.Token);
+            if (!await ConfirmSkillLifecycleAsync(
+                    $"Remove {selected.Name}",
+                    copyExists
+                        ? $"Remove this installation from {target.TargetDisplay}?\n\n{IntegrityWarning(integrity)}\nThe provider-facing folder is moved to a local recovery path. The pinned package cache is retained."
+                        : $"The provider-facing copy is already missing. Remove its stale installed-state record for {target.TargetDisplay}? The pinned package cache is retained.",
+                    integrity == ManagedSkillIntegrity.Modified ? "REMOVE MODIFIED COPY" : copyExists ? "REMOVE" : "CLEAR MISSING RECORD")) return;
+            string? recovery = null;
+            if (copyExists)
+                recovery = await Task.Run(
+                    () => SkillPackageInstaller.RemoveRecoverablyAsync(installation, _lifetime.Token), _lifetime.Token);
+            try
+            {
+                await Task.Run(() => _store.DeleteInstalledSkillAsync(installation.Id, _lifetime.Token), _lifetime.Token);
+            }
+            catch
+            {
+                if (recovery is not null)
+                    await Task.Run(() => SkillPackageInstaller.RestoreRemovedAsync(recovery, installation, _lifetime.Token), _lifetime.Token);
+                throw;
+            }
+            await LoadSkillCatalogAsync();
+            ViewModel.Status = $"Removed {selected.Name} from {target.TargetDisplay}";
+            ViewModel.SkillCatalogStatus = recovery is null
+                ? "Cleared the missing provider copy's stale installation record."
+                : $"Removed from the provider. Recovery copy: {recovery}";
+            RecordActivity("SKILL", $"Removed · {selected.Name}", target.TargetDisplay, "COMPLETED", true);
+        });
+    }
+
+    private async Task<bool> ConfirmSkillLifecycleAsync(string title, string message, string confirmLabel)
+    {
+        var confirm = new Button { Content = confirmLabel, Classes = { "primary" } };
+        var cancel = new Button { Content = "CANCEL" };
+        var dialog = new Window
+        {
+            Title = title, Width = 620, SizeToContent = SizeToContent.Height, CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new StackPanel
+            {
+                Margin = new Avalonia.Thickness(20), Spacing = 14,
+                Children =
+                {
+                    new TextBlock { Text = title, FontSize = 20, FontWeight = Avalonia.Media.FontWeight.SemiBold },
+                    new ScrollViewer { MaxHeight = 440, Content = new TextBlock
+                        { Text = message, TextWrapping = Avalonia.Media.TextWrapping.Wrap } },
+                    new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal,
+                        HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right, Spacing = 8,
+                        Children = { cancel, confirm } }
+                }
+            }
+        };
+        confirm.Click += (_, _) => dialog.Close(true);
+        cancel.Click += (_, _) => dialog.Close(false);
+        return await dialog.ShowDialog<bool>(this);
+    }
+
+    private async Task RunSkillLifecycleAsync(string status, Func<Task> action)
+    {
+        if (_canChangeSkills?.Invoke() == false)
+        {
+            ViewModel.Status = "Finish the active turn or reopen Settings for the current workspace before changing installed skills.";
+            return;
+        }
+        if (Interlocked.Exchange(ref _skillLifecycleActive, 1) != 0)
+        {
+            ViewModel.Status = "Finish the current skill operation before starting another.";
+            return;
+        }
+        try { await RunAsync(status, action); }
+        finally { Volatile.Write(ref _skillLifecycleActive, 0); }
+    }
+
+    private static async Task<string> DescribeSkillUpdateAsync(
+        string packagePath,
+        SkillPackageInspection next,
+        CancellationToken cancellationToken)
+    {
+        if (!Directory.Exists(packagePath))
+            return $"Previous cached package unavailable · {next.FileCount:N0} files in the new revision";
+        var previous = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in EnumerateSkillFilesSafely(packagePath)
+                     .Where(path => !Path.GetFileName(path).Equals(".harness-package.json", StringComparison.OrdinalIgnoreCase)))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var bytes = await File.ReadAllBytesAsync(file, cancellationToken);
+            var prefix = Encoding.UTF8.GetBytes($"blob {bytes.Length}\0");
+            var payload = new byte[prefix.Length + bytes.Length];
+            Buffer.BlockCopy(prefix, 0, payload, 0, prefix.Length);
+            Buffer.BlockCopy(bytes, 0, payload, prefix.Length, bytes.Length);
+            previous[Path.GetRelativePath(packagePath, file).Replace(Path.DirectorySeparatorChar, '/')] =
+                Convert.ToHexString(SHA1.HashData(payload)).ToLowerInvariant();
+        }
+        var upcoming = next.Files.ToDictionary(file => file.Path.Replace('\\', '/'), file => file.Sha,
+            StringComparer.OrdinalIgnoreCase);
+        var added = upcoming.Keys.Except(previous.Keys, StringComparer.OrdinalIgnoreCase).Order().ToArray();
+        var removed = previous.Keys.Except(upcoming.Keys, StringComparer.OrdinalIgnoreCase).Order().ToArray();
+        var changed = upcoming.Keys.Intersect(previous.Keys, StringComparer.OrdinalIgnoreCase)
+            .Where(path => !upcoming[path].Equals(previous[path], StringComparison.OrdinalIgnoreCase)).Order().ToArray();
+        var names = added.Select(path => "+ " + path).Concat(changed.Select(path => "~ " + path))
+            .Concat(removed.Select(path => "- " + path)).Take(16).ToArray();
+        var total = added.Length + changed.Length + removed.Length;
+        return total == 0 ? "No file-content changes detected in GitHub metadata."
+            : $"{added.Length:N0} added · {changed.Length:N0} changed · {removed.Length:N0} removed\n"
+              + string.Join('\n', names) + (total > names.Length ? $"\n… {total - names.Length:N0} more" : string.Empty);
+    }
+
+    private static string IntegrityWarning(ManagedSkillIntegrity integrity) => integrity switch
+    {
+        ManagedSkillIntegrity.Unchanged => "LOCAL COPY\nMatches its installed integrity baseline.",
+        ManagedSkillIntegrity.Modified => "WARNING\nThe provider-facing copy has local modifications. Continuing replaces or removes those changes.",
+        _ => "CAUTION\nThis older installation has no integrity baseline. Harness cannot prove whether its provider-facing copy was modified."
+    };
+
+    private static IReadOnlyList<string> EnumerateSkillFilesSafely(string root)
+    {
+        var files = new List<string>();
+        var pending = new Stack<string>();
+        pending.Push(Path.GetFullPath(root));
+        while (pending.Count > 0)
+        {
+            var directory = pending.Pop();
+            if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0)
+                throw new UnauthorizedAccessException("The cached package contains a symbolic link or junction.");
+            foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
+            {
+                var attributes = File.GetAttributes(entry);
+                if ((attributes & FileAttributes.ReparsePoint) != 0)
+                    throw new UnauthorizedAccessException("The cached package contains a symbolic link or junction.");
+                if ((attributes & FileAttributes.Directory) != 0) pending.Push(entry);
+                else files.Add(entry);
+            }
+        }
+        return files;
+    }
+
+    private static string ShortRevision(string revision) => revision[..Math.Min(10, revision.Length)];
+
     private IEnumerable<SkillInstallTarget> CompatibleTargets(SkillCatalogEntry skill)
     {
+        if (_readSkillTargets is not null) _skillTargets = _readSkillTargets();
         var anthropicOnly = skill.Compatibility.Equals("Claude Code extension", StringComparison.OrdinalIgnoreCase);
         var openAiOnly = skill.Compatibility.Equals("Codex extension", StringComparison.OrdinalIgnoreCase);
         if (skill.Compatibility.Equals("Mixed provider extensions", StringComparison.OrdinalIgnoreCase)) return [];
         return _skillTargets.Where(target =>
-            (!anthropicOnly || target.ProviderId.Contains("anthropic", StringComparison.OrdinalIgnoreCase))
-            && (!openAiOnly || target.ProviderId.Equals("openai-codex", StringComparison.OrdinalIgnoreCase)));
+            (!anthropicOnly || target.CompatibilityId.Equals("anthropic-claude", StringComparison.OrdinalIgnoreCase))
+            && (!openAiOnly || target.CompatibilityId.Equals("openai-codex", StringComparison.OrdinalIgnoreCase)));
     }
 
     private async Task<SkillInstallChoice?> ConfirmSkillInstallAsync(

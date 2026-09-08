@@ -19,13 +19,15 @@ public sealed class PortableBackupService
     private readonly string _apiMetadataPath;
     private readonly string _restoreRoot;
     private readonly string _globalSkillRoot;
+    private readonly string _apiSkillRoot;
 
     public PortableBackupService(
         HarnessStore? store = null,
         string? applicationRoot = null,
         string? databasePath = null,
         string? apiMetadataPath = null,
-        string? globalSkillRoot = null)
+        string? globalSkillRoot = null,
+        string? apiSkillRoot = null)
     {
         _store = store;
         _databasePath = Path.GetFullPath(databasePath ?? HarnessStore.DefaultDatabasePath);
@@ -34,6 +36,7 @@ public sealed class PortableBackupService
         _restoreRoot = Path.Combine(root, "restore");
         _globalSkillRoot = Path.GetFullPath(globalSkillRoot ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".agents", "skills"));
+        _apiSkillRoot = Path.GetFullPath(apiSkillRoot ?? SkillPackageInstaller.DefaultActiveRoot);
     }
 
     private string PendingArchivePath => Path.Combine(_restoreRoot, "pending.harness-backup");
@@ -459,9 +462,16 @@ public sealed class PortableBackupService
             // Never let paths embedded in an archive write into a workspace during startup.
             // Workspace skills stay managed and disabled until the user selects or relinks that project.
             var workspaceAvailable = !isWorkspace;
-            var installRoot = !isWorkspace ? _globalSkillRoot : Path.Combine(targetData, "deferred-skills", item.Id);
-            var installPath = Path.Combine(installRoot, item.FolderName);
+            var isCodex = item.ProviderId.Equals("openai-codex", StringComparison.OrdinalIgnoreCase);
+            var installRoot = isWorkspace
+                ? Path.Combine(targetData, "deferred-skills", item.Id)
+                : isCodex
+                    ? _globalSkillRoot
+                    : SkillPackageInstaller.GetHarnessApiDestinationRoot(item.ProviderId, item.Scope, targetData, _apiSkillRoot, item.ModelId);
             var enabled = item.Enabled && workspaceAvailable;
+            if (!enabled && !isWorkspace)
+                installRoot = SkillPackageInstaller.GetDisabledDestinationRoot(installRoot, item.Id);
+            var installPath = Path.Combine(installRoot, item.FolderName);
             if (enabled)
             {
                 if (Directory.Exists(installPath) && !HasMatchingSkillMarker(installPath, item.CatalogId))
@@ -496,9 +506,13 @@ public sealed class PortableBackupService
                            && Directory.Exists(item.InstallPath))
             .ToArray();
         if (deferred.Length == 0) return 0;
-        var installRoot = Path.Combine(Path.GetFullPath(currentWorkspacePath), ".agents", "skills");
+        var indexRoots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var item in deferred)
         {
+            var installRoot = item.ProviderId.Equals("openai-codex", StringComparison.OrdinalIgnoreCase)
+                ? Path.Combine(Path.GetFullPath(currentWorkspacePath), ".agents", "skills")
+                : SkillPackageInstaller.GetHarnessApiDestinationRoot(
+                    item.ProviderId, item.Scope, currentWorkspacePath, _apiSkillRoot, item.ModelId);
             var folderName = Path.GetFileName(item.InstallPath);
             ValidateSkillIdentity(item.Id, folderName);
             var destination = Path.Combine(installRoot, folderName);
@@ -511,8 +525,10 @@ public sealed class PortableBackupService
                 WorkspacePath = Path.GetFullPath(currentWorkspacePath),
                 Enabled = true
             }, cancellationToken);
+            indexRoots.Add(installRoot);
         }
-        await SkillPackageInstaller.RebuildProviderIndexAsync(installRoot, cancellationToken);
+        foreach (var installRoot in indexRoots)
+            await SkillPackageInstaller.RebuildProviderIndexAsync(installRoot, cancellationToken);
         return deferred.Length;
     }
 
