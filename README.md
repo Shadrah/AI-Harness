@@ -120,7 +120,9 @@ capability/content contracts:
 - restart recovery that restores the local transcript at its newest message,
   resumes the saved provider thread when supported, and preserves the session's
   provider, model, reasoning effort, and service tier;
-- session creation, selection, renaming, and confirmed deletion from the task rail;
+- session creation, selection, renaming, and confirmed deletion from the task rail,
+  plus a focused Task Library for debounced title search, active/archived filtering,
+  durable archive/restore, and provider-neutral Markdown or JSON export;
 - persistent session context files copied into Harness-owned content-addressed
   storage; text is delivered as actual model input, images use native vision
   input, and references retain their original filenames;

@@ -755,7 +755,7 @@ public sealed class MainWindowViewModel : ObservableObject
         ConversationRestored?.Invoke(this, EventArgs.Empty);
     }
 
-    public void AddStoredSession(StoredSession session)
+    public void AddStoredSession(StoredSession session, bool activate = true)
     {
         var task = TaskItem.FromStored(session, Tasks.Count + 1);
         Tasks.Insert(0, task);
@@ -763,7 +763,7 @@ public sealed class MainWindowViewModel : ObservableObject
         {
             Tasks[index].Index = (index + 1).ToString("00");
         }
-        ApplyStoredSession(session, []);
+        if (activate) ApplyStoredSession(session, []);
     }
 
     public void AddContextFile(StoredAttachment attachment)

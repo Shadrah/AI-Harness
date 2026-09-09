@@ -45,6 +45,7 @@ public sealed partial class MainWindow : Window
     private SettingsWindow? _settingsWindow;
     private ExecutionWindow? _executionWindow;
     private TerminalWindow? _terminalWindow;
+    private SessionLibraryWindow? _sessionLibraryWindow;
     private StoredImportSource? _activeImportSource;
     private bool _importContextApplied;
     private const string ImportContextAppliedEvent = "harness/importContextBriefV2Applied";
@@ -487,6 +488,43 @@ public sealed partial class MainWindow : Window
         _executionWindow.Closed += (_, _) => _executionWindow = null;
         _executionWindow.Show(this);
     }
+
+    private void OpenSessionLibrary_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (_store is null || _activeProject is null) return;
+        if (_sessionLibraryWindow is not null)
+        {
+            _sessionLibraryWindow.Activate();
+            return;
+        }
+
+        var window = new SessionLibraryWindow(
+            _store,
+            _activeProject,
+            () => _activeSession?.Id,
+            new SessionLibraryActions(
+                OpenSessionFromLibraryAsync,
+                RenameSessionFromLibraryAsync,
+                SetSessionArchivedFromLibraryAsync,
+                DeleteSessionFromLibraryAsync));
+        _sessionLibraryWindow = window;
+        window.ActionCompleted += SessionLibrary_OnActionCompleted;
+        window.Closed += (_, _) =>
+        {
+            window.ActionCompleted -= SessionLibrary_OnActionCompleted;
+            if (ReferenceEquals(_sessionLibraryWindow, window)) _sessionLibraryWindow = null;
+        };
+        window.Show(this);
+    }
+
+    private void SessionLibrary_OnActionCompleted(object? sender, SessionLibraryActivityEventArgs activity) =>
+        ViewModel.AddActivity(
+            activity.Kind,
+            activity.Title,
+            activity.Color,
+            detail: activity.Detail,
+            outcome: activity.Outcome,
+            isMilestone: false);
 
     private void OpenTerminal_OnClick(object? sender, RoutedEventArgs e) => OpenTerminal();
 
@@ -1552,6 +1590,8 @@ public sealed partial class MainWindow : Window
         {
             _workingTreeWindow?.Close();
             _workingTreeWindow = null;
+            _sessionLibraryWindow?.Close();
+            _sessionLibraryWindow = null;
             var token = cancellationToken.CanBeCanceled ? cancellationToken : _lifetime.Token;
             var snapshot = await _store.OpenWorkspaceAsync(path, token);
             if (switchVersion is { } requested
@@ -1841,15 +1881,7 @@ public sealed partial class MainWindow : Window
 
         try
         {
-            var loaded = await _store.LoadSessionAsync(selected.SessionId, _lifetime.Token);
-            _activeSession = loaded.Session;
-            _threadId = null;
-            ViewModel.ApplyStoredSession(loaded.Session, loaded.Messages, loaded.Attachments);
-            await LoadImportStateAsync(loaded.Session.Id);
-            await SelectSubscriptionIdentityForSessionAsync(loaded.Session.Id, _lifetime.Token, restartRuntime: true);
-            await SelectClaudeSubscriptionIdentityForSessionAsync(loaded.Session.Id, _lifetime.Token, restartRuntime: true);
-            ViewModel.ApplySessionModelSettings(loaded.Session);
-            await ResumeActiveThreadAsync();
+            await OpenSessionFromLibraryAsync(selected.SessionId, _lifetime.Token);
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
         {
@@ -1858,6 +1890,98 @@ public sealed partial class MainWindow : Window
         {
             ViewModel.AddActivity("STORAGE", CleanError(exception), "#E2A84A");
         }
+    }
+
+    private async Task OpenSessionFromLibraryAsync(string sessionId, CancellationToken cancellationToken)
+    {
+        if (_store is null) throw new InvalidOperationException("Harness storage is not ready.");
+        if (ViewModel.IsRunning) throw new InvalidOperationException("Finish or stop the active turn before switching tasks.");
+        if (sessionId == _activeSession?.Id) return;
+        await FlushPersistenceAsync();
+        var loaded = await _store.LoadSessionAsync(sessionId, cancellationToken);
+        if (loaded.Session.ArchivedAt is not null)
+            throw new InvalidOperationException("Restore this task before opening it.");
+        _activeSession = loaded.Session;
+        _threadId = null;
+        ViewModel.ApplyStoredSession(loaded.Session, loaded.Messages, loaded.Attachments);
+        await LoadImportStateAsync(loaded.Session.Id);
+        await SelectSubscriptionIdentityForSessionAsync(loaded.Session.Id, cancellationToken, restartRuntime: true);
+        await SelectClaudeSubscriptionIdentityForSessionAsync(loaded.Session.Id, cancellationToken, restartRuntime: true);
+        ViewModel.ApplySessionModelSettings(loaded.Session);
+        await ResumeActiveThreadAsync();
+    }
+
+    private async Task RenameSessionFromLibraryAsync(
+        string sessionId,
+        string title,
+        CancellationToken cancellationToken)
+    {
+        if (_store is null) throw new InvalidOperationException("Harness storage is not ready.");
+        if (ViewModel.IsRunning) throw new InvalidOperationException("Finish or stop the active turn before renaming a task.");
+        await FlushPersistenceAsync();
+        await _store.RenameSessionAsync(sessionId, title, cancellationToken);
+        ViewModel.RenameStoredSession(sessionId, title);
+        if (_activeSession?.Id == sessionId)
+            _activeSession = _activeSession with { Title = title, UpdatedAt = DateTimeOffset.UtcNow };
+    }
+
+    private async Task SetSessionArchivedFromLibraryAsync(
+        string sessionId,
+        bool archived,
+        CancellationToken cancellationToken)
+    {
+        if (_store is null || _activeProject is null)
+            throw new InvalidOperationException("Harness storage is not ready.");
+        if (ViewModel.IsRunning)
+            throw new InvalidOperationException("Finish or stop the active turn before archiving a task.");
+        await FlushPersistenceAsync();
+        var updated = await _store.SetSessionArchivedAsync(sessionId, archived, cancellationToken);
+        if (!archived)
+        {
+            if (ViewModel.Tasks.All(task => task.SessionId != sessionId))
+                ViewModel.AddStoredSession(updated, activate: false);
+            return;
+        }
+
+        var removedActive = _activeSession?.Id == sessionId;
+        ViewModel.RemoveStoredSession(sessionId);
+        if (removedActive) await ActivateReplacementSessionAsync(cancellationToken);
+    }
+
+    private async Task DeleteSessionFromLibraryAsync(string sessionId, CancellationToken cancellationToken)
+    {
+        if (_store is null || _activeProject is null)
+            throw new InvalidOperationException("Harness storage is not ready.");
+        if (ViewModel.IsRunning)
+            throw new InvalidOperationException("Finish or stop the active turn before deleting a task.");
+        await FlushPersistenceAsync();
+        await _store.DeleteSessionAsync(sessionId, cancellationToken);
+        var removedActive = _activeSession?.Id == sessionId;
+        ViewModel.RemoveStoredSession(sessionId);
+        if (removedActive) await ActivateReplacementSessionAsync(cancellationToken);
+    }
+
+    private async Task ActivateReplacementSessionAsync(CancellationToken cancellationToken)
+    {
+        if (_store is null || _activeProject is null) return;
+        if (ViewModel.Tasks.Count > 0)
+        {
+            await OpenSessionFromLibraryAsync(ViewModel.Tasks[0].SessionId, cancellationToken);
+            return;
+        }
+
+        var session = await _store.CreateSessionAsync(_activeProject.Id, "New session", cancellationToken);
+        _activeSession = session;
+        _activeImportSource = null;
+        _importContextApplied = false;
+        _appliedContextContentIds.Clear();
+        _appliedContextThreadId = null;
+        _threadId = null;
+        ViewModel.AddStoredSession(session);
+        await SelectSubscriptionIdentityForSessionAsync(session.Id, cancellationToken, restartRuntime: true);
+        await SelectClaudeSubscriptionIdentityForSessionAsync(session.Id, cancellationToken, restartRuntime: true);
+        ViewModel.ApplySessionModelSettings(session);
+        await ResumeActiveThreadAsync();
     }
 
     private async void ConnectOpenAi_OnClick(object? sender, RoutedEventArgs e)

@@ -1,0 +1,95 @@
+<Window
+    x:Class="Harness.App.Views.SessionLibraryWindow"
+    x:DataType="vm:SessionLibraryViewModel"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:Harness.App.Controls"
+    xmlns:vm="using:Harness.App.ViewModels"
+    Title="Harness — Task Library"
+    Width="980" Height="680" MinWidth="780" MinHeight="520"
+    CanResize="True"
+    ExtendClientAreaToDecorationsHint="True"
+    ExtendClientAreaChromeHints="NoChrome"
+    ExtendClientAreaTitleBarHeightHint="44"
+    WindowStartupLocation="CenterOwner">
+  <Grid RowDefinitions="44,*,28" Background="#11151B">
+    <Border Classes="hairline" Background="#151A21" PointerPressed="TitleBar_OnPointerPressed">
+      <Grid Margin="14,0,0,0" ColumnDefinitions="Auto,12,Auto,*,40,40,40">
+        <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+          <controls:HarnessMark />
+          <TextBlock Text="TASK LIBRARY" Classes="micro" VerticalAlignment="Center"/>
+        </StackPanel>
+        <Border Grid.Column="1" Width="1" Height="18" Background="#29313C"/>
+        <TextBlock Grid.Column="2" Text="{Binding Status}" Classes="micro" FontSize="8" Foreground="#65C7D0" VerticalAlignment="Center"/>
+        <Button Grid.Column="4" Classes="window-command" Click="Minimize_OnClick"><Border Width="12" Height="1.5" Background="#D8DEE8"/></Button>
+        <Button Grid.Column="5" Classes="window-command" Click="Maximize_OnClick"><Border Width="11" Height="11" BorderBrush="#D8DEE8" BorderThickness="1.5"/></Button>
+        <Button Grid.Column="6" Classes="window-command window-close" Click="Close_OnClick"><Path Width="14" Height="14" Stretch="Uniform" Stroke="#D8DEE8" StrokeThickness="1.5" Data="M3,3 L13,13 M13,3 L3,13"/></Button>
+      </Grid>
+    </Border>
+
+    <Grid Grid.Row="1" RowDefinitions="86,50,*" Margin="20,16,20,18">
+      <Grid ColumnDefinitions="*,Auto" VerticalAlignment="Center">
+        <StackPanel Spacing="4">
+          <TextBlock Text="Durable task history" FontSize="23" FontWeight="SemiBold"/>
+          <TextBlock x:Name="WorkspaceLabel" Classes="muted mono" FontSize="10"/>
+          <TextBlock Text="Find, resume, archive, restore, or export a task without filling the workspace rail." Classes="muted" FontSize="10"/>
+        </StackPanel>
+        <Button Grid.Column="1" Content="REFRESH" Click="Refresh_OnClick"/>
+      </Grid>
+
+      <Grid Grid.Row="1" ColumnDefinitions="*,12,170">
+        <TextBox x:Name="SearchBox" Watermark="Search task titles…" TextChanged="Search_OnTextChanged"/>
+        <ComboBox x:Name="StatusFilter" Grid.Column="2" SelectedIndex="0" SelectionChanged="Filter_OnSelectionChanged">
+          <ComboBoxItem Content="All tasks" Tag="all"/>
+          <ComboBoxItem Content="Active" Tag="active"/>
+          <ComboBoxItem Content="Archived" Tag="archived"/>
+        </ComboBox>
+      </Grid>
+
+      <Grid Grid.Row="2" ColumnDefinitions="3*,14,2*">
+        <Border Classes="panel" Padding="0">
+          <ListBox ItemsSource="{Binding Sessions}"
+                   SelectedItem="{Binding SelectedSession, Mode=TwoWay}"
+                   SelectionChanged="SessionSelection_OnChanged"
+                   Background="Transparent" BorderThickness="0">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="vm:SessionLibraryItem">
+                <Grid Margin="8,4" ColumnDefinitions="4,14,*,Auto">
+                  <Border Background="{Binding StateColor}" CornerRadius="2"/>
+                  <StackPanel Grid.Column="2" Spacing="4" Margin="0,7">
+                    <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                    <TextBlock Text="{Binding Provider}" Classes="muted" FontSize="9" TextTrimming="CharacterEllipsis"/>
+                    <TextBlock Text="{Binding Updated}" Classes="muted mono" FontSize="8"/>
+                  </StackPanel>
+                  <TextBlock Grid.Column="3" Text="{Binding State}" Foreground="{Binding StateColor}" Classes="micro" FontSize="8" VerticalAlignment="Center" Margin="12,0"/>
+                </Grid>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </Border>
+
+        <Border Grid.Column="2" Classes="panel" Padding="18">
+          <Grid RowDefinitions="Auto,Auto,16,Auto,Auto,*,Auto,Auto,Auto" IsEnabled="{Binding HasSelection}">
+            <TextBlock Text="SELECTED TASK" Classes="micro" Foreground="#65C7D0"/>
+            <TextBlock Grid.Row="1" Text="{Binding SelectedSession.State}" Foreground="{Binding SelectedSession.StateColor}" Classes="micro" FontSize="8" Margin="0,6,0,0"/>
+            <TextBlock Grid.Row="3" Text="NAME" Classes="micro" FontSize="8"/>
+            <TextBox x:Name="TitleEditor" Grid.Row="4" Margin="0,6,0,0"/>
+            <StackPanel Grid.Row="6" Spacing="7">
+              <Button Content="OPEN TASK" Classes="primary" IsEnabled="{Binding CanOpen}" Click="Open_OnClick" HorizontalAlignment="Stretch"/>
+              <Grid ColumnDefinitions="*,8,*">
+                <Button Content="RENAME" Click="Rename_OnClick" HorizontalAlignment="Stretch"/>
+                <Button Grid.Column="2" Content="{Binding ArchiveAction}" Click="Archive_OnClick" HorizontalAlignment="Stretch"/>
+              </Grid>
+            </StackPanel>
+            <Button Grid.Row="7" Content="EXPORT…" Click="Export_OnClick" HorizontalAlignment="Stretch" Margin="0,7,0,0"/>
+            <Button Grid.Row="8" Content="DELETE" Classes="ghost" Foreground="#E2A84A" Click="Delete_OnClick" HorizontalAlignment="Stretch" Margin="0,7,0,0"/>
+          </Grid>
+        </Border>
+      </Grid>
+    </Grid>
+
+    <Border Grid.Row="2" BorderBrush="#29313C" BorderThickness="0,1,0,0" Background="#0D1116">
+      <TextBlock Text="Archived tasks retain their local history and can be restored at any time. Exports never alter the stored task." Classes="muted" FontSize="9" Margin="11,0" VerticalAlignment="Center"/>
+    </Border>
+  </Grid>
+</Window>

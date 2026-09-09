@@ -17,7 +17,8 @@ public sealed record StoredSession(
     string? ReasoningEffort,
     string? ServiceTier,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    DateTimeOffset? ArchivedAt = null);
 
 public sealed record StoredMessage(
     string Id,

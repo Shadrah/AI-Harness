@@ -117,6 +117,9 @@
               <TextBlock Text="TASKS" Classes="micro" />
               <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
                 <TextBlock Text="{Binding Tasks.Count}" Classes="muted mono" FontSize="10" VerticalAlignment="Center" />
+                <Button Classes="ghost" Width="24" Height="24" MinHeight="0" Padding="0" Click="OpenSessionLibrary_OnClick" ToolTip.Tip="Search and manage task history">
+                  <Path Width="12" Height="12" Stretch="Uniform" Stroke="#8993A3" StrokeThickness="1.4" Data="M2,3 L13,3 M2,8 L13,8 M2,13 L13,13 M1,3 L1,3 M1,8 L1,8 M1,13 L1,13"/>
+                </Button>
                 <Button Content="＋" Classes="ghost" Padding="4,0" Click="NewSession_OnClick" ToolTip.Tip="New durable session" />
               </StackPanel>
             </Grid>

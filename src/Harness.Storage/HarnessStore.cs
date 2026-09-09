@@ -8,7 +8,7 @@ namespace Harness.Storage;
 
 public sealed class HarnessStore : IAsyncDisposable
 {
-    private const int SchemaVersion = 5;
+    private const int SchemaVersion = 6;
     public const int CurrentSchemaVersion = SchemaVersion;
     private readonly string _connectionString;
     // SQLite async calls still execute synchronously. Gate awaits force-yield
@@ -76,7 +76,8 @@ public sealed class HarnessStore : IAsyncDisposable
                     reasoning_effort TEXT NULL,
                     service_tier TEXT NULL,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    archived_at TEXT NULL
                 );
 
                 CREATE INDEX IF NOT EXISTS ix_sessions_project_updated
@@ -207,6 +208,17 @@ public sealed class HarnessStore : IAsyncDisposable
                 UPDATE schema_info SET version = 5 WHERE version < 5;
                 """;
             await command.ExecuteNonQueryAsync(cancellationToken);
+            await AddColumnIfMissingAsync(
+                connection,
+                "sessions",
+                "archived_at",
+                "TEXT NULL",
+                cancellationToken);
+            await using (var migrate = connection.CreateCommand())
+            {
+                migrate.CommandText = "UPDATE schema_info SET version = 6 WHERE version < 6;";
+                await migrate.ExecuteNonQueryAsync(cancellationToken);
+            }
             await ClassifyLegacyInternalCodexImportsAsync(connection, cancellationToken);
 
             await using var versionCommand = connection.CreateCommand();
@@ -1333,6 +1345,82 @@ public sealed class HarnessStore : IAsyncDisposable
         }
     }
 
+    public async Task<IReadOnlyList<StoredSession>> SearchSessionsAsync(
+        string projectId,
+        string? query = null,
+        bool? archived = null,
+        int limit = 500,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedQuery = query?.Trim() ?? string.Empty;
+        var boundedLimit = Math.Clamp(limit, 1, 2000);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
+        try
+        {
+            await using var connection = await OpenConnectionAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT id, project_id, title, provider_id, provider_thread_id, model_id,
+                       reasoning_effort, service_tier, created_at, updated_at, archived_at
+                FROM sessions
+                WHERE project_id = $projectId
+                  AND ($query = '' OR title LIKE '%' || $query || '%' COLLATE NOCASE)
+                  AND ($archiveState = -1
+                       OR ($archiveState = 0 AND archived_at IS NULL)
+                       OR ($archiveState = 1 AND archived_at IS NOT NULL))
+                  AND NOT EXISTS (
+                      SELECT 1 FROM import_sources imported
+                      WHERE imported.session_id = sessions.id
+                        AND imported.source_kind LIKE 'Codex internal%'
+                  )
+                ORDER BY updated_at DESC
+                LIMIT $limit;
+                """;
+            command.Parameters.AddWithValue("$projectId", projectId);
+            command.Parameters.AddWithValue("$query", normalizedQuery);
+            command.Parameters.AddWithValue("$archiveState", archived is null ? -1 : archived.Value ? 1 : 0);
+            command.Parameters.AddWithValue("$limit", boundedLimit);
+            var sessions = new List<StoredSession>();
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken)) sessions.Add(ReadSession(reader));
+            return sessions;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<StoredSession> SetSessionArchivedAsync(
+        string sessionId,
+        bool archived,
+        CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
+        try
+        {
+            await using var connection = await OpenConnectionAsync(cancellationToken);
+            var now = DateTimeOffset.UtcNow;
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                UPDATE sessions
+                SET archived_at = $archivedAt, updated_at = $updatedAt
+                WHERE id = $id;
+                """;
+            command.Parameters.AddWithValue("$archivedAt", archived ? FormatTimestamp(now) : DBNull.Value);
+            command.Parameters.AddWithValue("$updatedAt", FormatTimestamp(now));
+            command.Parameters.AddWithValue("$id", sessionId);
+            if (await command.ExecuteNonQueryAsync(cancellationToken) != 1)
+                throw new InvalidOperationException($"Session {sessionId} was not found.");
+            return await ReadSessionAsync(connection, null, sessionId, cancellationToken)
+                ?? throw new InvalidOperationException($"Session {sessionId} was not found.");
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     public async Task<StoredAttachment> AddAttachmentAsync(
         string sessionId,
         string sourcePath,
@@ -1693,6 +1781,26 @@ public sealed class HarnessStore : IAsyncDisposable
         return connection;
     }
 
+    private static async Task AddColumnIfMissingAsync(
+        SqliteConnection connection,
+        string table,
+        string column,
+        string declaration,
+        CancellationToken cancellationToken)
+    {
+        await using var inspect = connection.CreateCommand();
+        inspect.CommandText = $"PRAGMA table_info({table});";
+        await using var reader = await inspect.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (string.Equals(reader.GetString(1), column, StringComparison.OrdinalIgnoreCase)) return;
+        }
+        await reader.DisposeAsync();
+        await using var alter = connection.CreateCommand();
+        alter.CommandText = $"ALTER TABLE {table} ADD COLUMN {column} {declaration};";
+        await alter.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     private static StoredSession NewSession(string projectId, string title, DateTimeOffset now) =>
         new(
             Guid.NewGuid().ToString("N"),
@@ -1704,7 +1812,8 @@ public sealed class HarnessStore : IAsyncDisposable
             null,
             null,
             now,
-            now);
+            now,
+            null);
 
     private static async Task<StoredProject?> ReadProjectByPathAsync(
         SqliteConnection connection,
@@ -1772,9 +1881,10 @@ public sealed class HarnessStore : IAsyncDisposable
         command.Transaction = transaction;
         command.CommandText = """
             SELECT id, project_id, title, provider_id, provider_thread_id, model_id,
-                   reasoning_effort, service_tier, created_at, updated_at
+                   reasoning_effort, service_tier, created_at, updated_at, archived_at
             FROM sessions
             WHERE project_id = $projectId
+              AND archived_at IS NULL
               AND NOT EXISTS (
                   SELECT 1 FROM import_sources imported
                   WHERE imported.session_id = sessions.id
@@ -1865,7 +1975,7 @@ public sealed class HarnessStore : IAsyncDisposable
         command.Transaction = transaction;
         command.CommandText = """
             SELECT id, project_id, title, provider_id, provider_thread_id, model_id,
-                   reasoning_effort, service_tier, created_at, updated_at
+                   reasoning_effort, service_tier, created_at, updated_at, archived_at
             FROM sessions WHERE id = $id;
             """;
         command.Parameters.AddWithValue("$id", sessionId);
@@ -1884,10 +1994,10 @@ public sealed class HarnessStore : IAsyncDisposable
         command.CommandText = """
             INSERT INTO sessions(
                 id, project_id, title, provider_id, provider_thread_id, model_id,
-                reasoning_effort, service_tier, created_at, updated_at)
+                reasoning_effort, service_tier, created_at, updated_at, archived_at)
             VALUES(
                 $id, $projectId, $title, $providerId, $providerThreadId, $modelId,
-                $reasoningEffort, $serviceTier, $createdAt, $updatedAt);
+                $reasoningEffort, $serviceTier, $createdAt, $updatedAt, $archivedAt);
             """;
         command.Parameters.AddWithValue("$id", session.Id);
         command.Parameters.AddWithValue("$projectId", session.ProjectId);
@@ -1899,6 +2009,9 @@ public sealed class HarnessStore : IAsyncDisposable
         command.Parameters.AddWithValue("$serviceTier", (object?)session.ServiceTier ?? DBNull.Value);
         command.Parameters.AddWithValue("$createdAt", FormatTimestamp(session.CreatedAt));
         command.Parameters.AddWithValue("$updatedAt", FormatTimestamp(session.UpdatedAt));
+        command.Parameters.AddWithValue("$archivedAt", session.ArchivedAt is { } archivedAt
+            ? FormatTimestamp(archivedAt)
+            : DBNull.Value);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -2042,7 +2155,8 @@ public sealed class HarnessStore : IAsyncDisposable
         reader.IsDBNull(6) ? null : reader.GetString(6),
         reader.IsDBNull(7) ? null : reader.GetString(7),
         ParseTimestamp(reader.GetString(8)),
-        ParseTimestamp(reader.GetString(9)));
+        ParseTimestamp(reader.GetString(9)),
+        reader.IsDBNull(10) ? null : ParseTimestamp(reader.GetString(10)));
 
     private static string NormalizePath(string path) =>
         OperatingSystem.IsWindows()

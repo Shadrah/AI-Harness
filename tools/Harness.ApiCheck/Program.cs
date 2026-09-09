@@ -14,6 +14,7 @@ using Harness.Core.Models;
 using Harness.Providers.Api;
 using Harness.Providers.Claude;
 using Harness.Workspace;
+using Microsoft.Data.Sqlite;
 
 if (args.Contains("--startup-profile", StringComparer.Ordinal))
 {
@@ -803,6 +804,74 @@ await diagnostics.CompleteSessionAsync();
 Check(!Directory.EnumerateFiles(Path.Combine(diagnosticsRoot, "pending"), "*.json").Any(),
     "Clean shutdown left a crash-recovery marker behind.");
 
+var sessionLifecycleRoot = Path.Combine(testRoot, "session-lifecycle");
+Directory.CreateDirectory(sessionLifecycleRoot);
+await using (var sessionStore = new Harness.Storage.HarnessStore(Path.Combine(sessionLifecycleRoot, "harness.db")))
+{
+    await sessionStore.InitializeAsync();
+    var workspace = await sessionStore.OpenWorkspaceAsync(sessionLifecycleRoot);
+    var original = workspace.ActiveSession;
+    await sessionStore.RenameSessionAsync(original.Id, "Original task");
+    var current = await sessionStore.CreateSessionAsync(workspace.Project.Id, "Current task");
+    var archived = await sessionStore.SetSessionArchivedAsync(original.Id, true);
+    Check(archived.ArchivedAt is not null, "Archiving a task did not persist its archive timestamp.");
+    var reopened = await sessionStore.OpenWorkspaceAsync(sessionLifecycleRoot);
+    Check(reopened.Sessions.Count == 1 && reopened.ActiveSession.Id == current.Id,
+        "An archived task remained in the active workspace rail.");
+    var allTasks = await sessionStore.SearchSessionsAsync(workspace.Project.Id);
+    var archivedTasks = await sessionStore.SearchSessionsAsync(workspace.Project.Id, archived: true);
+    var searchedTasks = await sessionStore.SearchSessionsAsync(workspace.Project.Id, "Current", archived: false);
+    Check(allTasks.Count == 2 && archivedTasks.Single().Id == original.Id && searchedTasks.Single().Id == current.Id,
+        "Task Library search or archive filtering lost durable sessions.");
+    var restored = await sessionStore.SetSessionArchivedAsync(original.Id, false);
+    Check(restored.ArchivedAt is null && (await sessionStore.SearchSessionsAsync(workspace.Project.Id, archived: false)).Count == 2,
+        "Restoring an archived task did not return it to the active task set.");
+
+    await sessionStore.UpsertMessageAsync(new StoredMessage(
+        Guid.NewGuid().ToString("N"), current.Id, 0, "YOU", "Prompt", "export fixture", "COMPLETED",
+        "#8993A3", false, DateTimeOffset.UtcNow));
+    var loaded = await sessionStore.LoadSessionAsync(current.Id);
+    var markdownExport = Path.Combine(sessionLifecycleRoot, "task.md");
+    var jsonExport = Path.Combine(sessionLifecycleRoot, "task.json");
+    var exporter = new SessionExportService();
+    await exporter.ExportAsync(markdownExport, loaded.Session, loaded.Messages, loaded.Attachments);
+    await exporter.ExportAsync(jsonExport, loaded.Session, loaded.Messages, loaded.Attachments);
+    Check((await File.ReadAllTextAsync(markdownExport)).Contains("export fixture", StringComparison.Ordinal)
+          && JsonNode.Parse(await File.ReadAllTextAsync(jsonExport))?["Format"]?.GetValue<string>() == "harness.session.v1",
+        "Markdown or structured JSON task export omitted durable history.");
+}
+
+var legacyDatabase = Path.Combine(testRoot, "schema-v5.db");
+await using (var legacy = new SqliteConnection($"Data Source={legacyDatabase}"))
+{
+    await legacy.OpenAsync();
+    await using var create = legacy.CreateCommand();
+    create.CommandText = """
+        CREATE TABLE schema_info(version INTEGER NOT NULL);
+        INSERT INTO schema_info(version) VALUES(5);
+        CREATE TABLE sessions(
+            id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL,
+            provider_id TEXT NULL, provider_thread_id TEXT NULL, model_id TEXT NULL,
+            reasoning_effort TEXT NULL, service_tier TEXT NULL,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        """;
+    await create.ExecuteNonQueryAsync();
+}
+await using (var migrated = new Harness.Storage.HarnessStore(legacyDatabase))
+    await migrated.InitializeAsync();
+await using (var inspect = new SqliteConnection($"Data Source={legacyDatabase}"))
+{
+    await inspect.OpenAsync();
+    await using var version = inspect.CreateCommand();
+    version.CommandText = "SELECT version FROM schema_info;";
+    Check(Convert.ToInt32(await version.ExecuteScalarAsync()) == Harness.Storage.HarnessStore.CurrentSchemaVersion,
+        "The task archive schema did not migrate an existing Harness database.");
+    await using var columns = inspect.CreateCommand();
+    columns.CommandText = "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'archived_at';";
+    Check(Convert.ToInt32(await columns.ExecuteScalarAsync()) == 1,
+        "The migrated sessions table is missing durable archive state.");
+}
+
 var portableSourceRoot = Path.Combine(testRoot, "portable-source");
 var portableSourceDatabase = Path.Combine(portableSourceRoot, "data", "harness.db");
 var portableSourceApi = Path.Combine(portableSourceRoot, "api-connections.json");
@@ -1149,6 +1218,17 @@ var uiThread = new Thread(() =>
         terminalWindow.Close();
         Dispatcher.UIThread.RunJobs();
 
+        var taskLibrary = new SessionLibraryWindow();
+        taskLibrary.Show();
+        Dispatcher.UIThread.RunJobs();
+        AvaloniaHeadlessPlatform.ForceRenderTimerTick();
+        Check(taskLibrary.FindControl<TextBox>("SearchBox") is not null
+              && taskLibrary.FindControl<ComboBox>("StatusFilter") is not null
+              && taskLibrary.FindControl<TextBox>("TitleEditor") is not null,
+            "Task Library search, archive filter, or rename surface is missing.");
+        taskLibrary.Close();
+        Dispatcher.UIThread.RunJobs();
+
         // Reproduce the production failure: Opened starts asynchronous catalog I/O, then closing
         // cancels it. Cancellation from an async-void UI event must never escape the dispatcher.
         var lifecycle = new SettingsWindow(new HarnessApplicationSettings(), testRoot,
@@ -1165,7 +1245,7 @@ var uiThread = new Thread(() =>
 });
 uiThread.Start(); uiThread.Join();
 if (uiFailure is not null) throw uiFailure;
-Console.WriteLine("API checks passed: Claude Code subscription model/effort/fast-mode/usage parsing, four native API wire formats, provider-native OpenAI/Anthropic/Gemini input-token preflight, native PDF/audio/video inputs, opt-in prompt caching and cache telemetry, OpenAI native context compaction, OpenAI and Anthropic hosted-artifact request/citation/download handling, native Ollama/llama.cpp discovery, capability conformance/preflight, reasoning/tool replay, direct-API skill installation/discovery/resource isolation plus integrity/update/disable/removal lifecycle, Unicode, usage, pagination, unknown capabilities, failure handling, credential routing, approval boundaries, catalog merging, isolated subscription profiles and handoff UI, portable backup round-trip, unsafe-archive rejection, delayed PowerShell Write-Host plus rendered terminal output, and Providers UI. No live API calls made.");
+Console.WriteLine("API checks passed: Claude Code subscription model/effort/fast-mode/usage parsing, four native API wire formats, provider-native OpenAI/Anthropic/Gemini input-token preflight, native PDF/audio/video inputs, opt-in prompt caching and cache telemetry, OpenAI native context compaction, OpenAI and Anthropic hosted-artifact request/citation/download handling, native Ollama/llama.cpp discovery, capability conformance/preflight, reasoning/tool replay, direct-API skill installation/discovery/resource isolation plus integrity/update/disable/removal lifecycle, durable task search/archive/restore/export and v5 migration, Unicode, usage, pagination, unknown capabilities, failure handling, credential routing, approval boundaries, catalog merging, isolated subscription profiles and handoff UI, portable backup round-trip, unsafe-archive rejection, delayed PowerShell Write-Host plus rendered terminal output, and Providers UI. No live API calls made.");
 
 sealed class FixtureHandler(string content, bool json = false, string[]? pages = null, HttpStatusCode status = HttpStatusCode.OK) : HttpMessageHandler
 {

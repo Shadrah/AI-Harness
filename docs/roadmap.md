@@ -21,8 +21,11 @@ driver without keeping that driver installed?
   access are implemented. Every discard creates a recovery copy first.
 - Durable projects, sessions, normalized messages, provider events,
   content-addressed context-file attachments, and restart recovery are
-  implemented in local SQLite storage. Durable turn-level projections and
-  additional attachment types remain.
+  implemented in local SQLite storage. A focused Task Library provides
+  debounced title search, active/archived views, durable archive/restore,
+  rename/delete, resume, and provider-neutral Markdown or JSON export without
+  expanding the workspace rail. Durable turn-level projections and additional
+  attachment types remain.
 - Activity includes a durable project journal for meaningful workspace events
   and task milestones, alongside a separately bounded current-run detail stream.
 
