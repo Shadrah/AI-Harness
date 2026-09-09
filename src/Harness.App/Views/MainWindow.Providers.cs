@@ -166,6 +166,7 @@ public sealed partial class MainWindow
         var beganTurn = false;
         var toolsMayHaveChangedFiles = false;
         Dictionary<string, string>? beforeDiffs = null;
+        var turnGeneration = BeginTurnGeneration();
         var prompt = ViewModel.BeginTurn();
         var currentUserMessageId = ViewModel.Messages.LastOrDefault()?.Id;
         beganTurn = true;
@@ -229,7 +230,12 @@ public sealed partial class MainWindow
                 var itemId = "api-" + Guid.NewGuid().ToString("N");
                 ViewModel.SetTurnActivity("WORKING");
                 var reply = await Task.Run(() => client.CompleteAsync(model, history, instructions, effort, tier, tools,
-                    async delta => await Dispatcher.UIThread.InvokeAsync(() => ViewModel.AppendAssistantDelta(itemId, delta)), token), token);
+                    async delta => await Dispatcher.UIThread.InvokeAsync(() =>
+                    {
+                        if (IsActiveTurn(turnGeneration) && _activeSession?.Id == sessionId)
+                            ViewModel.AppendAssistantDelta(itemId, delta);
+                    }), token), token);
+                token.ThrowIfCancellationRequested();
                 ViewModel.CompleteAssistant(itemId);
                 activeContextTokens = reply.InputTokens;
                 cumulative = cumulative is not null && reply.InputTokens is not null && reply.OutputTokens is not null
@@ -333,9 +339,10 @@ public sealed partial class MainWindow
         catch (Exception exception) { error = exception.Message; }
         finally
         {
+            var ownsVisibleTurn = CompleteTurnGeneration(turnGeneration);
             if (beganTurn)
             {
-                if (toolsMayHaveChangedFiles && beforeDiffs is not null && !_lifetime.IsCancellationRequested)
+                if (ownsVisibleTurn && toolsMayHaveChangedFiles && beforeDiffs is not null && !_lifetime.IsCancellationRequested)
                 {
                     try
                     {
@@ -348,7 +355,7 @@ public sealed partial class MainWindow
                     }
                     catch (Exception) { ViewModel.AddActivity("DIFF", "Could not refresh working-tree changes. Open the working tree to inspect them.", "#E2A84A"); }
                 }
-                ViewModel.CompleteTurn(error);
+                if (ownsVisibleTurn) ViewModel.CompleteTurn(error);
                 // A failed request must not leave unmatched tool calls or duplicate user messages in
                 // the next request. The transcript remains; reconstruct a brief on the next send.
                 var savedHistory = error is null || error.StartsWith("Paused at the 40-step", StringComparison.Ordinal) ? history : new JsonArray();
@@ -364,7 +371,7 @@ public sealed partial class MainWindow
                 }
                 catch (Exception) { ViewModel.AddActivity("STORAGE", "Could not persist API continuation state. Do not close Harness until storage is available.", "#E2A84A"); }
             }
-            else if (error is not null) ViewModel.CompleteTurn(error);
+            else if (ownsVisibleTurn && error is not null) ViewModel.CompleteTurn(error);
             _apiTurnCancellation = null;
         }
     }

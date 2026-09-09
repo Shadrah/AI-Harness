@@ -30,7 +30,8 @@ desktop codebase.
 
 ## Current milestone
 
-Direct API connections are now available in **Settings → Providers** for OpenAI,
+Claude Code subscription connections and direct API connections are available in
+**Settings → Providers**. Direct connections cover OpenAI,
 Anthropic, Gemini, xAI, Mistral, DeepSeek, OpenRouter, native Ollama and llama.cpp,
 and other local compatible servers. Native local detection reads metadata only;
 it does not download or load models.
@@ -61,10 +62,19 @@ capability/content contracts:
 - a Codex app-server adapter for model discovery and authenticated rate-limit
   snapshots without starting a model turn;
 - explicit ChatGPT subscription sign-in through the Codex runtime;
-- persistent multi-account subscription management in Settings. Each named
+- first-class Claude Code subscription sign-in, provider-reported model and
+  effort discovery, model-scoped fast mode, live subscription usage, streaming
+  text/reasoning/tool events, native permissions, cancellation, attachments,
+  resumable sessions, and Claude filesystem skills;
+- persistent OpenAI and Claude multi-account subscription management in Settings. Each named
   account has an isolated provider profile, credentials, catalog, usage, and
-  provider threads; a user-confirmed low-usage handoff continues the same local
-  task without merging quotas or spending the source account on a summary;
+  provider threads. Manual, suggested, and opt-in automatic same-provider
+  handoffs continue the same local task without merging quotas, crossing
+  providers, or selecting direct API/PAYG connections; compact cards expose each
+  account's exact reported 5-hour and weekly windows independently;
+- immediate Stop semantics that invalidate the visible turn before cancelling
+  transport, approvals, browser work, and Harness-owned process trees, so late
+  deltas from a stopped provider cannot resume or overwrite the response;
 - provider-neutral model-picker preferences for visibility, favorites, and
   ordering, retained across catalog refreshes, restarts, and provider reconnects;
 - opt-in, per-model Anthropic prompt caching with native cache-read/write token
@@ -118,7 +128,8 @@ capability/content contracts:
   GitHub tree indexes beyond code-search limits, progressively cached searchable
   descriptions, topic/source/status/connected-model filtering, collision-safe
   provider identities, explicit package inspection, pinned downloads, Codex
-  filesystem delivery, and connection/model-scoped direct-API discovery with
+  `.agents/skills` delivery, Claude Code `.claude/skills` delivery, and
+  connection/model-scoped direct-API discovery with
   on-demand skill resource loading, integrity-aware updates, reversible disable,
   and recoverable removal;
 - live Git branch and working-tree inspection with staged, unstaged, and
@@ -178,6 +189,7 @@ src/Harness.App/           Avalonia desktop application
 src/Harness.Storage/       versioned SQLite persistence
 src/Harness.Workspace/     Git status, diff, index, and recovery operations
 src/Harness.Providers.Codex/ Codex app-server transport
+src/Harness.Providers.Claude/ Claude Code structured-stream transport
 tools/Harness.VisualCheck/ headless UI renderer
 docs/                      architecture and portable import format
 prototypes/go-tui/         preserved terminal exploration

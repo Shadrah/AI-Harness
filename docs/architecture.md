@@ -70,6 +70,15 @@ The selected runtime version and source are visible and auditable. If an old
 runtime reports an old catalog, Harness reports that limitation and offers an
 explicit runtime update; it never supplements the response with guessed models.
 
+The Claude Code adapter uses the official CLI's structured input/output protocol,
+not terminal scraping or Claude Desktop state. It reads the authenticated
+initialization response for models, exact effort values, default selection, and
+per-model fast-mode support, and reads the native usage response for subscription
+windows. Turns use UUID-backed resumable sessions, structured text/reasoning/tool
+events, the stdio permission bridge, native `manual`/`auto`/`bypassPermissions`
+modes, and provider-native image and workspace-file access. Harness never invents
+Claude model IDs or reasoning levels when the runtime does not report them.
+
 ## Capability preservation
 
 Capabilities and controls belong to a model descriptor, not merely to a provider. The core
@@ -118,6 +127,18 @@ compact projection of this stream, not a separate UI-only timeline.
 Streaming follows bounded channels with cancellation. Large binary attachments
 are content-addressed outside the event rows. SQLite is the intended default
 store; archives use JSON Lines plus an attachment directory for portability.
+
+STOP is a hard turn boundary, not just a cancelled UI token. Each active turn has
+a monotonically increasing generation identifier. The UI invalidates that
+generation synchronously when STOP is pressed and immediately renders STOPPED;
+all subsequent stream, tool, usage, and completion callbacks must prove they still
+belong to the active generation before mutating or persisting state. In parallel,
+the adapter sends its native interrupt/cancel request, cancels approvals and
+browser actions, closes transport, and terminates any Harness-owned provider or
+tool process tree. Cleanup remains asynchronous so STOP never blocks the UI.
+Already completed external side effects are reported and preserved rather than
+silently rolled back, but no queued command or late provider output may continue
+after the boundary.
 
 The initial SQLite implementation checkpoints normalized messages during
 streaming, retains raw provider notifications, and stores provider thread IDs

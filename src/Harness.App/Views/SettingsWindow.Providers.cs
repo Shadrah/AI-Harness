@@ -21,6 +21,12 @@ public sealed partial class SettingsWindow
     private readonly Func<CancellationToken, Task>? _signOutCodex;
     private bool _codexBusy;
     private IReadOnlyList<SubscriptionIdentity> _codexIdentities = [];
+    private readonly Func<CancellationToken, Task<SubscriptionConnectionSnapshot>>? _readClaudeConnection;
+    private readonly Func<CancellationToken, Task>? _signInClaude;
+    private readonly Func<CancellationToken, Task>? _signOutClaude;
+    private bool _claudeBusy;
+    private IReadOnlyList<SubscriptionIdentity> _claudeIdentities = [];
+    private bool _applyingIdentitySelection;
 
     private async Task RefreshSubscriptionIdentitiesAsync(string? selectIdentityId = null)
     {
@@ -34,6 +40,7 @@ public sealed partial class SettingsWindow
 
         var snapshot = await _subscriptionIdentityActions.Read(_lifetime.Token);
         _codexIdentities = snapshot.Identities;
+        CodexUsageCards.ItemsSource = _codexIdentities;
         ViewModel.ActiveCodexIdentityId = snapshot.ActiveIdentityId;
         CodexIdentityPicker.ItemsSource = _codexIdentities;
         CodexIdentityPicker.SelectedItem = _codexIdentities.FirstOrDefault(identity =>
@@ -52,6 +59,9 @@ public sealed partial class SettingsWindow
         CodexIdentityName.Text = identity.DisplayName;
         CodexIdentityActive.IsVisible = isActive;
         CodexIdentityUsage.Text = identity.UsageLabel;
+        _applyingIdentitySelection = true;
+        CodexAutomaticHandoffToggle.IsChecked = identity.AutomaticHandoffEnabled;
+        _applyingIdentitySelection = false;
         CodexUseIdentityButton.IsEnabled = !isActive;
         CodexRemoveIdentityButton.IsEnabled = !isActive && _codexIdentities.Count > 1;
         if (!isActive)
@@ -59,10 +69,24 @@ public sealed partial class SettingsWindow
             CodexAccountStatus.Text = identity.AccountLabel;
             CodexRuntimeStatus.Text = "SAVED PROFILE · SELECT USE ACCOUNT TO ACTIVATE";
             CodexModelCount.Text = "MODELS · PROFILE INACTIVE";
-            CodexModelList.Text = "Model availability and live usage are refreshed when this account becomes active.";
+            CodexModelList.Text = identity.LastModelIds is { Count: > 0 }
+                ? string.Join("  ·  ", identity.LastModelIds)
+                : "Model availability has not been reported for this account.";
             CodexSignInButton.IsVisible = false;
             CodexSignOutButton.IsVisible = false;
         }
+    }
+
+    private async void CodexAutomaticHandoff_OnChanged(object? sender, RoutedEventArgs e)
+    {
+        if (_applyingIdentitySelection || _subscriptionIdentityActions?.SetAutomaticHandoff is null
+            || CodexIdentityPicker.SelectedItem is not SubscriptionIdentity identity) return;
+        await RunAsync("Updating OpenAI handoff participation…", async () =>
+        {
+            await _subscriptionIdentityActions.SetAutomaticHandoff(
+                identity.Id, CodexAutomaticHandoffToggle.IsChecked == true, _lifetime.Token);
+            await RefreshSubscriptionIdentitiesAsync(identity.Id);
+        });
     }
 
     private async void CodexUseIdentity_OnClick(object? sender, RoutedEventArgs e)
@@ -143,6 +167,7 @@ public sealed partial class SettingsWindow
                 : string.Join("  ·  ", snapshot.Models);
             CodexSignInButton.IsVisible = snapshot.RuntimeAvailable && !snapshot.IsAuthenticated;
             CodexSignOutButton.IsVisible = snapshot.RuntimeAvailable && snapshot.IsAuthenticated;
+            RefreshProviderDerivedOptions();
             if (CodexIdentityPicker.SelectedItem is SubscriptionIdentity active)
             {
                 CodexIdentityName.Text = active.DisplayName;
@@ -185,6 +210,7 @@ public sealed partial class SettingsWindow
             await Launcher.LaunchUriAsync(new Uri(login.VerificationUrl));
             await OpenAiDeviceCodeDialog.ShowAsync(this, login);
             await RefreshCodexConnectionAsync();
+            await RefreshSubscriptionIdentitiesAsync(ViewModel.ActiveCodexIdentityId);
             RecordActivity("ACCOUNT", "OpenAI sign-in completed", outcome: "COMPLETED", isMilestone: true);
         });
     }
@@ -196,8 +222,213 @@ public sealed partial class SettingsWindow
         {
             await _signOutCodex(_lifetime.Token);
             await RefreshCodexConnectionAsync();
+            await RefreshSubscriptionIdentitiesAsync(ViewModel.ActiveCodexIdentityId);
             ViewModel.Status = "Signed out of OpenAI. Local workspaces and chats were preserved.";
             RecordActivity("ACCOUNT", "Signed out of OpenAI", "Local workspaces and chats were preserved", "COMPLETED", true);
+        });
+    }
+
+    public async Task RefreshClaudeConnectionAsync()
+    {
+        if (_claudeBusy) return;
+        if (ClaudeIdentityPicker.SelectedItem is SubscriptionIdentity selected
+            && selected.Id != ViewModel.ActiveClaudeIdentityId)
+        {
+            ApplySelectedClaudeIdentity();
+            return;
+        }
+        _claudeBusy = true;
+        ClaudeConnectionPanel.IsEnabled = false;
+        ClaudeAccountStatus.Text = "Checking account…";
+        try
+        {
+            var snapshot = _readClaudeConnection is null
+                ? SubscriptionConnectionSnapshot.Unavailable("Open Harness normally to inspect Claude Code.")
+                : await _readClaudeConnection(_lifetime.Token);
+            ClaudeAccountStatus.Text = snapshot.AccountLabel;
+            ClaudeRuntimeStatus.Text = snapshot.Detail;
+            ClaudeModelCount.Text = $"MODELS · {snapshot.Models.Count:N0} REPORTED";
+            ClaudeModelList.Text = snapshot.Models.Count == 0
+                ? snapshot.IsAuthenticated
+                    ? "Claude Code did not report selectable models for this account."
+                    : snapshot.RuntimeAvailable ? "Sign in to discover available models." : "Install Claude Code, then refresh."
+                : string.Join("  ·  ", snapshot.Models);
+            ClaudeSignInButton.IsVisible = snapshot.RuntimeAvailable && !snapshot.IsAuthenticated;
+            ClaudeSignOutButton.IsVisible = snapshot.RuntimeAvailable && snapshot.IsAuthenticated;
+            ClaudeInstallHelpButton.IsVisible = !snapshot.RuntimeAvailable;
+            RefreshProviderDerivedOptions();
+            if (ClaudeIdentityPicker.SelectedItem is SubscriptionIdentity active)
+            {
+                ClaudeIdentityName.Text = active.DisplayName;
+                ClaudeIdentityActive.IsVisible = true;
+                ClaudeUseIdentityButton.IsEnabled = false;
+            }
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            ClaudeAccountStatus.Text = "Connection unavailable";
+            ClaudeRuntimeStatus.Text = exception.Message.Replace("\r", " ").Replace("\n", " ");
+            ClaudeModelCount.Text = "MODELS · UNAVAILABLE";
+            ClaudeModelList.Text = "Harness could not read the Claude Code provider catalog.";
+            ClaudeSignInButton.IsVisible = false;
+            ClaudeSignOutButton.IsVisible = false;
+            ClaudeInstallHelpButton.IsVisible = true;
+        }
+        finally
+        {
+            _claudeBusy = false;
+            ClaudeConnectionPanel.IsEnabled = true;
+        }
+    }
+
+    private async void ClaudeRefresh_OnClick(object? sender, RoutedEventArgs e) =>
+        await RefreshClaudeAccountsAndConnectionAsync();
+
+    private async Task RefreshClaudeAccountsAndConnectionAsync()
+    {
+        await RefreshClaudeSubscriptionIdentitiesAsync(
+            (ClaudeIdentityPicker.SelectedItem as SubscriptionIdentity)?.Id);
+        await RefreshClaudeConnectionAsync();
+    }
+
+    private async Task RefreshClaudeSubscriptionIdentitiesAsync(string? selectIdentityId = null)
+    {
+        if (_claudeSubscriptionIdentityActions is null)
+        {
+            ClaudeIdentityPicker.ItemsSource = Array.Empty<SubscriptionIdentity>();
+            ClaudeUsageCards.ItemsSource = Array.Empty<SubscriptionIdentity>();
+            ClaudeUseIdentityButton.IsEnabled = false;
+            ClaudeRemoveIdentityButton.IsEnabled = false;
+            return;
+        }
+        var snapshot = await _claudeSubscriptionIdentityActions.Read(_lifetime.Token);
+        _claudeIdentities = snapshot.Identities;
+        ClaudeUsageCards.ItemsSource = _claudeIdentities;
+        ViewModel.ActiveClaudeIdentityId = snapshot.ActiveIdentityId;
+        ClaudeIdentityPicker.ItemsSource = _claudeIdentities;
+        ClaudeIdentityPicker.SelectedItem = _claudeIdentities.FirstOrDefault(identity =>
+            identity.Id == (selectIdentityId ?? snapshot.ActiveIdentityId)) ?? _claudeIdentities.FirstOrDefault();
+        ApplySelectedClaudeIdentity();
+    }
+
+    private void ClaudeIdentity_OnChanged(object? sender, SelectionChangedEventArgs e) =>
+        ApplySelectedClaudeIdentity();
+
+    private void ApplySelectedClaudeIdentity()
+    {
+        if (ClaudeIdentityPicker.SelectedItem is not SubscriptionIdentity identity) return;
+        var isActive = identity.Id == ViewModel.ActiveClaudeIdentityId;
+        ClaudeIdentityName.Text = identity.DisplayName;
+        ClaudeIdentityActive.IsVisible = isActive;
+        ClaudeIdentityUsage.Text = identity.UsageLabel;
+        ClaudeUseIdentityButton.IsEnabled = !isActive;
+        ClaudeRemoveIdentityButton.IsEnabled = !isActive && _claudeIdentities.Count > 1;
+        _applyingIdentitySelection = true;
+        ClaudeAutomaticHandoffToggle.IsChecked = identity.AutomaticHandoffEnabled;
+        _applyingIdentitySelection = false;
+        if (!isActive)
+        {
+            ClaudeAccountStatus.Text = identity.AccountLabel;
+            ClaudeRuntimeStatus.Text = "SAVED PROFILE · SELECT USE ACCOUNT TO ACTIVATE";
+            ClaudeModelCount.Text = "MODELS · PROFILE INACTIVE";
+            ClaudeModelList.Text = identity.LastModelIds is { Count: > 0 }
+                ? string.Join("  ·  ", identity.LastModelIds)
+                : "Model availability has not been reported for this account.";
+            ClaudeSignInButton.IsVisible = false;
+            ClaudeSignOutButton.IsVisible = false;
+        }
+    }
+
+    private async void ClaudeUseIdentity_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (_claudeSubscriptionIdentityActions is null
+            || ClaudeIdentityPicker.SelectedItem is not SubscriptionIdentity identity
+            || identity.Id == ViewModel.ActiveClaudeIdentityId) return;
+        await RunAsync($"Switching to {identity.DisplayName}…", async () =>
+        {
+            await _claudeSubscriptionIdentityActions.Activate(identity.Id, _lifetime.Token);
+            ViewModel.ActiveClaudeIdentityId = identity.Id;
+            await RefreshClaudeSubscriptionIdentitiesAsync(identity.Id);
+            await RefreshClaudeConnectionAsync();
+            ViewModel.Status = $"{identity.DisplayName} is now the active Claude account";
+            RecordActivity("ACCOUNT", $"Activated · {identity.DisplayName}", outcome: "COMPLETED");
+        });
+    }
+
+    private async void ClaudeAddIdentity_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (_claudeSubscriptionIdentityActions is null) return;
+        await RunAsync("Adding an isolated Claude account…", async () =>
+        {
+            var identity = await _claudeSubscriptionIdentityActions.Add(
+                ClaudeIdentityNameInput.Text, _lifetime.Token);
+            ClaudeIdentityNameInput.Text = "";
+            await _claudeSubscriptionIdentityActions.Activate(identity.Id, _lifetime.Token);
+            ViewModel.ActiveClaudeIdentityId = identity.Id;
+            await RefreshClaudeSubscriptionIdentitiesAsync(identity.Id);
+            await RefreshClaudeConnectionAsync();
+            ViewModel.Status = $"{identity.DisplayName} added. Sign in to connect this isolated account.";
+            RecordActivity("ACCOUNT", $"Added · {identity.DisplayName}",
+                "Isolated Claude subscription profile created", "READY", true);
+        });
+    }
+
+    private async void ClaudeRemoveIdentity_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (_claudeSubscriptionIdentityActions is null
+            || ClaudeIdentityPicker.SelectedItem is not SubscriptionIdentity identity
+            || identity.Id == ViewModel.ActiveClaudeIdentityId) return;
+        await RunAsync($"Removing {identity.DisplayName} from Harness…", async () =>
+        {
+            await _claudeSubscriptionIdentityActions.Remove(identity.Id, _lifetime.Token);
+            await RefreshClaudeSubscriptionIdentitiesAsync();
+            ViewModel.Status = $"{identity.DisplayName} removed from Harness. Provider-owned profile files were preserved.";
+            RecordActivity("ACCOUNT", $"Removed · {identity.DisplayName}",
+                "Provider-owned profile files were preserved", "COMPLETED", true);
+        });
+    }
+
+    private async void ClaudeAutomaticHandoff_OnChanged(object? sender, RoutedEventArgs e)
+    {
+        if (_applyingIdentitySelection || _claudeSubscriptionIdentityActions?.SetAutomaticHandoff is null
+            || ClaudeIdentityPicker.SelectedItem is not SubscriptionIdentity identity) return;
+        await RunAsync("Updating Claude handoff participation…", async () =>
+        {
+            await _claudeSubscriptionIdentityActions.SetAutomaticHandoff(
+                identity.Id, ClaudeAutomaticHandoffToggle.IsChecked == true, _lifetime.Token);
+            await RefreshClaudeSubscriptionIdentitiesAsync(identity.Id);
+        });
+    }
+
+    private async void ClaudeInstallHelp_OnClick(object? sender, RoutedEventArgs e)
+    {
+        await Launcher.LaunchUriAsync(new Uri("https://code.claude.com/docs/en/setup"));
+        ViewModel.Status = "Opened the official Claude Code installation guide";
+    }
+
+    private async void ClaudeSignIn_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (_claudeBusy || _signInClaude is null) return;
+        await RunAsync("Opening Claude sign-in…", async () =>
+        {
+            await _signInClaude(_lifetime.Token);
+            await RefreshClaudeConnectionAsync();
+            await RefreshClaudeSubscriptionIdentitiesAsync(ViewModel.ActiveClaudeIdentityId);
+            RecordActivity("ACCOUNT", "Claude Code sign-in completed", outcome: "COMPLETED", isMilestone: true);
+        });
+    }
+
+    private async void ClaudeSignOut_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (_claudeBusy || _signOutClaude is null) return;
+        await RunAsync("Signing out of Claude…", async () =>
+        {
+            await _signOutClaude(_lifetime.Token);
+            await RefreshClaudeConnectionAsync();
+            await RefreshClaudeSubscriptionIdentitiesAsync(ViewModel.ActiveClaudeIdentityId);
+            ViewModel.Status = "Signed out of Claude. Local workspaces and chats were preserved.";
+            RecordActivity("ACCOUNT", "Signed out of Claude", "Local workspaces and chats were preserved", "COMPLETED", true);
         });
     }
 
@@ -295,6 +526,7 @@ public sealed partial class SettingsWindow
             ApiModelPicker.SelectedIndex = _apiModels.Count > 0 ? 0 : -1;
             ApiConnectionStatus.Text = $"Connected · {models.Count:N0} conversational candidates reported. Availability is checked again when you send a request. API billing is separate from subscriptions.";
             if (_apiConnectionsChanged is not null) await _apiConnectionsChanged();
+            RefreshProviderDerivedOptions();
             RecordActivity(
                 "PROVIDER",
                 $"Connected · {connection.Name}",
@@ -350,6 +582,7 @@ public sealed partial class SettingsWindow
             ApiConnectionStatus.Text = $"Detected {names} · {detected.Sum(result => result.Models.Count):N0} conversational models."
                 + (failures == 0 ? "" : $" {failures} other local runtime did not respond.");
             if (_apiConnectionsChanged is not null) await _apiConnectionsChanged();
+            RefreshProviderDerivedOptions();
             RecordActivity("PROVIDER", "Local runtimes detected", ApiConnectionStatus.Text, "COMPLETED", true);
         });
     }
@@ -364,6 +597,7 @@ public sealed partial class SettingsWindow
             ApiKey.Text = ""; ApiModelPicker.ItemsSource = null;
             await LoadApiConnectionsAsync();
             if (_apiConnectionsChanged is not null) await _apiConnectionsChanged();
+            RefreshProviderDerivedOptions();
             ApiConnectionStatus.Text = "Disconnected. Saved chat history is preserved.";
             RecordActivity("PROVIDER", "API connection removed", "Saved chat history was preserved", "COMPLETED", true);
         });
@@ -430,6 +664,7 @@ public sealed partial class SettingsWindow
             await Task.Run(() => _apiStore.SaveAsync(saved with { Models = configurations }, null, _lifetime.Token), _lifetime.Token);
             await LoadApiConnectionsAsync();
             if (_apiConnectionsChanged is not null) await _apiConnectionsChanged();
+            RefreshProviderDerivedOptions();
             ApiConnectionStatus.Text = reset ? "Model override removed. Refresh to inspect provider metadata." : "Model override saved and applied. The provider will validate these options on requests.";
         });
     }

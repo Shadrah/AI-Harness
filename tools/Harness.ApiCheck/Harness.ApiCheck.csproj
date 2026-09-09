@@ -2,6 +2,7 @@
   <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework></PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Harness.App\Harness.App.csproj" />
+    <ProjectReference Include="..\..\src\Harness.Providers.Claude\Harness.Providers.Claude.csproj" />
     <PackageReference Include="Avalonia.Headless" Version="11.3.9" />
   </ItemGroup>
 </Project>

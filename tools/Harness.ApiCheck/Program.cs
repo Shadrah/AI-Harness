@@ -12,6 +12,7 @@ using Harness.App.ViewModels;
 using Harness.App.Views;
 using Harness.Core.Models;
 using Harness.Providers.Api;
+using Harness.Providers.Claude;
 using Harness.Workspace;
 
 if (args.Contains("--startup-profile", StringComparer.Ordinal))
@@ -30,6 +31,44 @@ static void Check(bool condition, string message) { if (!condition) throw new In
 static JsonObject Obj(string json) => JsonNode.Parse(json)!.AsObject();
 static ApiConnection Connection(string provider) => new("api-fixture-" + provider, provider, provider, ApiProviderDefinition.All.Single(item => item.Id == provider).Endpoint);
 static string Events(params string[] events) => string.Join("\n\n", events.Select(item => "data: " + item)) + "\n\n";
+
+using (var claudeInitialization = JsonDocument.Parse("""
+{
+  "account":{"email":"developer@example.test","subscriptionType":"max","tokenSource":"oauth"},
+  "models":[
+    {"value":"claude-provider-model-a","displayName":"Claude Fixture A","supportsEffort":true,"supportedEffortLevels":["low","high","max"],"supportsFastMode":true,"isDefault":true},
+    {"value":"claude-provider-model-b","displayName":"Claude Fixture B","supportsEffort":false,"supportedEffortLevels":[],"supportsFastMode":false}
+  ]
+}
+"""))
+{
+    var account = ClaudeCodeClient.ParseAccount(claudeInitialization.RootElement);
+    var models = ClaudeCodeClient.ParseModels(claudeInitialization.RootElement);
+    Check(account.IsAuthenticated && account.SubscriptionType == "max", "Claude Code subscription identity was not parsed.");
+    Check(models.Count == 2 && models[0].IsDefault, "Claude Code provider-reported model catalog was not preserved.");
+    Check(models[0].ReasoningLevels!.Select(item => item.Id).SequenceEqual(["", "low", "high", "max"]),
+        "Claude Code effort levels were hardcoded, reordered, or lost.");
+    Check(models[0].ServiceTiers!.Select(item => item.Id).SequenceEqual([null, "fast"]),
+        "Claude Code fast mode was not surfaced for the model that reported it.");
+    Check(models[1].ReasoningLevels!.Count == 0 && models[1].ServiceTiers!.Count == 0,
+        "Claude Code invented effort or fast-mode options for an unsupported model.");
+}
+using (var claudeSignedOutInitialization = JsonDocument.Parse("""
+{"account":{"tokenSource":"none"},"models":[]}
+"""))
+{
+    Check(!ClaudeCodeClient.ParseAccount(claudeSignedOutInitialization.RootElement).IsAuthenticated,
+        "Claude Code treated a provider-reported absent token as an authenticated account.");
+}
+using (var claudeUsage = JsonDocument.Parse("""
+{"rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":71.5,"resets_at":"2030-01-01T12:00:00Z"},"seven_day":{"utilization":22},"model_scoped":[{"display_name":"Sonnet","utilization":35,"resets_at":"2030-01-02T12:00:00Z"}]}}
+"""))
+{
+    var usage = ClaudeCodeClient.ParseUsage(claudeUsage.RootElement, "max");
+    Check(usage is { Windows.Count: 3 } && usage.Windows[0].UsedPercent == 71.5
+          && usage.Windows[0].ResetsAt is not null,
+        "Claude Code subscription usage windows were not preserved.");
+}
 
 var fixtures = new Dictionary<string, string>
 {
@@ -481,6 +520,46 @@ var loadedIdentities = await identityStore.LoadAsync();
 Check(loadedIdentities.Count == 2
       && loadedIdentities.Single(identity => identity.Id == addedIdentity.Id).LastFiveHourRemainingPercent == 82,
     "Subscription account metadata or per-account usage was not retained.");
+var claudePrimaryIdentities = await identityStore.LoadAsync(SubscriptionProviderIds.AnthropicClaude);
+var addedClaudeIdentity = await identityStore.AddAsync(
+    SubscriptionProviderIds.AnthropicClaude, "Second Claude Max");
+await identityStore.UpdateAsync(addedClaudeIdentity with
+{
+    Email = "claude-fixture@example.com",
+    Plan = "max",
+    LastFiveHourRemainingPercent = 74,
+    LastWeeklyRemainingPercent = 61,
+    FiveHourResetsAt = DateTimeOffset.UtcNow.AddHours(2),
+    WeeklyResetsAt = DateTimeOffset.UtcNow.AddDays(3),
+    LastModelIds = ["claude-provider-model-a"],
+    AutomaticHandoffEnabled = true,
+    ConnectionState = "CONNECTED",
+    BillingMode = "SUBSCRIPTION",
+    LastUsageAt = DateTimeOffset.UtcNow
+});
+var loadedClaudeIdentities = await identityStore.LoadAsync(SubscriptionProviderIds.AnthropicClaude);
+var loadedClaudeIdentity = loadedClaudeIdentities.Single(identity => identity.Id == addedClaudeIdentity.Id);
+Check(claudePrimaryIdentities.Count == 1
+      && claudePrimaryIdentities[0].ProviderId == SubscriptionProviderIds.AnthropicClaude
+      && loadedClaudeIdentities.Count == 2
+      && loadedClaudeIdentity.ProfileRoot.Contains(SubscriptionProviderIds.AnthropicClaude, StringComparison.Ordinal)
+      && loadedClaudeIdentity.LastWeeklyRemainingPercent == 61
+      && loadedClaudeIdentity.LastModelIds!.SequenceEqual(["claude-provider-model-a"])
+      && loadedClaudeIdentity.ConnectionSummary == "CONNECTED · SUBSCRIPTION",
+    "Claude subscription profiles, model availability, or exact per-account usage was not isolated and retained.");
+var selectedHandoffIdentity = SubscriptionHandoffSelector.Select(
+    SubscriptionProviderIds.AnthropicClaude,
+    claudePrimaryIdentities[0].Id,
+    "claude-provider-model-a",
+    5,
+    [
+        loadedClaudeIdentity,
+        loadedClaudeIdentity with { Id = "wrong-model", LastFiveHourRemainingPercent = 99, LastModelIds = ["claude-other"] },
+        loadedClaudeIdentity with { Id = "api-account", LastFiveHourRemainingPercent = 98, BillingMode = "API/PAYG" },
+        loadedClaudeIdentity with { Id = "manual-account", LastFiveHourRemainingPercent = 97, AutomaticHandoffEnabled = false }
+    ]);
+Check(selectedHandoffIdentity?.Id == loadedClaudeIdentity.Id,
+    "Automatic handoff selected an API, opted-out, cross-model, or otherwise ineligible account.");
 var identityJson = await File.ReadAllTextAsync(Path.Combine(identityRoot, "subscription-identities.json"));
 Check(!identityJson.Contains("token", StringComparison.OrdinalIgnoreCase)
       && !identityJson.Contains("password", StringComparison.OrdinalIgnoreCase),
@@ -552,6 +631,12 @@ Check(unsafeSkillRevisionRejected, "An unsafe catalog revision escaped or reache
 var apiSkillInstallPath = await SkillPackageInstaller.InstallHarnessApiAsync(
     new DownloadedSkillPackage(apiSkillPackage, "fixture-content", 2, 100), apiSkillCatalog,
     "api-connection-one", "WORKSPACE", apiSkillWorkspace, "fixture-model");
+var claudeSkillInstallPath = await SkillPackageInstaller.InstallClaudeCodeAsync(
+    new DownloadedSkillPackage(apiSkillPackage, "fixture-content", 2, 100), apiSkillCatalog,
+    "WORKSPACE", apiSkillWorkspace);
+Check(claudeSkillInstallPath.StartsWith(Path.Combine(apiSkillWorkspace, ".claude", "skills"), StringComparison.OrdinalIgnoreCase)
+      && File.Exists(Path.Combine(claudeSkillInstallPath, "SKILL.md")),
+    "Claude Code skill installation did not use its provider-native workspace path.");
 var apiSkillInstallation = new InstalledSkill(
     SkillPackageInstaller.CreateInstallId(apiSkillCatalog.Id, "api-connection-one", "WORKSPACE", apiSkillWorkspace, "fixture-model"),
     apiSkillCatalog.Id, apiSkillCatalog.Name, apiSkillCatalog.SourceRevision, apiSkillPackage, apiSkillInstallPath,
@@ -967,12 +1052,32 @@ var uiThread = new Thread(() =>
             "Editing the pending request did not invalidate its provider count.");
         vm.BeginTurn(); vm.CompleteTurn("Fixture API failure");
         Check(vm.Messages.Any(message => message.Text.Contains("Fixture API failure", StringComparison.Ordinal)), "API error hidden from chat.");
+        vm.PromptText = "stop fixture";
+        vm.BeginTurn();
+        vm.AppendAssistantDelta("stopped-fixture", "partial response");
+        vm.CompleteTurn("Turn stopped by the user.");
+        Check(vm.TurnActivityStatus == "STOPPED"
+              && vm.Messages.Last(message => message.Text == "partial response").Status == "STOPPED",
+            "A stopped turn or its partial assistant output was presented as completed/failed instead of STOPPED.");
         var settings = new SettingsWindow(usePreviewData: true) { Width = 1300, Height = 850 };
         ((SettingsWindowViewModel)settings.DataContext!).SetModelPreferences([
             new("openai-codex::codex-fixture", "openai-codex", "codex-fixture", "OpenAI Codex · Codex Fixture"),
+            new("anthropic-claude::claude-provider-model-a", "anthropic-claude", "claude-provider-model-a", "Claude Code · Fixture A"),
             new($"{anthropic.Id}::{discovered.Descriptor.ModelId}", anthropic.Id, discovered.Descriptor.ModelId, $"Anthropic API · {discovered.Descriptor.DisplayName}"),
             new("openai-api::gpt-fixture", "openai-api", "gpt-fixture", "OpenAI API · GPT Fixture")
         ]);
+        var settingsVm = (SettingsWindowViewModel)settings.DataContext!;
+        settingsVm.ModelPreferences.Single(item => item.ProviderId == "anthropic-claude").IsEnabled = false;
+        settingsVm.SubscriptionHandoffMode = "automatic";
+        settingsVm.SetModelPreferences([
+            new("openai-codex::codex-fixture", "openai-codex", "codex-fixture", "OpenAI Codex · Codex Fixture"),
+            new("anthropic-claude::claude-provider-model-a", "anthropic-claude", "claude-provider-model-a", "Claude Code · Fixture A"),
+            new("anthropic-claude::claude-provider-model-b", "anthropic-claude", "claude-provider-model-b", "Claude Code · Fixture B")
+        ]);
+        Check(settingsVm.ToSettings().HiddenModelIds!.Contains("anthropic-claude::claude-provider-model-a"),
+            "A provider-reported Claude Code model could not be disabled or lost that choice during a catalog refresh.");
+        Check(settingsVm.ToSettings().SubscriptionHandoffMode == "automatic",
+            "The subscription handoff mode was not retained by Settings.");
         settings.Show();
         settings.FindControl<TabControl>("SettingsTabs")!.SelectedIndex = 4;
         settings.FindControl<ComboBox>("ApiProviderPicker")!.SelectedItem = ApiProviderDefinition.All.Single(provider => provider.Id == "anthropic-api");
@@ -996,6 +1101,17 @@ var uiThread = new Thread(() =>
             && settings.FindControl<ComboBox>("CodexIdentityPicker") is not null
             && settings.FindControl<Button>("CodexUseIdentityButton") is not null,
             "Subscription connection management is missing from Providers settings.");
+        Check(settings.FindControl<Border>("ClaudeConnectionPanel") is not null
+              && settings.FindControl<Button>("ClaudeSignInButton") is not null
+              && settings.FindControl<Button>("ClaudeSignOutButton") is not null
+              && settings.FindControl<Button>("ClaudeInstallHelpButton") is not null
+              && settings.FindControl<ComboBox>("ClaudeIdentityPicker") is not null
+              && settings.FindControl<Button>("ClaudeUseIdentityButton") is not null
+              && settings.FindControl<CheckBox>("ClaudeAutomaticHandoffToggle") is not null
+              && settings.FindControl<ItemsControl>("ClaudeUsageCards") is not null
+              && settings.FindControl<CheckBox>("CodexAutomaticHandoffToggle") is not null
+              && settings.FindControl<ItemsControl>("CodexUsageCards") is not null,
+            "Multi-account subscription management, routing controls, or usage cards are missing from Providers settings.");
         settings.Close();
 
         var handoff = new SubscriptionHandoffDialog(
@@ -1049,7 +1165,7 @@ var uiThread = new Thread(() =>
 });
 uiThread.Start(); uiThread.Join();
 if (uiFailure is not null) throw uiFailure;
-Console.WriteLine("API checks passed: four native wire formats, provider-native OpenAI/Anthropic/Gemini input-token preflight, native PDF/audio/video inputs, opt-in prompt caching and cache telemetry, OpenAI native context compaction, OpenAI and Anthropic hosted-artifact request/citation/download handling, native Ollama/llama.cpp discovery, capability conformance/preflight, reasoning/tool replay, direct-API skill installation/discovery/resource isolation plus integrity/update/disable/removal lifecycle, Unicode, usage, pagination, unknown capabilities, failure handling, credential routing, approval boundaries, catalog merging, isolated subscription profiles and handoff UI, portable backup round-trip, unsafe-archive rejection, delayed PowerShell Write-Host plus rendered terminal output, and Providers UI. No live API calls made.");
+Console.WriteLine("API checks passed: Claude Code subscription model/effort/fast-mode/usage parsing, four native API wire formats, provider-native OpenAI/Anthropic/Gemini input-token preflight, native PDF/audio/video inputs, opt-in prompt caching and cache telemetry, OpenAI native context compaction, OpenAI and Anthropic hosted-artifact request/citation/download handling, native Ollama/llama.cpp discovery, capability conformance/preflight, reasoning/tool replay, direct-API skill installation/discovery/resource isolation plus integrity/update/disable/removal lifecycle, Unicode, usage, pagination, unknown capabilities, failure handling, credential routing, approval boundaries, catalog merging, isolated subscription profiles and handoff UI, portable backup round-trip, unsafe-archive rejection, delayed PowerShell Write-Host plus rendered terminal output, and Providers UI. No live API calls made.");
 
 sealed class FixtureHandler(string content, bool json = false, string[]? pages = null, HttpStatusCode status = HttpStatusCode.OK) : HttpMessageHandler
 {

@@ -31,6 +31,7 @@ public sealed partial class SettingsWindow : Window
     private readonly bool _openSkillsOnLaunch;
     private readonly Func<string, CancellationToken, Task<PortableBackupSummary>>? _createPortableBackup;
     private readonly SubscriptionIdentityActions? _subscriptionIdentityActions;
+    private readonly SubscriptionIdentityActions? _claudeSubscriptionIdentityActions;
     private readonly PortableBackupService _portableBackupService = new();
     private CancellationTokenSource? _skillIntegrityCancellation;
     private int _skillLifecycleActive;
@@ -49,6 +50,9 @@ public sealed partial class SettingsWindow : Window
         [],
         [],
         false,
+        null,
+        null,
+        null,
         null,
         null,
         null,
@@ -79,8 +83,12 @@ public sealed partial class SettingsWindow : Window
         Func<CancellationToken, Task<SubscriptionConnectionSnapshot>>? readCodexConnection = null,
         Func<CancellationToken, Task<CodexDeviceCodeLoginStart>>? beginCodexSignIn = null,
         Func<CancellationToken, Task>? signOutCodex = null,
+        Func<CancellationToken, Task<SubscriptionConnectionSnapshot>>? readClaudeConnection = null,
+        Func<CancellationToken, Task>? signInClaude = null,
+        Func<CancellationToken, Task>? signOutClaude = null,
         Func<string, CancellationToken, Task<PortableBackupSummary>>? createPortableBackup = null,
         SubscriptionIdentityActions? subscriptionIdentityActions = null,
+        SubscriptionIdentityActions? claudeSubscriptionIdentityActions = null,
         Func<IReadOnlyList<SkillInstallTarget>>? readSkillTargets = null,
         Func<IReadOnlyList<SkillCompatibilityOption>>? readSkillCompatibilityTargets = null,
         Func<bool>? canChangeSkills = null)
@@ -101,8 +109,12 @@ public sealed partial class SettingsWindow : Window
         _readCodexConnection = readCodexConnection;
         _beginCodexSignIn = beginCodexSignIn;
         _signOutCodex = signOutCodex;
+        _readClaudeConnection = readClaudeConnection;
+        _signInClaude = signInClaude;
+        _signOutClaude = signOutClaude;
         _createPortableBackup = createPortableBackup;
         _subscriptionIdentityActions = subscriptionIdentityActions;
+        _claudeSubscriptionIdentityActions = claudeSubscriptionIdentityActions;
         DataContext = new SettingsWindowViewModel(settings, workspacePath);
         ViewModel.SetCompatibilityTargets(compatibilityTargets ?? []);
         ViewModel.SetModelPreferences(compatibilityTargets ?? []);
@@ -113,6 +125,14 @@ public sealed partial class SettingsWindow : Window
     }
 
     private SettingsWindowViewModel ViewModel => (SettingsWindowViewModel)DataContext!;
+
+    private void RefreshProviderDerivedOptions()
+    {
+        if (_readSkillCompatibilityTargets is null) return;
+        var targets = _readSkillCompatibilityTargets();
+        ViewModel.SetCompatibilityTargets(targets);
+        ViewModel.SetModelPreferences(targets);
+    }
 
     private void RecordActivity(
         string kind,
@@ -136,11 +156,15 @@ public sealed partial class SettingsWindow : Window
         await RunAsync("Loading settings…", async () =>
         {
             if (_openSkillsOnLaunch) ShowSkills();
-            await LoadApiConnectionsAsync();
-            await RefreshSubscriptionIdentitiesAsync();
-            await RefreshCodexConnectionAsync();
-            await LoadSkillCatalogAsync();
-            await RefreshGitHubAsync();
+            await Task.WhenAll(
+                LoadApiConnectionsAsync(),
+                RefreshSubscriptionIdentitiesAsync(),
+                RefreshClaudeSubscriptionIdentitiesAsync());
+            await Task.WhenAll(
+                RefreshCodexConnectionAsync(),
+                RefreshClaudeConnectionAsync(),
+                LoadSkillCatalogAsync(),
+                RefreshGitHubAsync());
         });
     }
 
@@ -649,6 +673,8 @@ public sealed partial class SettingsWindow : Window
             {
                 "filesystem" => await Task.Run(() => SkillPackageInstaller.InstallCodexAsync(
                     package, selected.Entry, request.Scope, ViewModel.WorkspacePath, _lifetime.Token), _lifetime.Token),
+                "claude-filesystem" => await Task.Run(() => SkillPackageInstaller.InstallClaudeCodeAsync(
+                    package, selected.Entry, request.Scope, ViewModel.WorkspacePath, _lifetime.Token), _lifetime.Token),
                 "harness-api" => await Task.Run(() => SkillPackageInstaller.InstallHarnessApiAsync(
                     package, selected.Entry, request.Target.ProviderId, request.Scope, ViewModel.WorkspacePath,
                     request.Target.ModelId, _lifetime.Token), _lifetime.Token),
@@ -673,7 +699,7 @@ public sealed partial class SettingsWindow : Window
             ViewModel.Status = $"Installed {selected.Name} for {request.Target.DisplayName}";
             ViewModel.SkillCatalogStatus = request.Target.SetupKind == "harness-api"
                 ? $"Installed at {installPath}. It is available to this connection on the next model turn."
-                : $"Installed at {installPath}. Codex detects skill changes automatically.";
+                : $"Installed at {installPath}. The provider runtime detects skill changes automatically.";
             RecordActivity(
                 "SKILL",
                 $"Installed · {selected.Name}",

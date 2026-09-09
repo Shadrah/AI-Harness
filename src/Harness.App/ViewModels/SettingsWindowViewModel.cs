@@ -42,6 +42,8 @@ public sealed class SettingsWindowViewModel : ObservableObject
     private bool _promptForSubscriptionHandoff;
     private double _subscriptionHandoffThresholdPercent;
     private string? _activeCodexIdentityId;
+    private string? _activeClaudeIdentityId;
+    private string _subscriptionHandoffMode;
 
     public SettingsWindowViewModel(HarnessApplicationSettings settings, string workspacePath)
     {
@@ -59,7 +61,11 @@ public sealed class SettingsWindowViewModel : ObservableObject
         _storedFavoriteModels = (settings.FavoriteModelIds ?? []).ToHashSet(StringComparer.OrdinalIgnoreCase);
         _storedModelOrder = (settings.ModelOrder ?? []).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         _activeCodexIdentityId = settings.ActiveCodexIdentityId;
+        _activeClaudeIdentityId = settings.ActiveClaudeIdentityId;
         _promptForSubscriptionHandoff = settings.PromptForSubscriptionHandoff;
+        _subscriptionHandoffMode = settings.SubscriptionHandoffMode is "manual" or "suggest" or "automatic"
+            ? settings.SubscriptionHandoffMode
+            : settings.PromptForSubscriptionHandoff ? "suggest" : "manual";
         _subscriptionHandoffThresholdPercent = Math.Clamp(settings.SubscriptionHandoffThresholdPercent, 1, 25);
         WorkspacePath = workspacePath;
     }
@@ -85,6 +91,18 @@ public sealed class SettingsWindowViewModel : ObservableObject
     public bool PromptForSubscriptionHandoff { get => _promptForSubscriptionHandoff; set => SetProperty(ref _promptForSubscriptionHandoff, value); }
     public double SubscriptionHandoffThresholdPercent { get => _subscriptionHandoffThresholdPercent; set => SetProperty(ref _subscriptionHandoffThresholdPercent, Math.Clamp(value, 1, 25)); }
     public string? ActiveCodexIdentityId { get => _activeCodexIdentityId; set => SetProperty(ref _activeCodexIdentityId, value); }
+    public string? ActiveClaudeIdentityId { get => _activeClaudeIdentityId; set => SetProperty(ref _activeClaudeIdentityId, value); }
+    public IReadOnlyList<string> SubscriptionHandoffModes { get; } = ["manual", "suggest", "automatic"];
+    public string SubscriptionHandoffMode
+    {
+        get => _subscriptionHandoffMode;
+        set
+        {
+            var normalized = value is "manual" or "suggest" or "automatic" ? value : "suggest";
+            if (!SetProperty(ref _subscriptionHandoffMode, normalized)) return;
+            PromptForSubscriptionHandoff = normalized != "manual";
+        }
+    }
     public BatchObservableCollection<SkillCatalogItem> Skills { get; } = [];
     public BatchObservableCollection<InstalledSkillItem> SelectedSkillInstallations { get; } = [];
     public BatchObservableCollection<ModelPreferenceItem> ModelPreferences { get; } = [];
@@ -154,6 +172,9 @@ public sealed class SettingsWindowViewModel : ObservableObject
 
     public void SetModelPreferences(IEnumerable<SkillCompatibilityOption> targets)
     {
+        var current = ModelPreferences.ToDictionary(item => item.Key, StringComparer.OrdinalIgnoreCase);
+        var currentOrder = ModelPreferences.Select((item, index) => (item.Key, index))
+            .ToDictionary(item => item.Key, item => item.index, StringComparer.OrdinalIgnoreCase);
         var order = _storedModelOrder.Select((key, index) => (key, index))
             .ToDictionary(item => item.key, item => item.index, StringComparer.OrdinalIgnoreCase);
         var preferences = targets
@@ -168,10 +189,13 @@ public sealed class SettingsWindowViewModel : ObservableObject
                     target.ProviderId,
                     target.ModelId,
                     target.DisplayName,
-                    !_storedHiddenModels.Contains(key),
-                    _storedFavoriteModels.Contains(key));
+                    current.TryGetValue(key, out var existing)
+                        ? existing.IsEnabled : !_storedHiddenModels.Contains(key),
+                    current.TryGetValue(key, out existing)
+                        ? existing.IsFavorite : _storedFavoriteModels.Contains(key));
             })
             .OrderByDescending(item => item.IsFavorite)
+            .ThenBy(item => currentOrder.GetValueOrDefault(item.Key, int.MaxValue))
             .ThenBy(item => order.GetValueOrDefault(item.Key, int.MaxValue))
             .ThenBy(item => item.DisplayName, StringComparer.OrdinalIgnoreCase)
             .ToArray();
@@ -309,23 +333,25 @@ public sealed class SettingsWindowViewModel : ObservableObject
             .Concat(ModelPreferences.Select(item => item.Key))
             .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         return new HarnessApplicationSettings(
-            RestoreLastWorkspace,
-            ShowActivityTrace,
-            ShowUsageInspector,
-            ShowContextInspector,
-            ShowTurnDiffInspector,
-            PersonalInstructions?.Trim() ?? "",
-            WorkspacePath,
-            GitAuthorName?.Trim() ?? "",
-            GitAuthorEmail?.Trim() ?? "",
-            string.IsNullOrWhiteSpace(DefaultGitBranch) ? "main" : DefaultGitBranch.Trim(),
-            SelectedPermissionMode.Id,
-            hidden,
-            favorites,
-            order,
-            ActiveCodexIdentityId,
-            PromptForSubscriptionHandoff,
-            SubscriptionHandoffThresholdPercent);
+            RestoreLastWorkspace: RestoreLastWorkspace,
+            ShowActivityTrace: ShowActivityTrace,
+            ShowUsageInspector: ShowUsageInspector,
+            ShowContextInspector: ShowContextInspector,
+            ShowTurnDiffInspector: ShowTurnDiffInspector,
+            PersonalInstructions: PersonalInstructions?.Trim() ?? "",
+            LastWorkspacePath: WorkspacePath,
+            GitAuthorName: GitAuthorName?.Trim() ?? "",
+            GitAuthorEmail: GitAuthorEmail?.Trim() ?? "",
+            DefaultGitBranch: string.IsNullOrWhiteSpace(DefaultGitBranch) ? "main" : DefaultGitBranch.Trim(),
+            PermissionMode: SelectedPermissionMode.Id,
+            HiddenModelIds: hidden,
+            FavoriteModelIds: favorites,
+            ModelOrder: order,
+            ActiveCodexIdentityId: ActiveCodexIdentityId,
+            PromptForSubscriptionHandoff: SubscriptionHandoffMode != "manual",
+            SubscriptionHandoffThresholdPercent: SubscriptionHandoffThresholdPercent,
+            ActiveClaudeIdentityId: ActiveClaudeIdentityId,
+            SubscriptionHandoffMode: SubscriptionHandoffMode);
     }
 }
 

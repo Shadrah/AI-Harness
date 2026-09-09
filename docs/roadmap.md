@@ -11,6 +11,11 @@ driver without keeping that driver installed?
   sourced from each connection rather than a built-in model menu.
 - Streaming assistant text, reasoning summaries when exposed, tool lifecycle,
   command input/output, file-change patches, errors, token usage, and cancellation.
+- Correct STOP semantics across every adapter: acknowledge immediately, invalidate
+  the turn generation before cancelling transport, terminate Harness-owned provider
+  and tool process trees, cancel pending approvals/browser actions, and discard all
+  late deltas or terminal events from the stopped turn. Preserve partial output and
+  mark it STOPPED—never COMPLETED—without permitting stale callbacks to restart work.
 - Inline approvals, working-tree inspection, diff review, and recoverable
   file- and hunk-level stage/unstage/discard actions and integrated terminal
   access are implemented. Every discard creates a recovery copy first.
@@ -56,7 +61,30 @@ driver without keeping that driver installed?
 ## P2 — Provider breadth
 
 - OpenAI subscription runtime and direct API connections.
-- Anthropic subscription runtime and direct API connections.
+- Anthropic subscription runtime and direct API connections. Claude Code now
+  supports sign-in/out, live account model/effort/fast-mode discovery, usage,
+  structured streaming, native tool permissions, cancellation, continuation,
+  attachments, diffs, provider-native skill paths, persistent isolated
+  multi-account profiles, explicit account switching, and continuity handoff.
+- The subscription orchestrator provides Manual, Suggest, and opt-in Automatic
+  modes. It stores provider threads, exact live usage, billing mode, and model
+  catalogs per identity without representing separate account meters as one quota.
+- Automatic mode continuously hands a Harness task among
+  all participating, eligible subscription accounts belonging to the same active
+  provider. Keep an identity sticky during each turn; route at safe boundaries or
+  after a limit response; preserve the Harness workspace and durable task context;
+  and pause when every account is unavailable. Never cross from Claude to OpenAI
+  (or vice versa), and never fall through to a direct API/pay-as-you-go connection.
+- Settings includes a restrained usage overview with one card per subscription
+  identity. Show its exact provider-reported five-hour and weekly remaining values,
+  reset times, plan, scheduler participation, and snapshot freshness without making
+  the user activate accounts individually. Missing data must read "not reported";
+  refresh account probes independently off the UI thread and batch visual updates.
+- Claude models use the shared provider/model visibility controls in Settings. The main model
+  picker must contain only models both reported and usable by the selected Claude
+  account; plan/API-credit-only models such as Fable must remain absent unless that
+  account's live provider catalog confirms access. User-hidden Claude models stay
+  hidden across refreshes and restarts.
 - Local OpenAI-compatible endpoints plus explicit Ollama/llama.cpp discovery are
   implemented. Detection is user-invoked, metadata-only, and never downloads or
   loads a model.
@@ -79,7 +107,8 @@ driver without keeping that driver installed?
   catalog/provenance, repository-level GitHub source totals, progressive
   description indexing, direct source search, topics/source/status filters,
   pre-download directory inspection, explicit confirmation, content hashing,
-  Codex user/workspace `.agents/skills` setup, and direct-API connection/model
+  Codex user/workspace `.agents/skills` setup, Claude Code user/workspace
+  `.claude/skills` setup, and direct-API connection/model
   activation through bounded on-demand discovery and resource tools. Installed
   targets now expose integrity-aware metadata-only update review, atomic provider
   copy replacement with rollback, reversible disable/enable, and recoverable

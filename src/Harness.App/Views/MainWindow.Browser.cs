@@ -125,7 +125,8 @@ public sealed partial class MainWindow
                 }
                 catch (Exception exception)
                 {
-                    ViewModel.CompleteExecutionItem(id, "FAILED", exception.Message);
+                    if (_activeSession?.Id == sessionId && ViewModel.IsRunning)
+                        ViewModel.CompleteExecutionItem(id, "FAILED", exception.Message);
                     if (exception is TimeoutException or OperationCanceledException) browser.Close();
                     throw;
                 }

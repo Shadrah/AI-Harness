@@ -80,7 +80,9 @@ public sealed record HarnessApplicationSettings(
     IReadOnlyList<string>? ModelOrder = null,
     string? ActiveCodexIdentityId = null,
     bool PromptForSubscriptionHandoff = true,
-    double SubscriptionHandoffThresholdPercent = 5);
+    double SubscriptionHandoffThresholdPercent = 5,
+    string? ActiveClaudeIdentityId = null,
+    string SubscriptionHandoffMode = "suggest");
 
 public sealed record ImportMessage(
     string Role,

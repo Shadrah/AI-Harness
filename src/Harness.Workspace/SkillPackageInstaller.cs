@@ -28,6 +28,19 @@ public static class SkillPackageInstaller
         return await InstallAsync(package, skill, destinationRoot, cancellationToken);
     }
 
+    public static async Task<string> InstallClaudeCodeAsync(
+        DownloadedSkillPackage package,
+        SkillCatalogEntry skill,
+        string scope,
+        string workspacePath,
+        CancellationToken cancellationToken = default)
+    {
+        var destinationRoot = scope.Equals("WORKSPACE", StringComparison.OrdinalIgnoreCase)
+            ? Path.Combine(Path.GetFullPath(workspacePath), ".claude", "skills")
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "skills");
+        return await InstallAsync(package, skill, destinationRoot, cancellationToken);
+    }
+
     public static async Task<string> InstallHarnessApiAsync(
         DownloadedSkillPackage package,
         SkillCatalogEntry skill,
@@ -261,6 +274,16 @@ public static class SkillPackageInstaller
                 return Path.Combine(Path.GetFullPath(installed.WorkspacePath), ".agents", "skills");
             }
             return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".agents", "skills");
+        }
+        if (installed.ProviderId.Equals("anthropic-claude", StringComparison.OrdinalIgnoreCase))
+        {
+            if (installed.Scope.Equals("WORKSPACE", StringComparison.OrdinalIgnoreCase))
+            {
+                if (string.IsNullOrWhiteSpace(installed.WorkspacePath))
+                    throw new InvalidOperationException("This workspace skill is not linked to a workspace.");
+                return Path.Combine(Path.GetFullPath(installed.WorkspacePath), ".claude", "skills");
+            }
+            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "skills");
         }
         return GetHarnessApiDestinationRoot(
             installed.ProviderId,

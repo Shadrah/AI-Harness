@@ -13,6 +13,7 @@ using Harness.App.ViewModels;
 using Harness.App.Services;
 using Harness.Core.Models;
 using Harness.Providers.Api;
+using Harness.Providers.Claude;
 using Harness.Providers.Codex;
 using Harness.Storage;
 using Harness.Workspace;
@@ -49,6 +50,8 @@ public sealed partial class MainWindow : Window
     private const string ImportContextAppliedEvent = "harness/importContextBriefV2Applied";
     private const string ContextFilesAppliedEvent = "harness/contextFilesAppliedV1";
     private const string ProviderIdentityChangedEvent = "harness/providerIdentityChangedV1";
+    private static string ProviderIdentityEventFor(string providerId) =>
+        $"{ProviderIdentityChangedEvent}/{providerId}";
     private readonly HashSet<string> _appliedContextContentIds = new(StringComparer.OrdinalIgnoreCase);
     private string? _appliedContextThreadId;
     private long _compactionAttempt;
@@ -73,6 +76,9 @@ public sealed partial class MainWindow : Window
     private ProviderUsageSnapshot? _pendingHandoffUsage;
     private string? _activeHandoffNoticeKey;
     private string? _dismissedHandoffNoticeKey;
+    private long _turnGenerationSeed;
+    private long _activeTurnGeneration;
+    private bool _codexStopPending;
 
     public MainWindow() : this(usePreviewData: false)
     {
@@ -104,6 +110,36 @@ public sealed partial class MainWindow : Window
 
     private MainWindowViewModel ViewModel => (MainWindowViewModel)DataContext!;
 
+    private long BeginTurnGeneration()
+    {
+        var generation = Interlocked.Increment(ref _turnGenerationSeed);
+        Volatile.Write(ref _activeTurnGeneration, generation);
+        return generation;
+    }
+
+    private bool IsActiveTurn(long generation) =>
+        generation != 0 && Volatile.Read(ref _activeTurnGeneration) == generation;
+
+    private bool CompleteTurnGeneration(long generation) =>
+        generation != 0 && Interlocked.CompareExchange(ref _activeTurnGeneration, 0, generation) == generation;
+
+    private bool StopActiveTurnImmediately()
+    {
+        var generation = Volatile.Read(ref _activeTurnGeneration);
+        if (generation == 0) return false;
+        FlushPendingUiDeltas();
+        if (Interlocked.CompareExchange(ref _activeTurnGeneration, 0, generation) != generation) return false;
+        lock (_deltaLock) _pendingUiDeltas.Clear();
+        if (_pendingGeneratedImagePaths.Count > 0)
+        {
+            ViewModel.AddGeneratedImages(_pendingGeneratedImagePaths);
+            _pendingGeneratedImagePaths.Clear();
+        }
+        _pendingHandoffUsage = null;
+        ViewModel.CompleteTurn("Turn stopped. Commands may have made partial changes; inspect the working tree before continuing.");
+        return true;
+    }
+
     protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
     {
         base.OnPropertyChanged(change);
@@ -131,7 +167,21 @@ public sealed partial class MainWindow : Window
             _lifetime.Token.ThrowIfCancellationRequested();
             _skillWarmTask = Task.Run(WarmSkillCatalogAsync, _lifetime.Token);
             // A slow GitHub check must not hold model discovery behind it.
-            await Task.WhenAll(RefreshWorkingTreeAsync(), ConnectCodexAsync(), RefreshApiConnectionsAsync());
+            await Task.WhenAll(
+                RefreshWorkingTreeAsync(),
+                ConnectCodexAsync(),
+                ConnectClaudeAsync(),
+                RefreshApiConnectionsAsync());
+            if (_activeSession is not null)
+            {
+                _applyingProviderModels = true;
+                try { ViewModel.ApplySessionModelSettings(_activeSession); }
+                finally { _applyingProviderModels = false; }
+                RefreshApiContextCountAvailability();
+                if (string.Equals(ViewModel.SelectedModel?.ProviderId, "anthropic-claude", StringComparison.Ordinal)
+                    && _claudeConnection?.Usage is { } claudeUsage)
+                    ViewModel.ApplyUsage(claudeUsage);
+            }
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
         catch (Exception exception) { ViewModel.AddActivity("STARTUP", CleanError(exception), "#E2A84A"); }
@@ -195,6 +245,7 @@ public sealed partial class MainWindow : Window
             await RefreshWorkspaceCatalogAsync(snapshot.Project.Id);
             await LoadImportStateAsync(snapshot.ActiveSession.Id);
             await SelectSubscriptionIdentityForSessionAsync(snapshot.ActiveSession.Id, _lifetime.Token, restartRuntime: false);
+            await SelectClaudeSubscriptionIdentityForSessionAsync(snapshot.ActiveSession.Id, _lifetime.Token, restartRuntime: false);
             ViewModel.MessagePersistenceRequested += ViewModel_OnMessagePersistenceRequested;
             ViewModel.AddActivity("STORAGE", "Durable session store ready", "#65C7D0");
         }
@@ -256,6 +307,10 @@ public sealed partial class MainWindow : Window
         _workingTreeWindow = null;
         _lifetime.Cancel();
         if (_apiTurnTask is not null) await _apiTurnTask;
+        if (_claudeTurnTask is not null)
+        {
+            try { await _claudeTurnTask; } catch (OperationCanceledException) { }
+        }
         if (_startupTask is not null) await _startupTask;
         if (_skillWarmTask is not null)
         {
@@ -371,6 +426,8 @@ public sealed partial class MainWindow : Window
                 else
                     ViewModel.ApplyApiUsage(null, null, null, null);
             }
+            else if (string.Equals(providerId, "anthropic-claude", StringComparison.Ordinal))
+                _ = RefreshClaudeConnectionAsync(applyCatalog: false);
             else _ = RefreshUsageAsync();
         }
         QueueSessionModelSettingsPersistence();
@@ -489,12 +546,26 @@ public sealed partial class MainWindow : Window
             ReadCodexConnectionAsync,
             BeginCodexSignInAsync,
             SignOutCodexAsync,
+            ReadClaudeConnectionAsync,
+            SignInClaudeAsync,
+            SignOutClaudeAsync,
             CreatePortableBackupAsync,
             new SubscriptionIdentityActions(
+                SubscriptionProviderIds.OpenAiCodex,
                 ReadSubscriptionIdentitiesAsync,
                 AddSubscriptionIdentityAsync,
                 (identityId, token) => ActivateSubscriptionIdentityAsync(identityId, "manual", token),
-                RemoveSubscriptionIdentityAsync),
+                RemoveSubscriptionIdentityAsync,
+                (identityId, enabled, token) => SetSubscriptionAutomaticHandoffAsync(
+                    SubscriptionProviderIds.OpenAiCodex, identityId, enabled, token)),
+            new SubscriptionIdentityActions(
+                SubscriptionProviderIds.AnthropicClaude,
+                ReadClaudeSubscriptionIdentitiesAsync,
+                AddClaudeSubscriptionIdentityAsync,
+                (identityId, token) => ActivateClaudeSubscriptionIdentityAsync(identityId, "manual", token),
+                RemoveClaudeSubscriptionIdentityAsync,
+                (identityId, enabled, token) => SetSubscriptionAutomaticHandoffAsync(
+                    SubscriptionProviderIds.AnthropicClaude, identityId, enabled, token)),
             BuildSkillInstallTargets,
             BuildSkillCompatibilityTargets,
             () => !ViewModel.IsRunning
@@ -539,6 +610,11 @@ public sealed partial class MainWindow : Window
             targets.Add(new SkillInstallTarget("openai-codex",
                 $"OpenAI Codex · filesystem runtime ({codexCount:N0} models)",
                 SetupKind: "filesystem", CompatibilityProviderId: "openai-codex"));
+        var claudeCount = ViewModel.ReportedModels.Count(model => model.ProviderId == "anthropic-claude");
+        if (claudeCount > 0)
+            targets.Add(new SkillInstallTarget("anthropic-claude",
+                $"Claude Code · filesystem runtime ({claudeCount:N0} models)",
+                SetupKind: "claude-filesystem", CompatibilityProviderId: "anthropic-claude"));
         foreach (var entry in _apiConnections.Values.OrderBy(item => item.Saved.Connection.Name, StringComparer.OrdinalIgnoreCase))
         {
             var connection = entry.Saved.Connection;
@@ -643,7 +719,7 @@ public sealed partial class MainWindow : Window
         bool restartRuntime)
     {
         var identities = await Task.Run(
-            () => _subscriptionIdentityStore.LoadAsync(cancellationToken),
+            () => _subscriptionIdentityStore.LoadAsync(SubscriptionProviderIds.OpenAiCodex, cancellationToken),
             cancellationToken);
         _subscriptionIdentities = identities;
 
@@ -651,6 +727,10 @@ public sealed partial class MainWindow : Window
         if (_store is not null && !string.IsNullOrWhiteSpace(sessionId))
         {
             var payload = await _store.GetLatestProviderEventPayloadAsync(
+                sessionId,
+                ProviderIdentityEventFor(SubscriptionProviderIds.OpenAiCodex),
+                cancellationToken);
+            payload ??= await _store.GetLatestProviderEventPayloadAsync(
                 sessionId,
                 ProviderIdentityChangedEvent,
                 cancellationToken);
@@ -705,13 +785,82 @@ public sealed partial class MainWindow : Window
         CancellationToken cancellationToken)
     {
         var identities = await Task.Run(
-            () => _subscriptionIdentityStore.LoadAsync(cancellationToken),
+            () => _subscriptionIdentityStore.LoadAsync(SubscriptionProviderIds.OpenAiCodex, cancellationToken),
             cancellationToken);
+        identities = await RefreshCodexIdentitySnapshotsAsync(identities, cancellationToken);
         _subscriptionIdentities = identities;
+        if (_activeSubscriptionIdentity is not null)
+            _activeSubscriptionIdentity = identities.FirstOrDefault(identity =>
+                identity.Id == _activeSubscriptionIdentity.Id) ?? _activeSubscriptionIdentity;
         var activeId = _activeSubscriptionIdentity?.Id
             ?? identities.FirstOrDefault(identity => identity.IsPrimary)?.Id
             ?? identities[0].Id;
-        return new SubscriptionIdentityCatalogSnapshot(identities, activeId);
+        return new SubscriptionIdentityCatalogSnapshot(identities, activeId, SubscriptionProviderIds.OpenAiCodex);
+    }
+
+    private async Task<IReadOnlyList<SubscriptionIdentity>> RefreshCodexIdentitySnapshotsAsync(
+        IReadOnlyList<SubscriptionIdentity> identities,
+        CancellationToken cancellationToken)
+    {
+        using var concurrency = new SemaphoreSlim(2, 2);
+        var results = await Task.WhenAll(identities.Select(async identity =>
+        {
+            await concurrency.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                return await Task.Run(async () =>
+                {
+                    using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    timeout.CancelAfter(TimeSpan.FromSeconds(25));
+                    CodexAppServerClient? temporary = null;
+                    try
+                    {
+                        var client = _activeSubscriptionIdentity?.Id == identity.Id && _codex is not null
+                            ? _codex
+                            : temporary = await CodexAppServerClient.StartAsync(identity.ProfileRoot, timeout.Token)
+                                .ConfigureAwait(false);
+                        var account = await client.GetAccountAsync(cancellationToken: timeout.Token).ConfigureAwait(false);
+                        var usage = await client.GetUsageAsync(timeout.Token).ConfigureAwait(false);
+                        var models = new List<string>();
+                        await foreach (var model in client.GetModelsAsync(timeout.Token).ConfigureAwait(false))
+                            models.Add(model.ModelId);
+                        var fiveHour = FindFiveHourWindow(usage?.Windows ?? []);
+                        var weekly = FindWeeklyWindow(usage?.Windows ?? []);
+                        var updated = identity with
+                        {
+                            Email = account.Email,
+                            Plan = account.PlanType,
+                            LastConnectedAt = account.IsAuthenticated ? DateTimeOffset.UtcNow : identity.LastConnectedAt,
+                            LastFiveHourRemainingPercent = fiveHour?.RemainingPercent,
+                            LastWeeklyRemainingPercent = weekly?.RemainingPercent,
+                            FiveHourResetsAt = fiveHour?.ResetsAt,
+                            WeeklyResetsAt = weekly?.ResetsAt,
+                            LastUsageAt = usage?.CapturedAt ?? identity.LastUsageAt,
+                            LastModelIds = models,
+                            ConnectionState = account.IsAuthenticated ? "CONNECTED" : "SIGNED OUT",
+                            BillingMode = account.AccountType?.Contains("api", StringComparison.OrdinalIgnoreCase) == true
+                                ? "API/PAYG" : account.IsAuthenticated ? "SUBSCRIPTION" : "NOT REPORTED"
+                        };
+                        await _subscriptionIdentityStore.UpdateAsync(updated, timeout.Token).ConfigureAwait(false);
+                        return updated;
+                    }
+                    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                    {
+                        return identity with { ConnectionState = "UNAVAILABLE" };
+                    }
+                    catch
+                    {
+                        return identity with { ConnectionState = "UNAVAILABLE" };
+                    }
+                    finally
+                    {
+                        if (temporary is not null) await temporary.DisposeAsync().ConfigureAwait(false);
+                    }
+                }, cancellationToken).ConfigureAwait(false);
+            }
+            finally { concurrency.Release(); }
+        }));
+        return results;
     }
 
     private async Task<SubscriptionIdentity> AddSubscriptionIdentityAsync(
@@ -719,10 +868,10 @@ public sealed partial class MainWindow : Window
         CancellationToken cancellationToken)
     {
         var identity = await Task.Run(
-            () => _subscriptionIdentityStore.AddAsync(displayName, cancellationToken),
+            () => _subscriptionIdentityStore.AddAsync(SubscriptionProviderIds.OpenAiCodex, displayName, cancellationToken),
             cancellationToken);
         _subscriptionIdentities = await Task.Run(
-            () => _subscriptionIdentityStore.LoadAsync(cancellationToken),
+            () => _subscriptionIdentityStore.LoadAsync(SubscriptionProviderIds.OpenAiCodex, cancellationToken),
             cancellationToken);
         return identity;
     }
@@ -737,8 +886,32 @@ public sealed partial class MainWindow : Window
             () => _subscriptionIdentityStore.RemoveAsync(identityId, cancellationToken),
             cancellationToken);
         _subscriptionIdentities = await Task.Run(
-            () => _subscriptionIdentityStore.LoadAsync(cancellationToken),
+            () => _subscriptionIdentityStore.LoadAsync(SubscriptionProviderIds.OpenAiCodex, cancellationToken),
             cancellationToken);
+    }
+
+    private async Task SetSubscriptionAutomaticHandoffAsync(
+        string providerId,
+        string identityId,
+        bool enabled,
+        CancellationToken cancellationToken)
+    {
+        var identities = await Task.Run(
+            () => _subscriptionIdentityStore.LoadAsync(providerId, cancellationToken), cancellationToken);
+        var identity = identities.FirstOrDefault(item => item.Id == identityId)
+            ?? throw new InvalidOperationException("That subscription account is no longer available.");
+        var updated = identity with { AutomaticHandoffEnabled = enabled };
+        await Task.Run(() => _subscriptionIdentityStore.UpdateAsync(updated, cancellationToken), cancellationToken);
+        if (providerId == SubscriptionProviderIds.OpenAiCodex)
+        {
+            _subscriptionIdentities = identities.Select(item => item.Id == identityId ? updated : item).ToArray();
+            if (_activeSubscriptionIdentity?.Id == identityId) _activeSubscriptionIdentity = updated;
+        }
+        else
+        {
+            _claudeSubscriptionIdentities = identities.Select(item => item.Id == identityId ? updated : item).ToArray();
+            if (_activeClaudeSubscriptionIdentity?.Id == identityId) _activeClaudeSubscriptionIdentity = updated;
+        }
     }
 
     private async Task ActivateSubscriptionIdentityAsync(
@@ -753,7 +926,7 @@ public sealed partial class MainWindow : Window
         try
         {
             var identities = await Task.Run(
-                () => _subscriptionIdentityStore.LoadAsync(cancellationToken),
+                () => _subscriptionIdentityStore.LoadAsync(SubscriptionProviderIds.OpenAiCodex, cancellationToken),
                 cancellationToken);
             var destination = identities.FirstOrDefault(identity => identity.Id == identityId)
                 ?? throw new InvalidOperationException("That OpenAI account profile is no longer available.");
@@ -789,7 +962,7 @@ public sealed partial class MainWindow : Window
                     cancellationToken);
                 await _store.AppendProviderEventAsync(
                     _activeSession.Id,
-                    ProviderIdentityChangedEvent,
+                    ProviderIdentityEventFor(SubscriptionProviderIds.OpenAiCodex),
                     JsonSerializer.Serialize(new
                     {
                         identityId = destination.Id,
@@ -1109,9 +1282,17 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        StopActiveTurnImmediately();
+        _browserTurnCancellation?.Cancel();
         if (_apiTurnCancellation is not null)
         {
             _apiTurnCancellation.Cancel();
+            return;
+        }
+
+        if (_claudeTurnCancellation is not null)
+        {
+            _claudeTurnCancellation.Cancel();
             return;
         }
 
@@ -1122,14 +1303,14 @@ public sealed partial class MainWindow : Window
 
         try
         {
-            ViewModel.AddActivity("MODEL", "Stopping active turn", "#E2A84A");
-            _browserTurnCancellation?.Cancel();
+            _codexStopPending = true;
             await _codex.InterruptTurnAsync(_threadId, _lifetime.Token);
         }
         catch (Exception exception)
         {
-            ViewModel.CompleteTurn(CleanError(exception));
+            ViewModel.AddActivity("MODEL", $"Provider cancellation could not be confirmed: {CleanError(exception)}", "#E2A84A");
         }
+        finally { _codexStopPending = false; }
     }
 
     private async void AttachImage_OnClick(object? sender, RoutedEventArgs e)
@@ -1386,6 +1567,7 @@ public sealed partial class MainWindow : Window
             if (switchVersion is { } importVersion
                 && importVersion != Interlocked.Read(ref _workspaceSwitchVersion)) return false;
             await SelectSubscriptionIdentityForSessionAsync(snapshot.ActiveSession.Id, token, restartRuntime: true);
+            await SelectClaudeSubscriptionIdentityForSessionAsync(snapshot.ActiveSession.Id, token, restartRuntime: true);
             if (switchVersion is { } identityVersion
                 && identityVersion != Interlocked.Read(ref _workspaceSwitchVersion)) return false;
             ViewModel.ApplySessionModelSettings(snapshot.ActiveSession);
@@ -1596,6 +1778,7 @@ public sealed partial class MainWindow : Window
 
             _threadId = null;
             await SelectSubscriptionIdentityForSessionAsync(nextSession.Id, _lifetime.Token, restartRuntime: true);
+            await SelectClaudeSubscriptionIdentityForSessionAsync(nextSession.Id, _lifetime.Token, restartRuntime: true);
             ViewModel.ApplySessionModelSettings(nextSession);
             await ResumeActiveThreadAsync();
         }
@@ -1664,6 +1847,7 @@ public sealed partial class MainWindow : Window
             ViewModel.ApplyStoredSession(loaded.Session, loaded.Messages, loaded.Attachments);
             await LoadImportStateAsync(loaded.Session.Id);
             await SelectSubscriptionIdentityForSessionAsync(loaded.Session.Id, _lifetime.Token, restartRuntime: true);
+            await SelectClaudeSubscriptionIdentityForSessionAsync(loaded.Session.Id, _lifetime.Token, restartRuntime: true);
             ViewModel.ApplySessionModelSettings(loaded.Session);
             await ResumeActiveThreadAsync();
         }
@@ -1741,7 +1925,11 @@ public sealed partial class MainWindow : Window
         {
             Email = account.Email,
             Plan = account.PlanType,
-            LastConnectedAt = account.IsAuthenticated ? DateTimeOffset.UtcNow : identity.LastConnectedAt
+            LastConnectedAt = account.IsAuthenticated ? DateTimeOffset.UtcNow : identity.LastConnectedAt,
+            ConnectionState = account.IsAuthenticated ? "CONNECTED" : "SIGNED OUT",
+            BillingMode = account.AccountType?.Contains("api", StringComparison.OrdinalIgnoreCase) == true
+                ? "API/PAYG" : account.IsAuthenticated ? "SUBSCRIPTION" : "NOT REPORTED",
+            LastModelIds = account.IsAuthenticated ? identity.LastModelIds : []
         };
         await Task.Run(
             () => _subscriptionIdentityStore.UpdateAsync(updated, cancellationToken),
@@ -1767,6 +1955,8 @@ public sealed partial class MainWindow : Window
 
         var client = _codex ?? throw new InvalidOperationException("The OpenAI Codex runtime is not available.");
         await client.SignOutAsync(cancellationToken);
+        await PersistSubscriptionAccountAsync(
+            new CodexAccountInfo(false, true, null, null, null), client, cancellationToken);
         _threadId = null;
         ViewModel.ApplyProviderModels(client.Id, [], "OpenAI Codex", "SIGNED OUT");
         ViewModel.SetUsageUnavailable("Signed out. Sign in again from Settings → Providers to use OpenAI models.");
@@ -2504,6 +2694,11 @@ public sealed partial class MainWindow : Window
 
     private async Task SendPromptAsync()
     {
+        if (_codexStopPending)
+        {
+            ViewModel.AddActivity("MODEL", "Waiting for the provider to confirm the previous turn was stopped.", "#E2A84A");
+            return;
+        }
         if (_openingBrowser)
         {
             ViewModel.AddActivity("BROWSER", "Finish connecting the browser before sending this turn.", "#E2A84A");
@@ -2512,9 +2707,24 @@ public sealed partial class MainWindow : Window
         var model = ViewModel.SelectedModel;
         if (model?.ProviderId.StartsWith("api-", StringComparison.Ordinal) == true)
         {
-            if (_apiTurnCancellation is not null) return;
+            if (_apiTurnCancellation is not null)
+            {
+                ViewModel.AddActivity("MODEL", "Waiting for the stopped API turn to release its resources.", "#E2A84A");
+                return;
+            }
             _apiTurnTask = SendApiPromptAsync();
             await _apiTurnTask;
+            return;
+        }
+        if (string.Equals(model?.ProviderId, "anthropic-claude", StringComparison.Ordinal))
+        {
+            if (_claudeTurnCancellation is not null)
+            {
+                ViewModel.AddActivity("MODEL", "Waiting for the stopped Claude turn to release its process.", "#E2A84A");
+                return;
+            }
+            _claudeTurnTask = SendClaudePromptAsync();
+            await _claudeTurnTask;
             return;
         }
         if (_codex is null || model is null || !ViewModel.CanSend)
@@ -2554,6 +2764,7 @@ public sealed partial class MainWindow : Window
         }
 
         var attachedContextFiles = ViewModel.ContextFiles.ToArray();
+        var turnGeneration = BeginTurnGeneration();
         var prompt = ViewModel.BeginTurn();
         var providerPrompt = importedContext is null
             ? prompt
@@ -2587,7 +2798,7 @@ public sealed partial class MainWindow : Window
                 if (_activeSession is not null && _store is not null && _activeSubscriptionIdentity is not null)
                     TrackPersistence(_store.AppendProviderEventAsync(
                         _activeSession.Id,
-                        ProviderIdentityChangedEvent,
+                        ProviderIdentityEventFor(SubscriptionProviderIds.OpenAiCodex),
                         JsonSerializer.Serialize(new
                         {
                             identityId = _activeSubscriptionIdentity.Id,
@@ -2690,10 +2901,12 @@ public sealed partial class MainWindow : Window
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
         {
+            CompleteTurnGeneration(turnGeneration);
         }
         catch (Exception exception)
         {
-            ViewModel.CompleteTurn(CleanError(exception));
+            if (CompleteTurnGeneration(turnGeneration))
+                ViewModel.CompleteTurn(CleanError(exception));
         }
     }
 
@@ -2747,9 +2960,21 @@ public sealed partial class MainWindow : Window
     private bool ShouldRouteCodexNotification(CodexNotification notification)
     {
         if (notification.Method.StartsWith("account/", StringComparison.Ordinal)) return true;
-        if (ViewModel.SelectedModel?.ProviderId.StartsWith("api-", StringComparison.Ordinal) == true) return false;
+        if (!string.Equals(ViewModel.SelectedModel?.ProviderId, "openai-codex", StringComparison.Ordinal)) return false;
         var reportedThread = GetNullableString(notification.Parameters, "threadId");
-        return reportedThread is null || string.Equals(reportedThread, _threadId, StringComparison.Ordinal);
+        if (reportedThread is not null && !string.Equals(reportedThread, _threadId, StringComparison.Ordinal)) return false;
+        var turnScoped = notification.Method.StartsWith("turn/", StringComparison.Ordinal)
+                         || notification.Method.StartsWith("item/", StringComparison.Ordinal)
+                         || notification.Method.StartsWith("command/", StringComparison.Ordinal)
+                         || notification.Method.StartsWith("process/", StringComparison.Ordinal)
+                         || string.Equals(notification.Method, "error", StringComparison.Ordinal);
+        if (!turnScoped) return true;
+        if (Volatile.Read(ref _activeTurnGeneration) == 0) return false;
+        var reportedTurn = GetNullableString(notification.Parameters, "turnId");
+        if (reportedTurn is null && notification.Parameters.TryGetProperty("turn", out var turn))
+            reportedTurn = GetNullableString(turn, "id");
+        return reportedTurn is null || _browserCodexTurnId is null
+            || string.Equals(reportedTurn, _browserCodexTurnId, StringComparison.Ordinal);
     }
 
     private bool TryQueueUiDelta(CodexNotification notification)
@@ -2758,11 +2983,13 @@ public sealed partial class MainWindow : Window
             || !TryGetString(notification.Parameters, "delta", out var delta)) return false;
         var itemId = GetNullableString(notification.Parameters, "itemId") ?? notification.Method;
         var key = notification.Method + "\0" + itemId;
+        var generation = Volatile.Read(ref _activeTurnGeneration);
+        if (generation == 0) return true;
         lock (_deltaLock)
         {
             if (!_pendingUiDeltas.TryGetValue(key, out var pending))
             {
-                pending = new PendingUiDelta(notification.Method, itemId);
+                pending = new PendingUiDelta(notification.Method, itemId, generation);
                 _pendingUiDeltas[key] = pending;
             }
             pending.Append(delta);
@@ -2779,9 +3006,9 @@ public sealed partial class MainWindow : Window
             pending = [.. _pendingUiDeltas.Values];
             _pendingUiDeltas.Clear();
         }
-        if (ViewModel.SelectedModel?.ProviderId.StartsWith("api-", StringComparison.Ordinal) == true) return;
         foreach (var delta in pending)
         {
+            if (!IsActiveTurn(delta.TurnGeneration)) continue;
             switch (delta.Method)
             {
                 case "item/agentMessage/delta":
@@ -2799,6 +3026,14 @@ public sealed partial class MainWindow : Window
                 case "process/outputDelta":
                     ViewModel.AppendExecutionDelta(delta.ItemId, "OUTPUT", "Command output", delta.Text, "#E2A84A", true);
                     break;
+                case "claude/textDelta":
+                    if (string.Equals(ViewModel.SelectedModel?.ProviderId, "anthropic-claude", StringComparison.Ordinal))
+                        ViewModel.AppendAssistantDelta(delta.ItemId, delta.Text);
+                    break;
+                case "claude/reasoningDelta":
+                    if (string.Equals(ViewModel.SelectedModel?.ProviderId, "anthropic-claude", StringComparison.Ordinal))
+                        ViewModel.AppendExecutionDelta(delta.ItemId, "REASONING", "Working", delta.Text, "#8993A3");
+                    break;
             }
         }
     }
@@ -2814,9 +3049,10 @@ public sealed partial class MainWindow : Window
                 await HandleBrowserToolAsync(client, request, cancellationToken);
                 continue;
             }
-            if (ViewModel.SelectedModel?.ProviderId.StartsWith("api-", StringComparison.Ordinal) == true)
+            if (!string.Equals(ViewModel.SelectedModel?.ProviderId, SubscriptionProviderIds.OpenAiCodex, StringComparison.Ordinal)
+                || Volatile.Read(ref _activeTurnGeneration) == 0)
             {
-                await client.RejectServerRequestAsync(request, "The active session uses another provider.", cancellationToken);
+                await client.RejectServerRequestAsync(request, "There is no active Codex turn for this request.", cancellationToken);
                 continue;
             }
             if (request.Method is not (
@@ -2831,7 +3067,8 @@ public sealed partial class MainWindow : Window
                 continue;
             }
 
-            var approved = await ShowApprovalOnUiThreadAsync(request);
+            var turnCancellation = _browserTurnCancellation?.Token ?? cancellationToken;
+            var approved = await ShowApprovalOnUiThreadAsync(request, turnCancellation);
             if (request.Method == "item/permissions/requestApproval")
             {
                 var granted = approved
@@ -2853,7 +3090,9 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private Task<bool> ShowApprovalOnUiThreadAsync(CodexServerRequest request)
+    private Task<bool> ShowApprovalOnUiThreadAsync(
+        CodexServerRequest request,
+        CancellationToken cancellationToken)
     {
         var completion = new TaskCompletionSource<bool>(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -2861,7 +3100,7 @@ public sealed partial class MainWindow : Window
         {
             try
             {
-                completion.TrySetResult(await ShowApprovalDialogAsync(request));
+                completion.TrySetResult(await ShowApprovalDialogAsync(request, cancellationToken));
             }
             catch (Exception exception)
             {
@@ -2871,8 +3110,12 @@ public sealed partial class MainWindow : Window
         return completion.Task;
     }
 
-    private async Task<bool> ShowApprovalDialogAsync(CodexServerRequest request)
+    private async Task<bool> ShowApprovalDialogAsync(
+        CodexServerRequest request,
+        CancellationToken cancellationToken)
     {
+        if (cancellationToken.IsCancellationRequested || Volatile.Read(ref _activeTurnGeneration) == 0)
+            return false;
         var parameters = request.Parameters;
         var isCommand = request.Method.Contains("commandExecution", StringComparison.Ordinal);
         var isPermissionExpansion = request.Method.Contains("permissions", StringComparison.Ordinal);
@@ -2932,7 +3175,11 @@ public sealed partial class MainWindow : Window
         };
         approve.Click += (_, _) => dialog.Close(true);
         decline.Click += (_, _) => dialog.Close(false);
+        using var cancellationRegistration = cancellationToken.Register(
+            () => Dispatcher.UIThread.Post(() => dialog.Close(false)));
         var approved = await dialog.ShowDialog<bool>(this);
+        if (cancellationToken.IsCancellationRequested || Volatile.Read(ref _activeTurnGeneration) == 0)
+            return false;
         ViewModel.CompleteExecutionItem(itemId, approved ? "APPROVED" : "DECLINED");
         return approved;
     }
@@ -3050,9 +3297,10 @@ public sealed partial class MainWindow : Window
                 break;
 
             case "turn/completed":
+                var completedGeneration = Volatile.Read(ref _activeTurnGeneration);
                 _browserTurnCancellation?.Cancel();
                 _browserCodexTurnId = null;
-                _ = CompleteTurnAsync(parameters);
+                _ = CompleteTurnAsync(parameters, completedGeneration);
                 break;
 
             case "error":
@@ -3532,9 +3780,10 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private async Task CompleteTurnAsync(JsonElement parameters)
+    private async Task CompleteTurnAsync(JsonElement parameters, long turnGeneration)
     {
         string? error = null;
+        var completedVisibleTurn = false;
         if (parameters.TryGetProperty("turn", out var turn)
             && TryGetString(turn, "status", out var status)
             && !string.Equals(status, "completed", StringComparison.OrdinalIgnoreCase))
@@ -3557,17 +3806,28 @@ public sealed partial class MainWindow : Window
         }
         finally
         {
-            if (_pendingGeneratedImagePaths.Count > 0)
+            if (CompleteTurnGeneration(turnGeneration))
             {
-                ViewModel.AddGeneratedImages(_pendingGeneratedImagePaths);
-                _pendingGeneratedImagePaths.Clear();
+                completedVisibleTurn = true;
+                if (_pendingGeneratedImagePaths.Count > 0)
+                {
+                    ViewModel.AddGeneratedImages(_pendingGeneratedImagePaths);
+                    _pendingGeneratedImagePaths.Clear();
+                }
+                ViewModel.CompleteTurn(error);
+                if (_pendingHandoffUsage is { } pendingUsage && !IsSubscriptionLimitError(error))
+                {
+                    _pendingHandoffUsage = null;
+                    EvaluateSubscriptionHandoff(pendingUsage);
+                }
             }
-            ViewModel.CompleteTurn(error);
-            if (_pendingHandoffUsage is { } pendingUsage)
-            {
-                _pendingHandoffUsage = null;
-                EvaluateSubscriptionHandoff(pendingUsage);
-            }
+        }
+
+        if (completedVisibleTurn && IsSubscriptionLimitError(error))
+        {
+            _pendingHandoffUsage = null;
+            await TryContinueInterruptedSubscriptionTurnAsync(SubscriptionProviderIds.OpenAiCodex, error);
+            if (ViewModel.IsRunning) return;
         }
 
         if (_providerConfigurationRefreshPending)
@@ -3701,9 +3961,11 @@ public sealed partial class MainWindow : Window
 
     private void EvaluateSubscriptionHandoff(ProviderUsageSnapshot usage)
     {
-        if (!_applicationSettings.PromptForSubscriptionHandoff
-            || _activeSubscriptionIdentity is null
-            || _subscriptionIdentities.All(identity => identity.Id == _activeSubscriptionIdentity.Id))
+        var mode = _applicationSettings.SubscriptionHandoffMode;
+        var active = ActiveSubscriptionIdentityFor(usage.ProviderId);
+        var identities = SubscriptionIdentitiesFor(usage.ProviderId);
+        if (mode == "manual" || active is null
+            || identities.All(identity => identity.Id == active.Id))
         {
             ViewModel.DismissSubscriptionHandoffNotice();
             return;
@@ -3726,14 +3988,124 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        var noticeKey = $"{_activeSubscriptionIdentity.Id}|{fiveHour.Id}|{fiveHour.ResetsAt?.UtcTicks}";
+        if (mode == "automatic")
+        {
+            ViewModel.SetSubscriptionHandoffNotice(
+                $"{active.DisplayName} is low on usage. Checking other {SubscriptionProviderIds.DisplayName(usage.ProviderId)} accounts before continuing…");
+            _ = PerformAutomaticSubscriptionHandoffAsync(usage.ProviderId, active, identities);
+            return;
+        }
+
+        var noticeKey = $"{active.Id}|{fiveHour.Id}|{fiveHour.ResetsAt?.UtcTicks}";
         if (noticeKey == _dismissedHandoffNoticeKey) return;
         _activeHandoffNoticeKey = noticeKey;
         var reset = fiveHour.ResetsAt is { } resetsAt
             ? $" It resets {resetsAt.ToLocalTime():t}."
             : string.Empty;
         ViewModel.SetSubscriptionHandoffNotice(
-            $"{_activeSubscriptionIdentity.DisplayName} has {fiveHour.RemainingPercent:0.#}% left in its 5-hour window.{reset} Continue this task with another connected account?");
+            $"{active.DisplayName} has {fiveHour.RemainingPercent:0.#}% left in its 5-hour window.{reset} Continue this task with another connected account?");
+    }
+
+    private SubscriptionIdentity? ActiveSubscriptionIdentityFor(string providerId) => providerId switch
+    {
+        SubscriptionProviderIds.OpenAiCodex => _activeSubscriptionIdentity,
+        SubscriptionProviderIds.AnthropicClaude => _activeClaudeSubscriptionIdentity,
+        _ => null
+    };
+
+    private IReadOnlyList<SubscriptionIdentity> SubscriptionIdentitiesFor(string providerId) => providerId switch
+    {
+        SubscriptionProviderIds.OpenAiCodex => _subscriptionIdentities,
+        SubscriptionProviderIds.AnthropicClaude => _claudeSubscriptionIdentities,
+        _ => []
+    };
+
+    private int _automaticHandoffActive;
+
+    private async Task<bool> PerformAutomaticSubscriptionHandoffAsync(
+        string providerId,
+        SubscriptionIdentity origin,
+        IReadOnlyList<SubscriptionIdentity> identities)
+    {
+        if (Interlocked.Exchange(ref _automaticHandoffActive, 1) != 0) return false;
+        try
+        {
+            if (ViewModel.IsRunning || ActiveSubscriptionIdentityFor(providerId)?.Id != origin.Id
+                || !origin.AutomaticHandoffEnabled) return false;
+            var candidates = identities.Where(identity => identity.Id != origin.Id).ToArray();
+            var refreshedCandidates = providerId == SubscriptionProviderIds.OpenAiCodex
+                ? await RefreshCodexIdentitySnapshotsAsync(candidates, _lifetime.Token)
+                : await RefreshClaudeIdentitySnapshotsAsync(candidates, _lifetime.Token);
+            identities = identities.Select(identity =>
+                refreshedCandidates.FirstOrDefault(candidate => candidate.Id == identity.Id) ?? identity).ToArray();
+            if (providerId == SubscriptionProviderIds.OpenAiCodex)
+                _subscriptionIdentities = identities;
+            else
+                _claudeSubscriptionIdentities = identities;
+            if (ViewModel.IsRunning || ActiveSubscriptionIdentityFor(providerId)?.Id != origin.Id) return false;
+            var selectedModel = ViewModel.SelectedModel?.ModelName;
+            var threshold = _applicationSettings.SubscriptionHandoffThresholdPercent;
+            var destination = selectedModel is null ? null : SubscriptionHandoffSelector.Select(
+                providerId, origin.Id, selectedModel, threshold, identities);
+            if (destination is null)
+            {
+                var nextReset = identities.Where(identity => identity.Id != origin.Id)
+                    .SelectMany(identity => new[] { identity.FiveHourResetsAt, identity.WeeklyResetsAt })
+                    .Where(reset => reset is not null)
+                    .Min();
+                var resetText = nextReset is { } reset ? $" Next known reset: {reset.ToLocalTime():g}." : string.Empty;
+                ViewModel.SetSubscriptionHandoffNotice(
+                    $"No other eligible {SubscriptionProviderIds.DisplayName(providerId)} subscription account is currently available.{resetText}");
+                return false;
+            }
+            if (providerId == SubscriptionProviderIds.OpenAiCodex)
+                await ActivateSubscriptionIdentityAsync(destination.Id, "automatic-low-usage-handoff", _lifetime.Token);
+            else
+                await ActivateClaudeSubscriptionIdentityAsync(destination.Id, "automatic-low-usage-handoff", _lifetime.Token);
+            return true;
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { return false; }
+        catch (Exception exception)
+        {
+            ViewModel.AddActivity("ACCOUNT", $"Automatic handoff could not complete: {CleanError(exception)}", "#E2A84A");
+            return false;
+        }
+        finally { Interlocked.Exchange(ref _automaticHandoffActive, 0); }
+    }
+
+    private static bool IsSubscriptionLimitError(string? error)
+    {
+        if (string.IsNullOrWhiteSpace(error)) return false;
+        var text = error.ToLowerInvariant();
+        return text.Contains("rate limit", StringComparison.Ordinal)
+               || text.Contains("rate_limit", StringComparison.Ordinal)
+               || text.Contains("usage limit", StringComparison.Ordinal)
+               || text.Contains("quota exceeded", StringComparison.Ordinal)
+               || text.Contains("limit reached", StringComparison.Ordinal)
+               || text.Contains("too many requests", StringComparison.Ordinal)
+               || text.Contains("http 429", StringComparison.Ordinal);
+    }
+
+    private async Task TryContinueInterruptedSubscriptionTurnAsync(string providerId, string? error)
+    {
+        if (_applicationSettings.SubscriptionHandoffMode != "automatic"
+            || !IsSubscriptionLimitError(error)
+            || ViewModel.IsRunning)
+            return;
+        var origin = ActiveSubscriptionIdentityFor(providerId);
+        if (origin is null) return;
+        var switched = await PerformAutomaticSubscriptionHandoffAsync(
+            providerId, origin, SubscriptionIdentitiesFor(providerId));
+        if (!switched || ViewModel.IsRunning) return;
+        if (!string.IsNullOrWhiteSpace(ViewModel.PromptText))
+        {
+            ViewModel.SetSubscriptionHandoffNotice(
+                "Harness switched accounts, but did not overwrite the text already in the composer. Send it to continue the interrupted task.");
+            return;
+        }
+        ViewModel.PromptText = "Continue the interrupted task from the current workspace and conversation state. Inspect existing changes first, preserve completed work, and finish the original request without repeating completed actions.";
+        ViewModel.AddActivity("ACCOUNT", "Resuming the interrupted task on the selected account", "#65C7D0");
+        await SendPromptAsync();
     }
 
     private async Task PersistSubscriptionUsageAsync(
@@ -3745,6 +4117,7 @@ public sealed partial class MainWindow : Window
             var identity = _activeSubscriptionIdentity;
             if (identity is null || !ReferenceEquals(_codex, sourceClient)) return;
             var fiveHour = FindFiveHourWindow(usage.Windows);
+            var weekly = FindWeeklyWindow(usage.Windows);
             var account = await sourceClient.GetAccountAsync(cancellationToken: _lifetime.Token);
             var updated = identity with
             {
@@ -3752,7 +4125,16 @@ public sealed partial class MainWindow : Window
                 Plan = account.PlanType,
                 LastConnectedAt = account.IsAuthenticated ? DateTimeOffset.UtcNow : identity.LastConnectedAt,
                 LastFiveHourRemainingPercent = fiveHour?.RemainingPercent,
-                LastUsageAt = fiveHour is null ? identity.LastUsageAt : usage.CapturedAt
+                LastWeeklyRemainingPercent = weekly?.RemainingPercent,
+                FiveHourResetsAt = fiveHour?.ResetsAt,
+                WeeklyResetsAt = weekly?.ResetsAt,
+                LastUsageAt = usage.Windows.Count == 0 ? identity.LastUsageAt : usage.CapturedAt,
+                LastModelIds = ViewModel.Models
+                    .Where(model => model.ProviderId == SubscriptionProviderIds.OpenAiCodex)
+                    .Select(model => model.ModelName).ToArray(),
+                ConnectionState = account.IsAuthenticated ? "CONNECTED" : "SIGNED OUT",
+                BillingMode = account.AccountType?.Contains("api", StringComparison.OrdinalIgnoreCase) == true
+                    ? "API/PAYG" : "SUBSCRIPTION"
             };
             await Task.Run(
                 () => _subscriptionIdentityStore.UpdateAsync(updated, _lifetime.Token),
@@ -3783,21 +4165,33 @@ public sealed partial class MainWindow : Window
             .OrderBy(window => Math.Abs(window.Duration!.Value.TotalMinutes - 300))
             .FirstOrDefault(window => Math.Abs(window.Duration!.Value.TotalMinutes - 300) <= 90);
 
+    private static UsageWindowSnapshot? FindWeeklyWindow(IReadOnlyList<UsageWindowSnapshot> windows) =>
+        windows.FirstOrDefault(window =>
+            window.DisplayName.Contains("week", StringComparison.OrdinalIgnoreCase)
+            && !window.DisplayName.Contains('·'))
+        ?? windows.Where(window => window.Duration is not null)
+            .OrderBy(window => Math.Abs(window.Duration!.Value.TotalDays - 7))
+            .FirstOrDefault(window => Math.Abs(window.Duration!.Value.TotalDays - 7) <= 1);
+
     private async void SubscriptionHandoff_OnClick(object? sender, RoutedEventArgs e)
     {
-        if (_activeSubscriptionIdentity is null || ViewModel.IsRunning) return;
-        var destinations = _subscriptionIdentities
-            .Where(identity => identity.Id != _activeSubscriptionIdentity.Id)
+        var providerId = ViewModel.SelectedModel?.ProviderId;
+        if (providerId is null || ActiveSubscriptionIdentityFor(providerId) is not { } active || ViewModel.IsRunning) return;
+        var destinations = SubscriptionIdentitiesFor(providerId)
+            .Where(identity => identity.Id != active.Id)
             .OrderByDescending(identity => identity.LastFiveHourRemainingPercent ?? -1)
             .ThenBy(identity => identity.DisplayName, StringComparer.OrdinalIgnoreCase)
             .ToArray();
         if (destinations.Length == 0) return;
-        var dialog = new SubscriptionHandoffDialog(_activeSubscriptionIdentity, destinations);
+        var dialog = new SubscriptionHandoffDialog(active, destinations);
         var selectedId = await dialog.ShowDialog<string?>(this);
         if (string.IsNullOrWhiteSpace(selectedId)) return;
         try
         {
-            await ActivateSubscriptionIdentityAsync(selectedId, "low-usage-handoff", _lifetime.Token);
+            if (providerId == SubscriptionProviderIds.OpenAiCodex)
+                await ActivateSubscriptionIdentityAsync(selectedId, "low-usage-handoff", _lifetime.Token);
+            else if (providerId == SubscriptionProviderIds.AnthropicClaude)
+                await ActivateClaudeSubscriptionIdentityAsync(selectedId, "low-usage-handoff", _lifetime.Token);
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
         {
@@ -3981,12 +4375,13 @@ public sealed partial class MainWindow : Window
             isMaximized ? "Restore window" : "Maximize window");
     }
 
-    private sealed class PendingUiDelta(string method, string itemId)
+    private sealed class PendingUiDelta(string method, string itemId, long turnGeneration)
     {
         private const int MaximumBatchCharacters = 64 * 1024;
         private readonly System.Text.StringBuilder _text = new();
         public string Method { get; } = method;
         public string ItemId { get; } = itemId;
+        public long TurnGeneration { get; } = turnGeneration;
         public string Text => _text.ToString();
         public void Append(string value)
         {

@@ -11,6 +11,7 @@
     <AvaloniaResource Include="Assets\Harness.ico" />
     <ProjectReference Include="..\Harness.Core\Harness.Core.csproj" />
     <ProjectReference Include="..\Harness.Providers.Codex\Harness.Providers.Codex.csproj" />
+    <ProjectReference Include="..\Harness.Providers.Claude\Harness.Providers.Claude.csproj" />
     <ProjectReference Include="..\Harness.Providers.Api\Harness.Providers.Api.csproj" />
     <ProjectReference Include="..\Harness.Storage\Harness.Storage.csproj" />
     <ProjectReference Include="..\Harness.Workspace\Harness.Workspace.csproj" />

@@ -5,14 +5,19 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:vm="using:Harness.App.ViewModels"
     xmlns:services="using:Harness.App.Services"
+    xmlns:controls="using:Harness.App.Controls"
     Title="Harness — Settings"
+    Icon="/Assets/Harness.ico"
     Width="1480" Height="880" MinWidth="1120" MinHeight="700"
     WindowStartupLocation="CenterOwner">
   <Grid RowDefinitions="64,*,42" Background="#11151B">
     <Border Classes="hairline" Background="#151A21" Padding="20,0">
-      <StackPanel VerticalAlignment="Center" Spacing="3">
-        <TextBlock Text="HARNESS SETTINGS" Classes="micro" Foreground="#65C7D0" />
-        <TextBlock Text="Keep the workspace focused. Configure the machinery here." Classes="muted" FontSize="11" />
+      <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Spacing="10">
+        <controls:HarnessMark />
+        <StackPanel Spacing="3">
+          <TextBlock Text="HARNESS SETTINGS" Classes="micro" Foreground="#65C7D0" />
+          <TextBlock Text="Keep the workspace focused. Configure the machinery here." Classes="muted" FontSize="11" />
+        </StackPanel>
       </StackPanel>
     </Border>
 
@@ -91,7 +96,7 @@
       <TabItem Header="PROVIDERS">
         <ScrollViewer><StackPanel Margin="24,8" Spacing="16" MaxWidth="850">
           <TextBlock Text="Providers" FontSize="22" FontWeight="SemiBold"/>
-          <TextBlock Text="Codex subscription access remains separate from API connections. API requests use the provider's billing and quotas, not your chat subscription. Claude.ai subscriptions cannot be connected to third-party harnesses." Classes="muted" TextWrapping="Wrap"/>
+          <TextBlock Text="Subscription runtimes and API connections are separate. Claude Code uses your signed-in Claude subscription or Console account; direct API requests use API billing and quotas." Classes="muted" TextWrapping="Wrap"/>
           <Border x:Name="CodexConnectionPanel" Classes="panel" Padding="16">
             <StackPanel Spacing="12">
               <Grid ColumnDefinitions="*,12,260">
@@ -127,6 +132,9 @@
                   <Button x:Name="CodexSignInButton" Content="SIGN IN" Classes="primary" Click="CodexSignIn_OnClick"/>
                   <Button x:Name="CodexSignOutButton" Content="SIGN OUT" IsVisible="False" Margin="8,0,0,0" Click="CodexSignOut_OnClick"/>
                   <Button Content="REFRESH" Margin="8,0,0,0" Click="CodexRefresh_OnClick"/>
+                  <CheckBox x:Name="CodexAutomaticHandoffToggle" Margin="12,0,0,0"
+                            VerticalAlignment="Center" Content="Automatic handoff"
+                            Checked="CodexAutomaticHandoff_OnChanged" Unchecked="CodexAutomaticHandoff_OnChanged"/>
                   </WrapPanel>
                 </Grid>
               </Border>
@@ -141,18 +149,121 @@
                   <TextBlock x:Name="CodexModelList" Classes="muted mono" FontSize="10" TextWrapping="Wrap" Text="No models reported yet."/>
                 </StackPanel>
               </Border>
-              <Border Background="#142026" BorderBrush="#29313C" BorderThickness="1" CornerRadius="4" Padding="11,9">
-                <Grid ColumnDefinitions="Auto,12,*,16,100">
-                  <CheckBox IsChecked="{Binding PromptForSubscriptionHandoff}" VerticalAlignment="Center"/>
-                  <StackPanel Grid.Column="2" Spacing="2">
-                    <TextBlock Text="Offer an account handoff before usage runs out"/>
-                    <TextBlock Text="The current turn finishes first. You always choose and confirm the destination account." Classes="muted" FontSize="10" TextWrapping="Wrap"/>
-                  </StackPanel>
-                  <NumericUpDown Grid.Column="4" Minimum="1" Maximum="25" Increment="1" FormatString="0'%'" Value="{Binding SubscriptionHandoffThresholdPercent}" VerticalAlignment="Center" ToolTip.Tip="Remaining 5-hour usage that triggers the prompt"/>
-                </Grid>
-              </Border>
+              <ItemsControl x:Name="CodexUsageCards">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="services:SubscriptionIdentity">
+                    <Border Background="#11151B" BorderBrush="#29313C" BorderThickness="1" CornerRadius="4" Padding="11,9" Margin="0,0,0,6">
+                      <Grid ColumnDefinitions="150,12,*,16,*" RowDefinitions="Auto,6,Auto,4,Auto">
+                        <StackPanel Grid.RowSpan="5" Spacing="2">
+                          <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                          <TextBlock Text="{Binding AccountLabel}" Classes="muted" FontSize="9" TextTrimming="CharacterEllipsis"/>
+                          <TextBlock Text="{Binding ConnectionSummary}" Classes="muted" FontSize="9"/>
+                          <TextBlock Text="{Binding SchedulerLabel}" Classes="micro" Foreground="#65C7D0"/>
+                          <TextBlock Text="{Binding FreshnessLabel}" Classes="muted" FontSize="9"/>
+                        </StackPanel>
+                        <TextBlock Grid.Column="2" Text="5 HOUR" Classes="micro"/>
+                        <TextBlock Grid.Column="4" Text="WEEKLY" Classes="micro"/>
+                        <ProgressBar Grid.Row="2" Grid.Column="2" Height="4" Minimum="0" Maximum="100" Value="{Binding FiveHourRemainingValue}"/>
+                        <ProgressBar Grid.Row="2" Grid.Column="4" Height="4" Minimum="0" Maximum="100" Value="{Binding WeeklyRemainingValue}"/>
+                        <TextBlock Grid.Row="4" Grid.Column="2" Text="{Binding FiveHourUsageLabel}" Classes="muted mono" FontSize="9"/>
+                        <TextBlock Grid.Row="4" Grid.Column="4" Text="{Binding WeeklyUsageLabel}" Classes="muted mono" FontSize="9"/>
+                      </Grid>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
               <TextBlock Text="Adding an account creates an isolated provider profile and makes it active so you can sign in. Removing a profile only removes it from Harness; provider-owned credentials are not copied into Harness data or backups." Classes="muted" FontSize="11" TextWrapping="Wrap"/>
             </StackPanel>
+          </Border>
+          <Border x:Name="ClaudeConnectionPanel" Classes="panel" Padding="16">
+            <StackPanel Spacing="12">
+              <Grid ColumnDefinitions="*,12,260">
+                <StackPanel Spacing="4">
+                  <TextBlock Text="SUBSCRIPTION RUNTIME" Classes="micro" Foreground="#65C7D0"/>
+                  <TextBlock Text="Claude Code" FontSize="16" FontWeight="SemiBold"/>
+                  <TextBlock Text="Uses the official Claude Code runtime and the account signed into it. Models, effort levels, fast mode, and usage come from Claude at connection time." Classes="muted" TextWrapping="Wrap"/>
+                </StackPanel>
+                <StackPanel Grid.Column="2" Spacing="5">
+                  <TextBlock Text="ACCOUNT PROFILES" Classes="micro"/>
+                  <ComboBox x:Name="ClaudeIdentityPicker" HorizontalAlignment="Stretch" SelectionChanged="ClaudeIdentity_OnChanged">
+                    <ComboBox.ItemTemplate>
+                      <DataTemplate x:DataType="services:SubscriptionIdentity">
+                        <TextBlock Text="{Binding DisplayName}" TextTrimming="CharacterEllipsis"/>
+                      </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                  </ComboBox>
+                </StackPanel>
+              </Grid>
+              <Border Background="#11151B" BorderBrush="#29313C" BorderThickness="1" CornerRadius="4" Padding="12,10">
+                <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto">
+                  <StackPanel Spacing="3">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                      <TextBlock x:Name="ClaudeIdentityName" Text="Claude 1" FontWeight="SemiBold"/>
+                      <TextBlock x:Name="ClaudeIdentityActive" Text="ACTIVE" Classes="micro" Foreground="#65C7D0"/>
+                    </StackPanel>
+                    <TextBlock x:Name="ClaudeAccountStatus" Text="Checking account…" TextWrapping="Wrap"/>
+                    <TextBlock x:Name="ClaudeRuntimeStatus" Classes="muted" TextWrapping="Wrap"/>
+                    <TextBlock x:Name="ClaudeIdentityUsage" Classes="muted mono" FontSize="9" TextWrapping="Wrap"/>
+                  </StackPanel>
+                  <WrapPanel Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Top">
+                    <Button x:Name="ClaudeUseIdentityButton" Content="USE ACCOUNT" Margin="0,0,8,0" Click="ClaudeUseIdentity_OnClick"/>
+                    <Button x:Name="ClaudeInstallHelpButton" Content="INSTALL GUIDE" IsVisible="False" Click="ClaudeInstallHelp_OnClick"/>
+                    <Button x:Name="ClaudeSignInButton" Content="SIGN IN" Classes="primary" Click="ClaudeSignIn_OnClick"/>
+                    <Button x:Name="ClaudeSignOutButton" Content="SIGN OUT" IsVisible="False" Margin="8,0,0,0" Click="ClaudeSignOut_OnClick"/>
+                    <Button Content="REFRESH" Margin="8,0,0,0" Click="ClaudeRefresh_OnClick"/>
+                    <CheckBox x:Name="ClaudeAutomaticHandoffToggle" Margin="12,0,0,0"
+                              VerticalAlignment="Center" Content="Automatic handoff"
+                              Checked="ClaudeAutomaticHandoff_OnChanged" Unchecked="ClaudeAutomaticHandoff_OnChanged"/>
+                  </WrapPanel>
+                </Grid>
+              </Border>
+              <Grid ColumnDefinitions="*,8,Auto,8,Auto">
+                <TextBox x:Name="ClaudeIdentityNameInput" Watermark="Account name, for example Personal Max"/>
+                <Button Grid.Column="2" Content="ADD ACCOUNT" Click="ClaudeAddIdentity_OnClick"/>
+                <Button x:Name="ClaudeRemoveIdentityButton" Grid.Column="4" Content="REMOVE PROFILE" Click="ClaudeRemoveIdentity_OnClick"/>
+              </Grid>
+              <Border Background="#11151B" BorderBrush="#29313C" BorderThickness="1" CornerRadius="4" Padding="11,9">
+                <StackPanel Spacing="5">
+                  <TextBlock x:Name="ClaudeModelCount" Text="MODELS · CHECKING" Classes="micro"/>
+                  <TextBlock x:Name="ClaudeModelList" Classes="muted mono" FontSize="10" TextWrapping="Wrap" Text="No models reported yet."/>
+                </StackPanel>
+              </Border>
+              <ItemsControl x:Name="ClaudeUsageCards">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="services:SubscriptionIdentity">
+                    <Border Background="#11151B" BorderBrush="#29313C" BorderThickness="1" CornerRadius="4" Padding="11,9" Margin="0,0,0,6">
+                      <Grid ColumnDefinitions="150,12,*,16,*" RowDefinitions="Auto,6,Auto,4,Auto">
+                        <StackPanel Grid.RowSpan="5" Spacing="2">
+                          <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                          <TextBlock Text="{Binding AccountLabel}" Classes="muted" FontSize="9" TextTrimming="CharacterEllipsis"/>
+                          <TextBlock Text="{Binding ConnectionSummary}" Classes="muted" FontSize="9"/>
+                          <TextBlock Text="{Binding SchedulerLabel}" Classes="micro" Foreground="#65C7D0"/>
+                          <TextBlock Text="{Binding FreshnessLabel}" Classes="muted" FontSize="9"/>
+                        </StackPanel>
+                        <TextBlock Grid.Column="2" Text="5 HOUR" Classes="micro"/>
+                        <TextBlock Grid.Column="4" Text="WEEKLY" Classes="micro"/>
+                        <ProgressBar Grid.Row="2" Grid.Column="2" Height="4" Minimum="0" Maximum="100" Value="{Binding FiveHourRemainingValue}"/>
+                        <ProgressBar Grid.Row="2" Grid.Column="4" Height="4" Minimum="0" Maximum="100" Value="{Binding WeeklyRemainingValue}"/>
+                        <TextBlock Grid.Row="4" Grid.Column="2" Text="{Binding FiveHourUsageLabel}" Classes="muted mono" FontSize="9"/>
+                        <TextBlock Grid.Row="4" Grid.Column="4" Text="{Binding WeeklyUsageLabel}" Classes="muted mono" FontSize="9"/>
+                      </Grid>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+              <TextBlock Text="Claude Code is a provider runtime, not another harness dependency. Harness owns its workspaces, chats, imports, Git, UI, and orchestration; Claude Code supplies the authenticated model execution protocol." Classes="muted" FontSize="11" TextWrapping="Wrap"/>
+            </StackPanel>
+          </Border>
+          <Border Background="#142026" BorderBrush="#29313C" BorderThickness="1" CornerRadius="4" Padding="14,11">
+            <Grid ColumnDefinitions="*,16,150,16,100">
+              <StackPanel Spacing="2">
+                <TextBlock Text="SUBSCRIPTION HANDOFF" Classes="micro" Foreground="#65C7D0"/>
+                <TextBlock Text="Choose how Harness routes work when the active subscription approaches its limit."/>
+                <TextBlock Text="Automatic routing stays within the selected provider and never selects API/PAYG connections." Classes="muted" FontSize="10" TextWrapping="Wrap"/>
+              </StackPanel>
+              <ComboBox Grid.Column="2" ItemsSource="{Binding SubscriptionHandoffModes}" SelectedItem="{Binding SubscriptionHandoffMode}" VerticalAlignment="Center"/>
+              <NumericUpDown Grid.Column="4" Minimum="1" Maximum="25" Increment="1" FormatString="0'%'" Value="{Binding SubscriptionHandoffThresholdPercent}" VerticalAlignment="Center" ToolTip.Tip="Remaining 5-hour usage that triggers handoff evaluation"/>
+            </Grid>
           </Border>
           <Border x:Name="ModelPreferencePanel" Classes="panel" Padding="16">
             <StackPanel Spacing="11">

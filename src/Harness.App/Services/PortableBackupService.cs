@@ -463,10 +463,13 @@ public sealed class PortableBackupService
             // Workspace skills stay managed and disabled until the user selects or relinks that project.
             var workspaceAvailable = !isWorkspace;
             var isCodex = item.ProviderId.Equals("openai-codex", StringComparison.OrdinalIgnoreCase);
+            var isClaude = item.ProviderId.Equals("anthropic-claude", StringComparison.OrdinalIgnoreCase);
             var installRoot = isWorkspace
                 ? Path.Combine(targetData, "deferred-skills", item.Id)
                 : isCodex
                     ? _globalSkillRoot
+                    : isClaude
+                        ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "skills")
                     : SkillPackageInstaller.GetHarnessApiDestinationRoot(item.ProviderId, item.Scope, targetData, _apiSkillRoot, item.ModelId);
             var enabled = item.Enabled && workspaceAvailable;
             if (!enabled && !isWorkspace)
@@ -511,8 +514,10 @@ public sealed class PortableBackupService
         {
             var installRoot = item.ProviderId.Equals("openai-codex", StringComparison.OrdinalIgnoreCase)
                 ? Path.Combine(Path.GetFullPath(currentWorkspacePath), ".agents", "skills")
-                : SkillPackageInstaller.GetHarnessApiDestinationRoot(
-                    item.ProviderId, item.Scope, currentWorkspacePath, _apiSkillRoot, item.ModelId);
+                : item.ProviderId.Equals("anthropic-claude", StringComparison.OrdinalIgnoreCase)
+                    ? Path.Combine(Path.GetFullPath(currentWorkspacePath), ".claude", "skills")
+                    : SkillPackageInstaller.GetHarnessApiDestinationRoot(
+                        item.ProviderId, item.Scope, currentWorkspacePath, _apiSkillRoot, item.ModelId);
             var folderName = Path.GetFileName(item.InstallPath);
             ValidateSkillIdentity(item.Id, folderName);
             var destination = Path.Combine(installRoot, folderName);

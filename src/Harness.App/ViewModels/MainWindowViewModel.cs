@@ -1261,16 +1261,21 @@ public sealed class MainWindowViewModel : ObservableObject
 
     public void CompleteTurn(string? error = null)
     {
+        var cancelled = error?.Contains("stopped", StringComparison.OrdinalIgnoreCase) == true
+            || error?.Contains("cancel", StringComparison.OrdinalIgnoreCase) == true
+            || error?.Contains("interrupt", StringComparison.OrdinalIgnoreCase) == true;
         IsRunning = false;
-        TurnActivityStatus = error is null ? "READY" : "NEEDS ATTENTION";
+        TurnActivityStatus = error is null ? "READY" : cancelled ? "STOPPED" : "NEEDS ATTENTION";
         foreach (var delivered in Messages.Where(message => message.Status == "DELIVERED"))
         {
-            delivered.SetStatus(error is null ? "COMPLETED" : "DELIVERED · TURN FAILED");
+            delivered.SetStatus(error is null
+                ? "COMPLETED"
+                : cancelled ? "DELIVERED · TURN STOPPED" : "DELIVERED · TURN FAILED");
             RequestMessagePersistence(delivered);
         }
         foreach (var message in _streamingAssistantMessages.Values)
         {
-            message.SetStatus(error is null ? "COMPLETED" : "FAILED");
+            message.SetStatus(error is null ? "COMPLETED" : cancelled ? "STOPPED" : "FAILED");
             RequestMessagePersistence(message);
         }
         _streamingAssistantMessages.Clear();
@@ -1280,9 +1285,6 @@ public sealed class MainWindowViewModel : ObservableObject
             Messages.Add(report);
             RequestMessagePersistence(report);
         }
-        var cancelled = error?.Contains("stopped", StringComparison.OrdinalIgnoreCase) == true
-            || error?.Contains("cancel", StringComparison.OrdinalIgnoreCase) == true
-            || error?.Contains("interrupt", StringComparison.OrdinalIgnoreCase) == true;
         var changed = ChangedFiles.Count;
         var commands = ExecutionItems.Count(item => item.Kind is "COMMAND" or "OUTPUT");
         var tools = ExecutionItems.Count(item => item.Kind is "TOOL" or "WEB");
@@ -1304,7 +1306,7 @@ public sealed class MainWindowViewModel : ObservableObject
             error is null ? "#65C7D0" : "#E2A84A",
             false,
             detail,
-            error is null ? "COMPLETED" : cancelled ? "CANCELLED" : "FAILED",
+            error is null ? "COMPLETED" : cancelled ? "STOPPED" : "FAILED",
             true);
         ConversationAdvanced?.Invoke(this, EventArgs.Empty);
     }

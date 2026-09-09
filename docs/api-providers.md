@@ -1,7 +1,8 @@
 # Direct API providers — first integration slice
 
-Settings → Providers connects additional accounts without requiring another harness.
-The existing Harness-managed Codex subscription runtime remains independent.
+Settings → Providers connects additional accounts without requiring another desktop harness.
+The Codex and Claude Code subscription runtimes remain independent from these
+direct API connections.
 
 | Connection | Native wire protocol | Catalog source |
 | --- | --- | --- |
@@ -40,10 +41,10 @@ compatibility. No account was charged during implementation.
 3. Select the connected model beneath the composer. API billing is separate from
    a consumer subscription. Your project's transcript remains in Harness.
 
-Claude subscription credentials are not accepted: Anthropic's
-[third-party authentication policy](https://code.claude.com/docs/en/legal-and-compliance)
-requires an approved API route rather than Claude.ai subscription login. Other
-consumer subscriptions are not silently treated as API credits either.
+Do not paste Claude subscription credentials into the API-key field. Connect a
+Claude subscription through the separate **Claude Code** panel in Settings →
+Providers; the direct Anthropic API connection continues to require API billing.
+Other consumer subscriptions are not silently treated as API credits either.
 
 ## Implemented
 

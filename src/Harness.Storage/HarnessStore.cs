@@ -246,6 +246,13 @@ public sealed class HarnessStore : IAsyncDisposable
             if (!root.TryGetProperty(nameof(HarnessApplicationSettings.SubscriptionHandoffThresholdPercent), out _)
                 || settings.SubscriptionHandoffThresholdPercent is < 1 or > 25)
                 settings = settings with { SubscriptionHandoffThresholdPercent = 5 };
+            if (!root.TryGetProperty(nameof(HarnessApplicationSettings.SubscriptionHandoffMode), out _))
+                settings = settings with
+                {
+                    SubscriptionHandoffMode = settings.PromptForSubscriptionHandoff ? "suggest" : "manual"
+                };
+            if (settings.SubscriptionHandoffMode is not ("manual" or "suggest" or "automatic"))
+                settings = settings with { SubscriptionHandoffMode = "suggest" };
             return settings;
         }
         finally

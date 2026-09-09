@@ -21,6 +21,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{68E64184-8E4
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Harness.Providers.Api", "src\Harness.Providers.Api\Harness.Providers.Api.csproj", "{C123082D-F987-49DE-A4DF-E0B6F2FAAF80}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Harness.Providers.Claude", "src\Harness.Providers.Claude\Harness.Providers.Claude.csproj", "{EE1EB81A-E440-4C7C-9A2A-63330C21FEAA}"
+EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tools", "tools", "{60E8845B-BA30-40BC-9A3F-893731993523}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Harness.ApiCheck", "tools\Harness.ApiCheck\Harness.ApiCheck.csproj", "{DFA9C3F5-C155-457E-8671-ED4980726CB0}"
@@ -63,6 +65,10 @@ Global
 		{C123082D-F987-49DE-A4DF-E0B6F2FAAF80}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{C123082D-F987-49DE-A4DF-E0B6F2FAAF80}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{C123082D-F987-49DE-A4DF-E0B6F2FAAF80}.Release|Any CPU.Build.0 = Release|Any CPU
+		{EE1EB81A-E440-4C7C-9A2A-63330C21FEAA}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{EE1EB81A-E440-4C7C-9A2A-63330C21FEAA}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{EE1EB81A-E440-4C7C-9A2A-63330C21FEAA}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{EE1EB81A-E440-4C7C-9A2A-63330C21FEAA}.Release|Any CPU.Build.0 = Release|Any CPU
 		{DFA9C3F5-C155-457E-8671-ED4980726CB0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{DFA9C3F5-C155-457E-8671-ED4980726CB0}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{DFA9C3F5-C155-457E-8671-ED4980726CB0}.Release|Any CPU.ActiveCfg = Release|Any CPU
@@ -70,6 +76,7 @@ Global
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{C123082D-F987-49DE-A4DF-E0B6F2FAAF80} = {68E64184-8E4D-4B8D-8A7B-A55D0B4AAE26}
+		{EE1EB81A-E440-4C7C-9A2A-63330C21FEAA} = {68E64184-8E4D-4B8D-8A7B-A55D0B4AAE26}
 		{DFA9C3F5-C155-457E-8671-ED4980726CB0} = {60E8845B-BA30-40BC-9A3F-893731993523}
 	EndGlobalSection
 EndGlobal
