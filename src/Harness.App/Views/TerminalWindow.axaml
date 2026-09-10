@@ -27,9 +27,9 @@
           <Border Width="6" Height="6" CornerRadius="3" Background="#65C7D0"/>
           <TextBlock Text="{Binding Status}" Classes="micro" FontSize="8" Foreground="#65C7D0"/>
         </StackPanel>
-        <Button Grid.Column="6" Classes="window-command" Click="Minimize_OnClick" ToolTip.Tip="Minimize"><Border Width="12" Height="1.5" Background="#D8DEE8"/></Button>
-        <Button Grid.Column="7" Classes="window-command" Click="Maximize_OnClick" ToolTip.Tip="Maximize"><Border Width="11" Height="11" BorderBrush="#D8DEE8" BorderThickness="1.5"/></Button>
-        <Button Grid.Column="8" Classes="window-command window-close" Click="Close_OnClick" ToolTip.Tip="Close"><Path Width="14" Height="14" Stretch="Uniform" Stroke="#D8DEE8" StrokeThickness="1.5" Data="M3,3 L13,13 M13,3 L3,13"/></Button>
+        <Button Grid.Column="6" Classes="window-command" Click="Minimize_OnClick" ToolTip.Tip="Minimize"><Border Width="14" Height="1.6" Background="#D8DEE8"/></Button>
+        <Button Grid.Column="7" Classes="window-command" Click="Maximize_OnClick" ToolTip.Tip="Maximize"><Border Width="13" Height="13" BorderBrush="#D8DEE8" BorderThickness="1.6"/></Button>
+        <Button Grid.Column="8" Classes="window-command window-close" Click="Close_OnClick" ToolTip.Tip="Close"><Path Width="16" Height="16" Stretch="Uniform" Stroke="#D8DEE8" StrokeThickness="1.6" Data="M3,3 L13,13 M13,3 L3,13"/></Button>
       </Grid>
     </Border>
 

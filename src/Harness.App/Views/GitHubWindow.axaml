@@ -1,0 +1,182 @@
+<Window
+    x:Class="Harness.App.Views.GitHubWindow"
+    x:DataType="vm:GitHubWindowViewModel"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:Harness.App.Controls"
+    xmlns:vm="using:Harness.App.ViewModels"
+    Title="Harness — GitHub"
+    Width="1120" Height="760" MinWidth="900" MinHeight="620"
+    CanResize="True"
+    ExtendClientAreaToDecorationsHint="True"
+    ExtendClientAreaChromeHints="NoChrome"
+    ExtendClientAreaTitleBarHeightHint="44"
+    WindowStartupLocation="CenterOwner">
+  <Grid RowDefinitions="44,*,28" Background="#11151B">
+    <Border Classes="hairline" Background="#151A21" PointerPressed="TitleBar_OnPointerPressed">
+      <Grid Margin="14,0,0,0" ColumnDefinitions="Auto,12,Auto,*,40,40,40">
+        <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+          <controls:HarnessMark />
+          <TextBlock Text="GITHUB" Classes="micro" VerticalAlignment="Center"/>
+        </StackPanel>
+        <Border Grid.Column="1" Width="1" Height="18" Background="#29313C"/>
+        <TextBlock Grid.Column="2" Text="{Binding Status}" Classes="micro" FontSize="8" Foreground="#65C7D0" VerticalAlignment="Center"/>
+        <Button Grid.Column="4" Classes="window-command" Click="Minimize_OnClick"><Border Width="14" Height="1.6" Background="#D8DEE8"/></Button>
+        <Button Grid.Column="5" Classes="window-command" Click="Maximize_OnClick"><Border Width="13" Height="13" BorderBrush="#D8DEE8" BorderThickness="1.6"/></Button>
+        <Button Grid.Column="6" Classes="window-command window-close" Click="Close_OnClick"><Path Width="16" Height="16" Stretch="Uniform" Stroke="#D8DEE8" StrokeThickness="1.6" Data="M3,3 L13,13 M13,3 L3,13"/></Button>
+      </Grid>
+    </Border>
+
+    <Grid Grid.Row="1" ColumnDefinitions="390,*">
+      <Border BorderBrush="#29313C" BorderThickness="0,0,1,0" Background="#151A21">
+        <Grid RowDefinitions="Auto,Auto,*">
+          <StackPanel Margin="18,18,18,14" Spacing="5">
+            <TextBlock Text="Your repositories" FontSize="22" FontWeight="SemiBold"/>
+            <TextBlock Text="{Binding ConnectionStatus}" Classes="muted" FontSize="10" TextWrapping="Wrap"/>
+            <TextBlock Text="Connect or change accounts in Settings → GitHub." Classes="muted" FontSize="9"/>
+            <StackPanel Orientation="Horizontal" Spacing="7" Margin="0,5,0,0" IsVisible="{Binding NeedsToolSetup}">
+              <Button Content="GET GIT" Classes="ghost" IsVisible="{Binding !IsGitAvailable}" Click="GetGit_OnClick"/>
+              <Button Content="GET GITHUB CLI" Classes="ghost" IsVisible="{Binding !IsGitHubCliAvailable}" Click="GetGitHubCli_OnClick"/>
+            </StackPanel>
+          </StackPanel>
+          <Grid Grid.Row="1" Margin="14,0,14,12" ColumnDefinitions="*,8,118">
+            <TextBox x:Name="RepositorySearchBox" Watermark="Search repositories…" TextChanged="RepositorySearch_OnTextChanged"/>
+            <ComboBox x:Name="RepositoryVisibilityFilter" Grid.Column="2" SelectedIndex="0" SelectionChanged="RepositoryFilter_OnChanged">
+              <ComboBoxItem Content="All" Tag="all"/>
+              <ComboBoxItem Content="Public" Tag="public"/>
+              <ComboBoxItem Content="Private" Tag="private"/>
+            </ComboBox>
+          </Grid>
+          <Grid Grid.Row="2" RowDefinitions="Auto,*">
+            <Grid Margin="18,0,18,7" ColumnDefinitions="*,Auto">
+              <TextBlock Text="ACCOUNT CATALOG" Classes="micro"/>
+              <TextBlock Grid.Column="1" Text="{Binding RepositoryCount}" Classes="muted mono" FontSize="8"/>
+            </Grid>
+            <ListBox Grid.Row="1"
+                     ItemsSource="{Binding Repositories}"
+                     SelectedItem="{Binding SelectedRepository, Mode=TwoWay}"
+                     Background="Transparent" BorderThickness="0">
+              <ListBox.ItemTemplate>
+                <DataTemplate x:DataType="vm:GitHubRepositoryItem">
+                  <Grid Margin="8,4" ColumnDefinitions="4,14,*,Auto">
+                    <Border Background="{Binding AccentColor}" CornerRadius="2"/>
+                    <StackPanel Grid.Column="2" Spacing="4" Margin="0,7">
+                      <TextBlock Text="{Binding NameWithOwner}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                      <TextBlock Text="{Binding Description}" Classes="muted" FontSize="9" MaxLines="2" TextTrimming="CharacterEllipsis"/>
+                      <TextBlock Text="{Binding Updated}" Classes="muted mono" FontSize="8"/>
+                    </StackPanel>
+                    <TextBlock Grid.Column="3" Text="{Binding Visibility}" Foreground="{Binding AccentColor}" Classes="micro" FontSize="7" VerticalAlignment="Center" Margin="10,0"/>
+                  </Grid>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+          </Grid>
+        </Grid>
+      </Border>
+
+      <ScrollViewer Grid.Column="1">
+        <StackPanel Margin="22,18,22,24" Spacing="16" IsEnabled="{Binding !IsBusy}">
+          <Grid ColumnDefinitions="*,Auto">
+            <StackPanel Spacing="4">
+              <TextBlock Text="Current workspace" FontSize="22" FontWeight="SemiBold"/>
+              <TextBlock Text="{Binding WorkspaceName}" Foreground="#65C7D0" FontWeight="SemiBold"/>
+              <TextBlock Text="{Binding WorkspacePath}" Classes="muted mono" FontSize="9" TextTrimming="CharacterEllipsis"/>
+            </StackPanel>
+            <Button Grid.Column="1" Content="REFRESH" Click="Refresh_OnClick" VerticalAlignment="Top"/>
+          </Grid>
+
+          <!-- A compact connection rail: this is the module's primary state readout. -->
+          <Grid ColumnDefinitions="*,26,*,26,*">
+            <Border Classes="panel" Padding="12,10">
+              <StackPanel Spacing="4">
+                <TextBlock Text="LOCAL" Classes="micro" FontSize="8"/>
+                <TextBlock Text="{Binding LocalState}" Foreground="{Binding LocalStateColor}" FontWeight="SemiBold"/>
+              </StackPanel>
+            </Border>
+            <Border Grid.Column="1" Height="1" Background="#536071" VerticalAlignment="Center"/>
+            <Border Grid.Column="2" Classes="panel" Padding="12,10">
+              <StackPanel Spacing="4">
+                <TextBlock Text="BRANCH" Classes="micro" FontSize="8"/>
+                <TextBlock Text="{Binding Branch}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+              </StackPanel>
+            </Border>
+            <Border Grid.Column="3" Height="1" Background="#536071" VerticalAlignment="Center"/>
+            <Border Grid.Column="4" Classes="panel" Padding="12,10">
+              <StackPanel Spacing="4">
+                <TextBlock Text="ORIGIN" Classes="micro" FontSize="8"/>
+                <TextBlock Text="{Binding Origin}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Origin}"/>
+              </StackPanel>
+            </Border>
+          </Grid>
+
+          <Border Classes="panel" Padding="16">
+            <StackPanel Spacing="11">
+              <Grid ColumnDefinitions="*,Auto">
+                <StackPanel Spacing="3">
+                  <TextBlock Text="LOCAL REPOSITORY" Classes="micro" Foreground="#65C7D0"/>
+                  <TextBlock Text="Initialize Git, choose the branch, and inspect changes." Classes="muted" FontSize="10"/>
+                </StackPanel>
+                <Button Grid.Column="1" Content="OPEN WORKING TREE" IsEnabled="{Binding IsRepository}" Click="OpenWorkingTree_OnClick"/>
+              </Grid>
+              <Grid ColumnDefinitions="*,8,Auto,8,Auto">
+                <TextBox x:Name="BranchNameBox" Watermark="main"/>
+                <Button Grid.Column="2" Content="INITIALIZE" Click="Initialize_OnClick"/>
+                <Button Grid.Column="4" Content="APPLY BRANCH" IsEnabled="{Binding IsRepository}" Click="ApplyBranch_OnClick"/>
+              </Grid>
+            </StackPanel>
+          </Border>
+
+          <Border Classes="panel" Padding="16">
+            <StackPanel Spacing="11">
+              <StackPanel Spacing="3">
+                <TextBlock Text="ORIGIN REMOTE" Classes="micro" Foreground="#65C7D0"/>
+                <TextBlock Text="Attach the current workspace to an existing GitHub repository." Classes="muted" FontSize="10"/>
+              </StackPanel>
+              <Grid ColumnDefinitions="*,8,Auto">
+                <TextBox x:Name="OriginUrlBox" Watermark="https://github.com/owner/repository.git"/>
+                <Button Grid.Column="2" Content="ATTACH / UPDATE" Click="AttachOrigin_OnClick"/>
+              </Grid>
+              <Button Content="USE SELECTED REPOSITORY AS ORIGIN" IsEnabled="{Binding HasSelection}" HorizontalAlignment="Left" Click="UseSelectedOrigin_OnClick"/>
+            </StackPanel>
+          </Border>
+
+          <Border Classes="panel" Padding="16">
+            <StackPanel Spacing="11">
+              <StackPanel Spacing="3">
+                <TextBlock Text="PUBLISH THIS WORKSPACE" Classes="micro" Foreground="#65C7D0"/>
+                <TextBlock Text="Create a repository, make the initial commit, and push the selected branch." Classes="muted" FontSize="10"/>
+              </StackPanel>
+              <Grid ColumnDefinitions="*,8,180">
+                <TextBox x:Name="NewRepositoryNameBox" Watermark="repository-name"/>
+                <CheckBox x:Name="PrivateRepositoryCheckBox" Grid.Column="2" Content="Private repository" IsChecked="True" VerticalAlignment="Center"/>
+              </Grid>
+              <Grid ColumnDefinitions="*,8,*">
+                <TextBox x:Name="AuthorNameBox" Watermark="Commit author name"/>
+                <TextBox x:Name="AuthorEmailBox" Grid.Column="2" Watermark="name@example.com"/>
+              </Grid>
+              <Button Content="CREATE, COMMIT, AND PUSH" Classes="primary" HorizontalAlignment="Left" Click="Publish_OnClick"/>
+            </StackPanel>
+          </Border>
+
+          <Border Classes="panel" Padding="16" IsEnabled="{Binding HasSelection}">
+            <StackPanel Spacing="9">
+              <TextBlock Text="SELECTED REPOSITORY" Classes="micro" Foreground="#65C7D0"/>
+              <TextBlock Text="{Binding SelectedRepository.NameWithOwner}" FontSize="18" FontWeight="SemiBold"/>
+              <TextBlock Text="{Binding SelectedRepository.Description}" Classes="muted" TextWrapping="Wrap"/>
+              <Grid ColumnDefinitions="Auto,22,Auto,22,*">
+                <TextBlock Text="{Binding SelectedRepository.Visibility}" Foreground="{Binding SelectedRepository.AccentColor}" Classes="micro" FontSize="8"/>
+                <TextBlock Grid.Column="2" Text="{Binding SelectedRepository.DefaultBranch}" Classes="muted mono" FontSize="9"/>
+                <TextBlock Grid.Column="4" Text="{Binding SelectedRepository.Updated}" Classes="muted mono" FontSize="9" HorizontalAlignment="Right"/>
+              </Grid>
+              <Button Content="CLONE AND OPEN AS WORKSPACE" Classes="primary" HorizontalAlignment="Left" Click="CloneRepository_OnClick"/>
+            </StackPanel>
+          </Border>
+        </StackPanel>
+      </ScrollViewer>
+    </Grid>
+
+    <Border Grid.Row="2" BorderBrush="#29313C" BorderThickness="0,1,0,0" Background="#0D1116">
+      <TextBlock Text="Commit, Pull, and Push remain available beside the composer for the active workspace." Classes="muted" FontSize="9" Margin="11,0" VerticalAlignment="Center"/>
+    </Border>
+  </Grid>
+</Window>

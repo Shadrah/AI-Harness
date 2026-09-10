@@ -1,0 +1,23 @@
+<Project Sdk="WixToolset.Sdk/6.0.2">
+  <PropertyGroup>
+    <OutputType>Package</OutputType>
+    <Platform>x64</Platform>
+    <ProductVersion Condition="'$(ProductVersion)' == ''">1.0.1</ProductVersion>
+    <DefineConstants>ProductVersion=$(ProductVersion)</DefineConstants>
+    <OutputName>Harness-$(ProductVersion)-win-x64</OutputName>
+    <!-- Self-contained .NET publishes contain intentional versionless native payloads. -->
+    <SuppressIces>ICE60</SuppressIces>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="WixToolset.UI.wixext" Version="6.0.2" />
+    <BindPath Include="$(HarnessPublishDir)">
+      <BindName>publish</BindName>
+    </BindPath>
+  </ItemGroup>
+
+  <Target Name="RequirePublishDirectory" BeforeTargets="Build">
+    <Error Condition="'$(HarnessPublishDir)' == ''" Text="HarnessPublishDir must point to the self-contained Harness publish directory." />
+    <Error Condition="!Exists('$(HarnessPublishDir)\Harness.exe')" Text="Harness.exe was not found in HarnessPublishDir. Run build/Build-Release.ps1." />
+  </Target>
+</Project>

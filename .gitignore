@@ -6,6 +6,7 @@
 .vs/
 .idea/
 /.artifacts/
+/build/artifact-signing.json
 
 # Local credentials must never be committed.
 /Github Personal Access Token.md

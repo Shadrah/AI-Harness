@@ -14,10 +14,6 @@ public sealed class SettingsWindowViewModel : ObservableObject
     private string _personalInstructions;
     private string _status = "Ready";
     private string _githubStatus = "Checking GitHub connection…";
-    private string _remoteUrl = "";
-    private string _commitMessage = "";
-    private string _repositoryName = "";
-    private bool _privateRepository = true;
     private string _gitAuthorName;
     private string _gitAuthorEmail;
     private string _defaultGitBranch;
@@ -79,10 +75,6 @@ public sealed class SettingsWindowViewModel : ObservableObject
     public string PersonalInstructions { get => _personalInstructions; set => SetProperty(ref _personalInstructions, value); }
     public string Status { get => _status; set => SetProperty(ref _status, value); }
     public string GitHubStatus { get => _githubStatus; set => SetProperty(ref _githubStatus, value); }
-    public string RemoteUrl { get => _remoteUrl; set => SetProperty(ref _remoteUrl, value); }
-    public string CommitMessage { get => _commitMessage; set => SetProperty(ref _commitMessage, value); }
-    public string RepositoryName { get => _repositoryName; set => SetProperty(ref _repositoryName, value); }
-    public bool PrivateRepository { get => _privateRepository; set => SetProperty(ref _privateRepository, value); }
     public string GitAuthorName { get => _gitAuthorName; set => SetProperty(ref _gitAuthorName, value); }
     public string GitAuthorEmail { get => _gitAuthorEmail; set => SetProperty(ref _gitAuthorEmail, value); }
     public string DefaultGitBranch { get => _defaultGitBranch; set => SetProperty(ref _defaultGitBranch, value); }

@@ -11,9 +11,9 @@
           <TextBlock Text="REFERENCE BROWSER" Classes="micro" Foreground="#65C7D0"/>
           <TextBlock x:Name="SessionLabel" Foreground="#8993A3" TextTrimming="CharacterEllipsis" MaxWidth="470"/>
         </StackPanel>
-        <Button Grid.Column="1" Classes="window-command" Click="Minimize_OnClick" ToolTip.Tip="Minimize" AutomationProperties.Name="Minimize browser"><Border Width="12" Height="1.5" Background="#D8DEE8"/></Button>
-        <Button Grid.Column="2" Classes="window-command" Click="Maximize_OnClick" ToolTip.Tip="Maximize" AutomationProperties.Name="Maximize browser"><Border Width="11" Height="11" BorderBrush="#D8DEE8" BorderThickness="1.5"/></Button>
-        <Button Grid.Column="3" Classes="window-command window-close" Click="Close_OnClick" ToolTip.Tip="Close and revoke agent access" AutomationProperties.Name="Close browser"><Path Width="14" Height="14" Stroke="#D8DEE8" StrokeThickness="1.5" Data="M1,1 L13,13 M13,1 L1,13"/></Button>
+        <Button Grid.Column="1" Classes="window-command" Click="Minimize_OnClick" ToolTip.Tip="Minimize" AutomationProperties.Name="Minimize browser"><Border Width="14" Height="1.6" Background="#D8DEE8"/></Button>
+        <Button Grid.Column="2" Classes="window-command" Click="Maximize_OnClick" ToolTip.Tip="Maximize" AutomationProperties.Name="Maximize browser"><Border Width="13" Height="13" BorderBrush="#D8DEE8" BorderThickness="1.6"/></Button>
+        <Button Grid.Column="3" Classes="window-command window-close" Click="Close_OnClick" ToolTip.Tip="Close and revoke agent access" AutomationProperties.Name="Close browser"><Path Width="16" Height="16" Stroke="#D8DEE8" StrokeThickness="1.6" Data="M1,1 L13,13 M13,1 L1,13"/></Button>
       </Grid>
     </Border>
     <Border Grid.Row="1" Padding="12" Background="#181E26" BorderBrush="#35404D" BorderThickness="0,0,0,1">

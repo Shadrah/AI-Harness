@@ -1,0 +1,62 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package Name="Harness"
+           Manufacturer="Harness contributors"
+           Version="$(var.ProductVersion)"
+           UpgradeCode="0DD5486E-EA2A-4D2A-92D5-41E467EF695B"
+           Scope="perMachine"
+           Language="1033"
+           InstallerVersion="500"
+           Compressed="yes">
+    <SummaryInformation Description="Harness AI development workbench" Manufacturer="Harness contributors" />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Harness is already installed." />
+
+    <Icon Id="HarnessIcon" SourceFile="!(bindpath.publish)\Harness.exe" />
+    <Property Id="ARPPRODUCTICON" Value="HarnessIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/Shadrah/AI-Harness" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/Shadrah/AI-Harness/issues" />
+
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="Harness" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="Harness" />
+    </StandardDirectory>
+    <StandardDirectory Id="DesktopFolder" />
+
+    <Component Id="StartMenuShortcut" Directory="ApplicationProgramsFolder" Guid="*">
+      <Shortcut Id="HarnessStartMenuShortcut"
+                Name="Harness"
+                Description="Open Harness"
+                Target="[INSTALLFOLDER]Harness.exe"
+                WorkingDirectory="INSTALLFOLDER"
+                Icon="HarnessIcon" />
+      <RemoveFolder Id="RemoveHarnessStartMenuFolder" On="uninstall" />
+      <RegistryValue Root="HKCU" Key="Software\Harness\Harness" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <Component Id="DesktopShortcut" Directory="DesktopFolder" Guid="*">
+      <Shortcut Id="HarnessDesktopShortcut"
+                Name="Harness"
+                Description="Open Harness"
+                Target="[INSTALLFOLDER]Harness.exe"
+                WorkingDirectory="INSTALLFOLDER"
+                Icon="HarnessIcon" />
+      <RegistryValue Root="HKCU" Key="Software\Harness\Harness" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <Feature Id="HarnessFeature" Title="Harness" Description="Harness application files and Start menu shortcut." Level="1" AllowAbsent="false" AllowAdvertise="false">
+      <Files Include="!(bindpath.publish)\**" Directory="INSTALLFOLDER">
+        <Exclude Files="!(bindpath.publish)\**\*.pdb" />
+      </Files>
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+    <Feature Id="DesktopShortcutFeature" Title="Desktop shortcut" Description="Add a Harness shortcut to the desktop." Level="2" AllowAbsent="true" AllowAdvertise="false">
+      <ComponentRef Id="DesktopShortcut" />
+    </Feature>
+
+    <ui:WixUI Id="WixUI_FeatureTree" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(sys.SOURCEFILEDIR)..\LICENSE.rtf" />
+  </Package>
+</Wix>

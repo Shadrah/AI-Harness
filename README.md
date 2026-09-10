@@ -39,6 +39,8 @@ This first slice includes native streaming, client workspace tools, explicit
 approvals, attachments, and durable continuation. It is not yet full provider
 feature parity or live-account certified. See [API provider coverage and setup](docs/api-providers.md)
 for discovery limits, credential handling, and remaining work.
+The locked initial-release scope and remaining gates are defined in
+[Production readiness](docs/production-readiness.md).
 
 The repository now contains a compiled desktop shell and the first canonical
 capability/content contracts:
@@ -138,6 +140,12 @@ capability/content contracts:
   untracked status; full per-file diff review; file- and hunk-level stage and
   unstage actions; and confirmed file or hunk discard actions that preserve a
   Harness recovery copy first;
+- a dedicated GitHub module opened from the command strip: browse and filter the
+  connected account's repositories, inspect visibility/default-branch metadata,
+  clone and open a repository as a workspace, initialize the current workspace,
+  choose its branch, attach an origin, or create/commit/push a new repository;
+  Settings retains account connection while Commit, Pull, and Push remain beside
+  the composer;
 - a dedicated modeless diff module with old/new line numbers, colored additions
   and removals, hunk headers, and per-file added/removed totals;
 - chat-native composer behavior (`Enter` sends; `Ctrl+Enter` or `Shift+Enter`

@@ -43,6 +43,9 @@
           <Button Classes="icon-button" Click="OpenBrowser_OnClick" ToolTip.Tip="Reference browser" AutomationProperties.Name="Open reference browser">
             <Path Width="17" Height="17" Stretch="Uniform" Stroke="#D8DEE8" StrokeThickness="1.4" Data="M8,0 A8,8 0 1 0 8,16 A8,8 0 1 0 8,0 M0,8 L16,8 M8,0 C3,4 3,12 8,16 M8,0 C13,4 13,12 8,16"/>
           </Button>
+          <Button x:Name="GitHubButton" Classes="icon-button" Click="OpenGitHub_OnClick" ToolTip.Tip="GitHub repositories" AutomationProperties.Name="Open GitHub repositories">
+            <Path Width="17" Height="17" Stretch="Uniform" Fill="#D8DEE8" Data="M8.5,0.8 C4.1,0.8 0.5,4.4 0.5,8.8 C0.5,12.3 2.8,15.3 6,16.4 C6.4,16.5 6.5,16.2 6.5,16 C6.5,15.7 6.5,14.6 6.5,13.4 C4.1,13.9 3.6,12.2 3.6,12.2 C3.2,11.2 2.6,10.9 2.6,10.9 C1.8,10.3 2.7,10.3 2.7,10.3 C3.6,10.4 4.1,11.2 4.1,11.2 C4.9,12.6 6.2,12.2 6.6,12 C6.7,11.4 6.9,11 7.2,10.8 C5.3,10.6 3.2,9.8 3.2,6.4 C3.2,5.4 3.6,4.6 4.1,4 C4,3.8 3.7,2.9 4.2,1.7 C4.2,1.7 5,1.5 6.6,2.6 C7.2,2.4 7.9,2.3 8.5,2.3 C9.2,2.3 9.9,2.4 10.5,2.6 C12.1,1.5 12.9,1.7 12.9,1.7 C13.4,2.9 13.1,3.8 13,4 C13.5,4.6 13.9,5.4 13.9,6.4 C13.9,9.8 11.8,10.6 9.9,10.8 C10.2,11.1 10.5,11.6 10.5,12.4 C10.5,13.6 10.5,15.7 10.5,16 C10.5,16.3 10.6,16.5 11.1,16.4 C14.3,15.3 16.5,12.3 16.5,8.8 C16.5,4.4 12.9,0.8 8.5,0.8 Z"/>
+          </Button>
           <Button x:Name="SkillsLibraryButton" Classes="icon-button" Click="OpenSkills_OnClick" ToolTip.Tip="Skills Library" AutomationProperties.Name="Open Skills Library">
             <Grid Width="17" Height="16" ColumnDefinitions="4,2,4,2,4">
               <Border Grid.Column="0" BorderBrush="#65C7D0" BorderThickness="1" CornerRadius="1"/>
@@ -63,18 +66,18 @@
                 Classes="window-command"
                 Click="MinimizeWindow_OnClick"
                 ToolTip.Tip="Minimize"
-                AutomationProperties.Name="Minimize window"><Border Width="12" Height="1.5" Background="#D8DEE8" /></Button>
+                AutomationProperties.Name="Minimize window"><Border Width="14" Height="1.6" Background="#D8DEE8" /></Button>
         <Button x:Name="MaximizeButton"
                 Grid.Column="9"
                 Classes="window-command"
                 Click="MaximizeWindow_OnClick"
                 ToolTip.Tip="Maximize"
-                AutomationProperties.Name="Maximize window"><Border Width="11" Height="11" BorderBrush="#D8DEE8" BorderThickness="1.5" /></Button>
+                AutomationProperties.Name="Maximize window"><Border Width="13" Height="13" BorderBrush="#D8DEE8" BorderThickness="1.6" /></Button>
         <Button Grid.Column="10"
                 Classes="window-command window-close"
                 Click="CloseWindow_OnClick"
                 ToolTip.Tip="Close"
-                AutomationProperties.Name="Close window"><Path Width="14" Height="14" Stretch="Uniform" Stroke="#D8DEE8" StrokeThickness="1.5" Data="M3,3 L13,13 M13,3 L3,13" /></Button>
+                AutomationProperties.Name="Close window"><Path Width="16" Height="16" Stretch="Uniform" Stroke="#D8DEE8" StrokeThickness="1.6" Data="M3,3 L13,13 M13,3 L3,13" /></Button>
       </Grid>
     </Border>
 
@@ -248,7 +251,7 @@
 
           <!-- Multimodal composer -->
           <Border Grid.Row="1" Margin="22,0,22,18" Classes="panel" Padding="10">
-            <Grid RowDefinitions="Auto,Auto,40,30" ColumnDefinitions="Auto,6,Auto,6,Auto,8,34,*,136,8,Auto">
+            <Grid RowDefinitions="Auto,Auto,40,30" ColumnDefinitions="*,6,Auto,6,Auto,8,34,Auto,120,8,Auto">
               <TextBox x:Name="PromptBox" Grid.Row="0" Grid.ColumnSpan="11" MinHeight="72" AcceptsReturn="True" TextWrapping="Wrap" Watermark="Ask, edit, or direct the task…" BorderThickness="0" Background="#11151B" Text="{Binding PromptText, Mode=TwoWay}" />
               <ItemsControl Grid.Row="1" Grid.ColumnSpan="11" ItemsSource="{Binding TurnAttachments}" IsVisible="{Binding HasTurnAttachments}" Margin="0,5,0,2">
                 <ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
@@ -267,7 +270,9 @@
               </ItemsControl>
               <ComboBox x:Name="ModelPicker" Grid.Row="2"
                         Grid.Column="0"
-                        Width="220"
+                        MinWidth="220"
+                        MaxWidth="360"
+                        HorizontalAlignment="Stretch"
                         VerticalAlignment="Bottom"
                         ItemsSource="{Binding Models}"
                         IsEnabled="{Binding !IsRunning}"

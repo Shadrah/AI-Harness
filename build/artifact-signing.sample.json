@@ -1,0 +1,7 @@
+{
+  "Endpoint": "https://YOUR-REGION.codesigning.azure.net",
+  "CodeSigningAccountName": "YOUR-ARTIFACT-SIGNING-ACCOUNT",
+  "CertificateProfileName": "YOUR-CERTIFICATE-PROFILE",
+  "CorrelationId": "Harness-release",
+  "TenantId": "YOUR-AZURE-DIRECTORY-TENANT-ID"
+}

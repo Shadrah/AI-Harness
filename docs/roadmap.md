@@ -51,10 +51,11 @@ driver without keeping that driver installed?
 
 ## P1 — Replacement and migration
 
-- Add OpenCode, Aider, Continue, Cline/Roo, Cursor, and compatible project-folder
-  detectors; Codex and Claude Code conversation detection is implemented.
-- Expand the working scan-and-preview importer with duplicate detection and
-  source-specific loss reports.
+- Codex and Claude Code conversation detection is implemented. Portable
+  transcript/project import remains the supported fallback for other harnesses;
+  additional source-specific detectors are post-release additions.
+- Keep duplicate detection and source-specific loss reporting accurate for the
+  supported automatic importers.
 - Copy all required context and attachments into Harness-owned storage while
   preserving source-native records for audit and future re-import.
 - Resume imported conversations using reconstructed instructions, messages,
@@ -116,18 +117,23 @@ driver without keeping that driver installed?
   targets now expose integrity-aware metadata-only update review, atomic provider
   copy replacement with rollback, reversible disable/enable, and recoverable
   removal.
-- Implement the complete discovery, compatibility, trust, installation, provider
-  delivery, update, and removal contract in [Skills Library](skills-library.md).
-- Search public catalogs and configured GitHub sources by category, capability,
-  provider, language, license, and compatibility.
-- Inspect a skill's source, manifest, requested tools, permissions, and version
-  diff before installation.
-- Install pinned, hashed copies into user or workspace scope without requiring
-  the source harness or catalog to remain available.
-- Add pin, fork, and per-skill export workflows. Update, disable/enable, recoverable
-  removal, and local-modification detection are implemented.
-- Community metadata and discovery remain separate from trust. Popularity is not
-  permission, and every skill executes through Harness approvals and sandboxing.
+- The production path is complete at the current scope: broad metadata discovery,
+  model/provider filtering, explicit inspection and installation, immutable
+  source tracking, provider delivery, integrity-aware updates, disable/enable,
+  and recoverable removal. Community reviews, forking, and marketplace features
+  remain optional post-release work.
+
+## Final production sequence
+
+- The dedicated in-app GitHub repository module is implemented and verified;
+  Commit, Pull, and Push remain beside the composer.
+- Run targeted provider and context-continuity certification; fix observed gaps
+  rather than expanding Harness into an IDE or general integration platform.
+- Complete the final workspace UX pass, clean-machine packaging, database upgrade
+  checks, Azure Artifact Signing, installer signing, and release documentation.
+
+The exact gates and intentionally deferred items are locked in
+[Production readiness](production-readiness.md).
 
 ## Release rule
 

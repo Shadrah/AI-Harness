@@ -57,18 +57,16 @@ and removal. A button or provider call by itself is not a completed feature.
 - Prevent one workspace, provider, plugin, or skill from inheriting another's
   private process state or credentials.
 
-## 6. Agent orchestration
+## 6. Subscription continuity
 
-- Run one or more independent tasks per workspace, with explicit ownership of
-  their provider thread, process tree, approvals, context, and output artifacts.
-- Delegate bounded subtasks and merge their reports without silently sharing
-  credentials, mutable chat state, or unreviewed instructions.
-- Offer isolated Git worktrees for concurrent code changes, make their branch and
-  base revision visible, and provide reviewable merge or discard paths.
-- Queue, pause, resume, retry, and cancel background tasks; preserve useful state
-  across restart and clearly distinguish waiting, blocked, failed, and complete.
-- Never let a background task mutate the active workspace merely because the user
-  switched projects while it was running.
+- Keep every workspace task bound to its own durable provider thread, context,
+  approvals, model settings, and output history.
+- Hand a task between eligible accounts under the same subscription provider at
+  safe turn boundaries, preserving continuity without merging account quotas.
+- Support manual, suggested, and opt-in automatic handoff, and stop honestly when
+  no eligible account remains.
+- Concurrent subagents, background task farms, and managed Git worktrees are not
+  requirements for the initial production release.
 
 ## 7. Context, files, and artifacts
 
@@ -84,21 +82,22 @@ and removal. A button or provider call by itself is not a completed feature.
 
 - Initialize repositories, choose and rename branches locally and remotely,
   attach origins, create repositories, and manage visibility.
-- Stage, unstage, diff, recover, commit, fetch, pull, push, publish releases, and
-  surface conflicts without requiring Settings.
-- Create and switch branches or worktrees, open and inspect pull requests, show
-  checks and review state, and make every remote mutation explicit.
+- Browse the connected account's repositories in a dedicated in-app GitHub
+  module; clone or open one as a Harness workspace without using a web page.
+- Stage, unstage, diff, recover, commit, fetch, pull, and push without requiring
+  Settings. Initialize Git, choose or rename a branch, attach an origin, or publish
+  the current workspace from the GitHub module.
 - Resolve the active repository at action time so workspace switching cannot
   target a stale project.
-- Preserve large binaries locally and direct distributable artifacts to Git LFS
-  or Releases rather than silently attempting an invalid Git push.
+- Preserve large binaries locally and direct oversized history to Git LFS rather
+  than silently attempting an invalid Git push.
 - Keep GitHub account connection persistent in Settings; repository actions stay
   in the workspace surface.
 
 ## 9. Migration, import, and export
 
-- Import projects from Codex, Claude Code, OpenCode, Aider, Continue, Cline/Roo,
-  Cursor, and portable transcript or project exports when source data exists.
+- Import projects and detected history from Codex and Claude Code, with portable
+  transcript or project import as the universal fallback for other harnesses.
 - Group detected history by source harness and project, identify the latest root
   continuation, preview loss, and retain source provenance.
 - Copy required context and attachments into Harness-owned storage.
@@ -113,38 +112,38 @@ and removal. A button or provider call by itself is not a completed feature.
 - Populate and refresh the local catalog unobtrusively in the background after
   startup; browsing never waits for GitHub, while direct searches may fetch and
   stream additional remote results on demand.
-- Search and filter by task category, language, framework, provider compatibility,
-  capability, license, trust state, popularity, and update recency.
-- Preview source, instructions, scripts, assets, dependencies, permissions,
-  supported providers, version history, and install scope before installation.
+- Search cached and remote metadata by text, topic, repository source, status,
+  and connected model/provider compatibility.
+- Preview the selected source, provenance, compatibility, package tree, scripts,
+  assets, revision, and install scope before installation.
 - Keep discovery and update scans metadata-only. Download, provider setup,
   dependency installation, activation, and updates require an explicit user
   action for a selected skill and visible approval of consequential operations.
 - Lock provider-specific skills to compatible targets; for portable skills, let
   the user choose among compatible connected providers/models and installation
   scope, while tracking setup state separately for every selected target.
-- Install immutable, hashed copies into user or workspace scope; update, pin,
-  disable, fork, export, and remove them without requiring the source to remain.
+- Install immutable, hashed copies into user or workspace scope; update, disable,
+  re-enable, and recoverably remove them without requiring the source to remain.
 - Adapt portable skills to each provider while clearly labeling provider-specific
   packages. Skills never bypass normal tool, network, filesystem, or approval
   policies. See [Skills Library](skills-library.md).
 
-## 11. Personalization and extensibility
+## 11. Personalization
 
-- Apply global, provider, workspace, and session instructions with visible
-  precedence and token cost.
-- Support MCP servers, tools, skills, provider adapters, and UI extensions through
-  versioned manifests and permission declarations.
-- Provide enable, disable, update, inspect, and uninstall paths for every extension.
+- Apply saved personal instructions through each provider's supported native
+  instruction path without inserting ghost transcript messages.
+- Keep skills and built-in tools behind visible capability and permission controls.
+- MCP hosting, an MCP marketplace, and general UI/plugin extensibility are
+  post-release possibilities, not initial production requirements.
 
-## 12. Developer navigation and control
+## 12. Workspace control
 
-- Provide workspace file search, symbol/text search, clickable file and line
-  references, an editor handoff, command palette, and configurable shortcuts.
-- Keep terminal, Activity, diff, approvals, artifacts, and repository details in
+- Keep terminal, Activity, browser, task history, diff, approvals, and GitHub in
   focused modules that can be opened when needed rather than permanent clutter.
-- Preserve keyboard focus, selection, scroll position, and per-workspace layout;
-  long lists are virtualized and all high-volume surfaces remain responsive.
+- Preserve keyboard focus, selection, and scroll position; long lists are
+  virtualized and all high-volume surfaces remain responsive.
+- Harness is not an IDE. Symbol indexing, an embedded code editor, and IDE-style
+  navigation are outside the production scope.
 - Expose accessible names, logical tab order, screen-reader status, scalable text,
   high-contrast behavior, and non-color-only success or failure indicators.
 

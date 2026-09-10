@@ -71,6 +71,18 @@ using (var claudeUsage = JsonDocument.Parse("""
         "Claude Code subscription usage windows were not preserved.");
 }
 
+var githubRepositories = GitHubCliClient.ParseRepositories("""
+[
+  {"name":"private-project","nameWithOwner":"fixture/private-project","description":"Private fixture","url":"https://github.com/fixture/private-project","visibility":"PRIVATE","isPrivate":true,"isFork":false,"updatedAt":"2030-01-02T12:00:00Z","defaultBranchRef":{"name":"main"}},
+  {"name":"public-project","nameWithOwner":"fixture/public-project","description":"Public fixture","url":"https://github.com/fixture/public-project","visibility":"PUBLIC","isPrivate":false,"isFork":true,"updatedAt":"2030-01-01T12:00:00Z","defaultBranchRef":{"name":"trunk"}}
+]
+""");
+Check(githubRepositories.Count == 2
+      && githubRepositories[0].NameWithOwner == "fixture/private-project"
+      && githubRepositories[0].IsPrivate
+      && githubRepositories[1].DefaultBranch == "trunk",
+    "GitHub account repositories lost visibility, ordering, or default-branch metadata.");
+
 var fixtures = new Dictionary<string, string>
 {
     ["openai-api"] = Events(
@@ -1229,6 +1241,22 @@ var uiThread = new Thread(() =>
         taskLibrary.Close();
         Dispatcher.UIThread.RunJobs();
 
+        var githubWindow = new GitHubWindow();
+        githubWindow.Show();
+        Dispatcher.UIThread.RunJobs();
+        AvaloniaHeadlessPlatform.ForceRenderTimerTick();
+        using var githubFrame = githubWindow.CaptureRenderedFrame()
+            ?? throw new Exception("GitHub module frame unavailable.");
+        githubFrame.Save(Path.Combine(Environment.CurrentDirectory, ".artifacts", "github-module.png"));
+        Check(githubWindow.FindControl<TextBox>("RepositorySearchBox") is not null
+              && githubWindow.FindControl<ComboBox>("RepositoryVisibilityFilter") is not null
+              && githubWindow.FindControl<TextBox>("BranchNameBox") is not null
+              && githubWindow.FindControl<TextBox>("OriginUrlBox") is not null
+              && githubWindow.FindControl<TextBox>("NewRepositoryNameBox") is not null,
+            "The GitHub module is missing repository discovery or workspace connection controls.");
+        githubWindow.Close();
+        Dispatcher.UIThread.RunJobs();
+
         // Reproduce the production failure: Opened starts asynchronous catalog I/O, then closing
         // cancels it. Cancellation from an async-void UI event must never escape the dispatcher.
         var lifecycle = new SettingsWindow(new HarnessApplicationSettings(), testRoot,
@@ -1245,7 +1273,7 @@ var uiThread = new Thread(() =>
 });
 uiThread.Start(); uiThread.Join();
 if (uiFailure is not null) throw uiFailure;
-Console.WriteLine("API checks passed: Claude Code subscription model/effort/fast-mode/usage parsing, four native API wire formats, provider-native OpenAI/Anthropic/Gemini input-token preflight, native PDF/audio/video inputs, opt-in prompt caching and cache telemetry, OpenAI native context compaction, OpenAI and Anthropic hosted-artifact request/citation/download handling, native Ollama/llama.cpp discovery, capability conformance/preflight, reasoning/tool replay, direct-API skill installation/discovery/resource isolation plus integrity/update/disable/removal lifecycle, durable task search/archive/restore/export and v5 migration, Unicode, usage, pagination, unknown capabilities, failure handling, credential routing, approval boundaries, catalog merging, isolated subscription profiles and handoff UI, portable backup round-trip, unsafe-archive rejection, delayed PowerShell Write-Host plus rendered terminal output, and Providers UI. No live API calls made.");
+Console.WriteLine("API checks passed: Claude Code subscription model/effort/fast-mode/usage parsing, four native API wire formats, provider-native OpenAI/Anthropic/Gemini input-token preflight, native PDF/audio/video inputs, opt-in prompt caching and cache telemetry, OpenAI native context compaction, OpenAI and Anthropic hosted-artifact request/citation/download handling, native Ollama/llama.cpp discovery, capability conformance/preflight, reasoning/tool replay, direct-API skill installation/discovery/resource isolation plus integrity/update/disable/removal lifecycle, durable task search/archive/restore/export and v5 migration, GitHub account repository parsing and module surface, Unicode, usage, pagination, unknown capabilities, failure handling, credential routing, approval boundaries, catalog merging, isolated subscription profiles and handoff UI, portable backup round-trip, unsafe-archive rejection, delayed PowerShell Write-Host plus rendered terminal output, and Providers UI. No live API calls made.");
 
 sealed class FixtureHandler(string content, bool json = false, string[]? pages = null, HttpStatusCode status = HttpStatusCode.OK) : HttpMessageHandler
 {

@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
+    <AssemblyName>Harness</AssemblyName>
     <TargetFramework>net8.0</TargetFramework>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
     <ApplicationManifest>app.manifest</ApplicationManifest>
@@ -19,7 +20,14 @@
     <PackageReference Include="Avalonia.Desktop" Version="11.3.9" />
     <PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.9" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.9" />
-    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3800.47" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3800.47" PrivateAssets="all" GeneratePathProperty="true" />
+    <!-- The Core host loads this native bootstrapper by name. Keep an x64 copy
+         beside Harness.exe; the NuGet runtime subfolder alone is not searched
+         by WebView2 when hosted directly in an Avalonia native window. -->
+    <None Include="$(PkgMicrosoft_Web_WebView2)\runtimes\win-x64\native\WebView2Loader.dll"
+          Link="WebView2Loader.dll"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
   <!-- Avalonia owns the window. Do not pull WPF/WinForms into the native Core host. -->
   <Target Name="RemoveUnusedWebViewWrappers" BeforeTargets="ResolveAssemblyReferences">

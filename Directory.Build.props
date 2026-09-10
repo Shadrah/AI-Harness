@@ -5,5 +5,12 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <Deterministic>true</Deterministic>
+    <VersionPrefix>1.0.1</VersionPrefix>
+    <Authors>Harness contributors</Authors>
+    <Product>Harness</Product>
+    <Description>A lightweight, local-first AI development harness.</Description>
+    <Copyright>Copyright © Harness contributors</Copyright>
+    <RepositoryUrl>https://github.com/Shadrah/AI-Harness</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
   </PropertyGroup>
 </Project>

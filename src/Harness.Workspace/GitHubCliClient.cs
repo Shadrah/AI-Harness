@@ -100,6 +100,95 @@ public sealed class GitHubCliClient
         return new GitHubUserProfile(login, name, email);
     }
 
+    public async Task<IReadOnlyList<GitHubRepository>> ListRepositoriesAsync(
+        int limit = 200,
+        CancellationToken cancellationToken = default)
+    {
+        var boundedLimit = Math.Clamp(limit, 1, 500);
+        var result = await RunAsync(
+            Environment.CurrentDirectory,
+            [
+                "repo", "list", "--limit", boundedLimit.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                "--json", "name,nameWithOwner,description,url,visibility,isPrivate,isFork,updatedAt,defaultBranchRef"
+            ],
+            cancellationToken);
+        EnsureSuccess(result, "list GitHub repositories");
+        return ParseRepositories(result.Output);
+    }
+
+    public static IReadOnlyList<GitHubRepository> ParseRepositories(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        if (document.RootElement.ValueKind != JsonValueKind.Array)
+            throw new InvalidOperationException("GitHub returned an invalid repository list.");
+        var repositories = new List<GitHubRepository>();
+        foreach (var item in document.RootElement.EnumerateArray())
+        {
+            var nameWithOwner = ReadString(item, "nameWithOwner");
+            var name = ReadString(item, "name");
+            var url = ReadString(item, "url");
+            if (string.IsNullOrWhiteSpace(nameWithOwner)
+                || string.IsNullOrWhiteSpace(name)
+                || !Uri.TryCreate(url, UriKind.Absolute, out var parsedUrl)
+                || parsedUrl.Scheme != Uri.UriSchemeHttps
+                || !parsedUrl.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase)) continue;
+            ValidateRepositoryName(nameWithOwner);
+            var updatedAt = item.TryGetProperty("updatedAt", out var updatedElement)
+                && updatedElement.ValueKind == JsonValueKind.String
+                && DateTimeOffset.TryParse(updatedElement.GetString(), out var parsedUpdated)
+                    ? parsedUpdated
+                    : DateTimeOffset.MinValue;
+            var defaultBranch = item.TryGetProperty("defaultBranchRef", out var branchElement)
+                && branchElement.ValueKind == JsonValueKind.Object
+                ? ReadString(branchElement, "name")
+                : string.Empty;
+            repositories.Add(new GitHubRepository(
+                nameWithOwner,
+                name,
+                ReadString(item, "description"),
+                parsedUrl.AbsoluteUri,
+                ReadString(item, "visibility"),
+                item.TryGetProperty("isPrivate", out var privateElement) && privateElement.ValueKind == JsonValueKind.True,
+                item.TryGetProperty("isFork", out var forkElement) && forkElement.ValueKind == JsonValueKind.True,
+                updatedAt,
+                defaultBranch));
+        }
+        return repositories
+            .OrderByDescending(repository => repository.UpdatedAt)
+            .ThenBy(repository => repository.NameWithOwner, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    public async Task<string> CloneRepositoryAsync(
+        GitHubRepository repository,
+        string parentDirectory,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateRepositoryName(repository.NameWithOwner);
+        var parent = Path.GetFullPath(parentDirectory);
+        Directory.CreateDirectory(parent);
+        var destination = Path.GetFullPath(Path.Combine(parent, repository.Name));
+        if (!destination.StartsWith(parent.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar,
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+            throw new InvalidOperationException("The repository destination is outside the selected folder.");
+        if (Directory.Exists(destination))
+        {
+            var existing = await RunGitAsync(destination, ["rev-parse", "--show-toplevel"], cancellationToken);
+            if (existing.ExitCode == 0)
+            {
+                var remote = await RunGitAsync(destination, ["remote", "get-url", "origin"], cancellationToken);
+                if (remote.ExitCode == 0
+                    && NormalizeRepositoryUrl(remote.Output) == NormalizeRepositoryUrl(repository.Url)) return destination;
+                throw new InvalidOperationException($"{destination} is already a different Git repository.");
+            }
+            if (Directory.EnumerateFileSystemEntries(destination).Any())
+                throw new InvalidOperationException($"{destination} already exists and is not a Git repository.");
+        }
+        var result = await RunAsync(parent, ["repo", "clone", repository.NameWithOwner, destination], cancellationToken);
+        EnsureSuccess(result, $"clone {repository.NameWithOwner}");
+        return destination;
+    }
+
     public async Task CreateRepositoryAsync(
         string sourceDirectory,
         string name,
@@ -760,6 +849,14 @@ public sealed class GitHubCliClient
         ? $"{bytes / 1024d / 1024d:0.0} MB"
         : $"{Math.Max(1, bytes / 1024d):0.#} KB";
 
+    private static string ReadString(JsonElement element, string property) =>
+        element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString() ?? string.Empty
+            : string.Empty;
+
+    private static string NormalizeRepositoryUrl(string value) =>
+        value.Trim().TrimEnd('/').Replace(".git", string.Empty, StringComparison.OrdinalIgnoreCase).ToLowerInvariant();
+
     private static async Task<CliResult> RunAsync(string workingDirectory, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
     {
         var start = CreateStartInfo(workingDirectory, arguments);
@@ -858,3 +955,13 @@ public sealed class GitHubCliClient
 
 public sealed record GitHubConnectionStatus(bool IsCliInstalled, bool IsAuthenticated, string Message);
 public sealed record GitHubUserProfile(string Login, string Name, string Email);
+public sealed record GitHubRepository(
+    string NameWithOwner,
+    string Name,
+    string Description,
+    string Url,
+    string Visibility,
+    bool IsPrivate,
+    bool IsFork,
+    DateTimeOffset UpdatedAt,
+    string DefaultBranch);
