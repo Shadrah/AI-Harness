@@ -180,6 +180,7 @@ public sealed class CodexAppServerClient : IModelProvider, IProviderTelemetry, I
         string model,
         string permissionMode,
         string? developerInstructions,
+        bool enableDesktopTool,
         CancellationToken cancellationToken = default)
     {
         var runtimePolicy = ResolveRuntimePolicy(permissionMode);
@@ -195,6 +196,8 @@ public sealed class CodexAppServerClient : IModelProvider, IProviderTelemetry, I
                 developerInstructions = NullIfWhiteSpace(developerInstructions),
                 ephemeral = false,
                 dynamicTools = Harness.Core.Browser.BrowserTools.CodexDefinitions
+                    .Concat(Harness.Core.Desktop.DesktopTools.CodexDefinitions(enableDesktopTool))
+                    .ToArray()
             },
             cancellationToken);
         return response.Thread.Id;
@@ -620,20 +623,24 @@ public sealed class CodexAppServerClient : IModelProvider, IProviderTelemetry, I
     public static JsonElement SummarizeBrowserNotification(string method, JsonElement parameters)
     {
         if (method != "item/completed" || !parameters.TryGetProperty("item", out var item)
-            || !item.TryGetProperty("tool", out var tool) || tool.GetString() != Harness.Core.Browser.BrowserTools.Name)
+            || !item.TryGetProperty("tool", out var tool)
+            || tool.GetString() is not (Harness.Core.Browser.BrowserTools.Name or Harness.Core.Desktop.DesktopTools.Name))
             return parameters;
         // Images already went to the model through the tool response. Never serialize them a
         // second time into UI activity or SQLite event logs (which also causes UI stalls).
         string? Value(JsonElement element, string key) => element.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+        var toolName = tool.GetString()!;
+        var desktop = toolName == Harness.Core.Desktop.DesktopTools.Name;
         return JsonSerializer.SerializeToElement(new
         {
             threadId = Value(parameters, "threadId"), turnId = Value(parameters, "turnId"),
             item = new
             {
-                id = Value(item, "id"), type = "dynamicToolCall", tool = Harness.Core.Browser.BrowserTools.Name,
+                id = Value(item, "id"), type = "dynamicToolCall", tool = toolName,
                 status = Value(item, "status"),
                 result = item.TryGetProperty("success", out var success) && success.ValueKind == JsonValueKind.True
-                    ? "Browser observation delivered to model." : "Browser action did not succeed. See the browser activity entry."
+                    ? desktop ? "Desktop observation delivered to model." : "Browser observation delivered to model."
+                    : desktop ? "Desktop action did not succeed. See the desktop activity entry." : "Browser action did not succeed. See the browser activity entry."
             }
         });
     }

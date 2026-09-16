@@ -40,6 +40,7 @@ public sealed class SettingsWindowViewModel : ObservableObject
     private string? _activeCodexIdentityId;
     private string? _activeClaudeIdentityId;
     private string _subscriptionHandoffMode;
+    private bool _computerUseEnabled;
 
     public SettingsWindowViewModel(HarnessApplicationSettings settings, string workspacePath)
     {
@@ -63,6 +64,7 @@ public sealed class SettingsWindowViewModel : ObservableObject
             ? settings.SubscriptionHandoffMode
             : settings.PromptForSubscriptionHandoff ? "suggest" : "manual";
         _subscriptionHandoffThresholdPercent = Math.Clamp(settings.SubscriptionHandoffThresholdPercent, 1, 25);
+        _computerUseEnabled = settings.ComputerUseEnabled;
         WorkspacePath = workspacePath;
     }
 
@@ -80,6 +82,7 @@ public sealed class SettingsWindowViewModel : ObservableObject
     public string DefaultGitBranch { get => _defaultGitBranch; set => SetProperty(ref _defaultGitBranch, value); }
     public IReadOnlyList<PermissionModeOption> PermissionModes { get; } = PermissionModeOption.All;
     public PermissionModeOption SelectedPermissionMode { get => _selectedPermissionMode; set => SetProperty(ref _selectedPermissionMode, value); }
+    public bool ComputerUseEnabled { get => _computerUseEnabled; set => SetProperty(ref _computerUseEnabled, value); }
     public bool PromptForSubscriptionHandoff { get => _promptForSubscriptionHandoff; set => SetProperty(ref _promptForSubscriptionHandoff, value); }
     public double SubscriptionHandoffThresholdPercent { get => _subscriptionHandoffThresholdPercent; set => SetProperty(ref _subscriptionHandoffThresholdPercent, Math.Clamp(value, 1, 25)); }
     public string? ActiveCodexIdentityId { get => _activeCodexIdentityId; set => SetProperty(ref _activeCodexIdentityId, value); }
@@ -343,7 +346,8 @@ public sealed class SettingsWindowViewModel : ObservableObject
             PromptForSubscriptionHandoff: SubscriptionHandoffMode != "manual",
             SubscriptionHandoffThresholdPercent: SubscriptionHandoffThresholdPercent,
             ActiveClaudeIdentityId: ActiveClaudeIdentityId,
-            SubscriptionHandoffMode: SubscriptionHandoffMode);
+            SubscriptionHandoffMode: SubscriptionHandoffMode,
+            ComputerUseEnabled: ComputerUseEnabled);
     }
 }
 

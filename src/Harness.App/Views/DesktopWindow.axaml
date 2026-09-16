@@ -1,0 +1,95 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:controls="using:Harness.App.Controls"
+        xmlns:services="using:Harness.App.Services"
+        x:Class="Harness.App.Views.DesktopWindow"
+        Title="Harness — Computer Use"
+        Width="940" Height="650" MinWidth="720" MinHeight="500"
+        ExtendClientAreaToDecorationsHint="True"
+        ExtendClientAreaChromeHints="NoChrome"
+        ExtendClientAreaTitleBarHeightHint="46"
+        WindowStartupLocation="CenterOwner">
+  <Grid RowDefinitions="46,Auto,*,Auto" Background="#11151B">
+    <Border Background="#181E26" Padding="14,4,0,0" PointerPressed="TitleBar_OnPointerPressed">
+      <Grid ColumnDefinitions="*,40,40,40">
+        <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+          <controls:HarnessMark />
+          <TextBlock Text="COMPUTER USE" Classes="micro" Foreground="#65C7D0" />
+          <TextBlock x:Name="SessionLabel" Foreground="#8993A3" TextTrimming="CharacterEllipsis" MaxWidth="470" />
+        </StackPanel>
+        <Button Grid.Column="1" Classes="window-command" Click="Minimize_OnClick" ToolTip.Tip="Minimize" AutomationProperties.Name="Minimize desktop control"><Border Width="14" Height="1.6" Background="#D8DEE8" /></Button>
+        <Button Grid.Column="2" Classes="window-command" Click="Maximize_OnClick" ToolTip.Tip="Maximize" AutomationProperties.Name="Maximize desktop control"><Border Width="13" Height="13" BorderBrush="#D8DEE8" BorderThickness="1.6" /></Button>
+        <Button Grid.Column="3" Classes="window-command window-close" Click="Close_OnClick" ToolTip.Tip="Close Computer Use panel" AutomationProperties.Name="Close Computer Use panel"><Path Width="16" Height="16" Stroke="#D8DEE8" StrokeThickness="1.6" Data="M1,1 L13,13 M13,1 L1,13" /></Button>
+      </Grid>
+    </Border>
+
+    <Border Grid.Row="1" Padding="14,12" Background="#181E26" BorderBrush="#35404D" BorderThickness="0,0,0,1">
+      <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
+        <TextBox x:Name="SearchBox" Watermark="Find an open window or installed application…" TextChanged="Search_OnTextChanged" />
+        <Button Grid.Column="1" x:Name="RefreshButton" Content="REFRESH" Click="Refresh_OnClick" />
+        <Button Grid.Column="2" x:Name="BrowseButton" Content="CHOOSE EXE" Click="Browse_OnClick" ToolTip.Tip="Choose an installed application that is not listed" />
+      </Grid>
+    </Border>
+
+    <Grid Grid.Row="2" ColumnDefinitions="390,*">
+      <Border BorderBrush="#29313C" BorderThickness="0,0,1,0" Background="#151A21">
+        <Grid RowDefinitions="Auto,*">
+          <Grid Margin="14,12,12,8" ColumnDefinitions="*,Auto">
+            <TextBlock Text="APPLICATIONS" Classes="micro" />
+            <TextBlock Grid.Column="1" x:Name="TargetCount" Text="0" Classes="muted mono" FontSize="10" />
+          </Grid>
+          <ListBox Grid.Row="1" x:Name="TargetList" SelectionChanged="TargetSelection_OnChanged" BorderThickness="0" Background="Transparent">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="services:DesktopTargetItem">
+                <Border Margin="8,2" Padding="10,8" CornerRadius="4" BorderBrush="#29313C" BorderThickness="1">
+                  <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="*,Auto">
+                    <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                    <TextBlock Grid.Column="1" Text="{Binding Status}" Classes="micro" Foreground="#65C7D0" Margin="10,0,0,0" />
+                    <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="{Binding Detail}" Classes="muted" FontSize="10" TextTrimming="CharacterEllipsis" Margin="0,3,0,0" />
+                  </Grid>
+                </Border>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </Grid>
+      </Border>
+
+      <Grid Grid.Column="1" Margin="24" RowDefinitions="Auto,Auto,Auto,*,Auto">
+        <TextBlock Text="Your Windows desktop" FontSize="24" FontWeight="SemiBold" />
+        <TextBlock Grid.Row="1" Margin="0,8,0,0" TextWrapping="Wrap" Foreground="#8993A3"
+                   Text="Computer Use is enabled persistently in Settings. This optional monitor lists the windows and installed applications Codex can discover. Selecting a starting app below is optional." />
+
+        <Border Grid.Row="2" Classes="panel" Margin="0,22,0,0" Padding="16">
+          <StackPanel Spacing="7">
+            <TextBlock Text="OPTIONAL STARTING APP" Classes="micro" />
+            <TextBlock x:Name="SelectedName" Text="Let Codex choose" FontSize="17" FontWeight="SemiBold" />
+            <TextBlock x:Name="SelectedDetail" Text="Select an app only when you want to give Codex a starting point." Foreground="#8993A3" TextWrapping="Wrap" />
+            <TextBlock x:Name="ConnectionDetail" Text="COMPUTER USE OFF" Classes="micro" Foreground="#E2A84A" Margin="0,5,0,0" />
+          </StackPanel>
+        </Border>
+
+        <StackPanel Grid.Row="3" Margin="0,22,0,0" Spacing="9">
+          <TextBlock Text="HOW ACCESS WORKS" Classes="micro" />
+          <TextBlock Text="• Codex sees the current desktop and can discover every ordinary open window." Foreground="#8993A3" TextWrapping="Wrap" />
+          <TextBlock Text="• Dialogs, prompts, and returning application windows appear naturally in the next screenshot." Foreground="#8993A3" TextWrapping="Wrap" />
+          <TextBlock Text="• Window discovery and bring-forward work across applications; there are no app-specific control profiles." Foreground="#8993A3" TextWrapping="Wrap" />
+          <TextBlock Text="• Inputs use fresh, one-use observation IDs so stale coordinates cannot be replayed." Foreground="#8993A3" TextWrapping="Wrap" />
+          <TextBlock Text="• Stop or turning off Computer Use in Settings revokes active control immediately. Closing this monitor does not disconnect it." Foreground="#8993A3" TextWrapping="Wrap" />
+          <TextBlock Text="• Authentication, password managers, security tools, terminals, and Harness windows are blocked." Foreground="#8993A3" TextWrapping="Wrap" />
+          <TextBlock Text="Ordinary installed applications share the same visual capture, mouse, keyboard, text, scrolling, and dragging controls." Foreground="#65C7D0" TextWrapping="Wrap" Margin="0,8,0,0" />
+        </StackPanel>
+
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+          <Button x:Name="ConnectButton" Content="CONNECT" Click="Connect_OnClick" IsEnabled="False" MinWidth="130" />
+        </StackPanel>
+      </Grid>
+    </Grid>
+
+    <Border Grid.Row="3" Background="#181E26" Padding="12,8" BorderBrush="#35404D" BorderThickness="0,1,0,0">
+      <StackPanel Spacing="3">
+        <TextBlock x:Name="DesktopStatus" Text="Choose an application to begin." Foreground="#65C7D0" TextTrimming="CharacterEllipsis" />
+        <TextBlock Text="Desktop-scoped control · Screenshots are captured only when Codex requests an observation" FontSize="10" Foreground="#8993A3" />
+      </StackPanel>
+    </Border>
+  </Grid>
+</Window>

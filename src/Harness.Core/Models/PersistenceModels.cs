@@ -83,7 +83,8 @@ public sealed record HarnessApplicationSettings(
     bool PromptForSubscriptionHandoff = true,
     double SubscriptionHandoffThresholdPercent = 5,
     string? ActiveClaudeIdentityId = null,
-    string SubscriptionHandoffMode = "suggest");
+    string SubscriptionHandoffMode = "suggest",
+    bool ComputerUseEnabled = false);
 
 public sealed record ImportMessage(
     string Role,

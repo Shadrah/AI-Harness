@@ -528,6 +528,13 @@
           </Border>
           <Border Classes="panel" Padding="16">
             <StackPanel Spacing="10">
+              <TextBlock Text="COMPUTER USE" Classes="micro" Foreground="#65C7D0"/>
+              <CheckBox x:Name="ComputerUseToggle" Content="Allow supported Codex models to use this Windows desktop" IsChecked="{Binding ComputerUseEnabled}"/>
+              <TextBlock Text="Computer Use is one persistent capability toggle, not a separate model. When enabled, Codex can inspect the desktop, discover and bring forward open windows, and operate ordinary installed applications under the permission mode above." Classes="muted" TextWrapping="Wrap"/>
+            </StackPanel>
+          </Border>
+          <Border Classes="panel" Padding="16">
+            <StackPanel Spacing="10">
               <TextBlock Text="CRASH RECOVERY &amp; DIAGNOSTICS" Classes="micro" Foreground="#65C7D0"/>
               <TextBlock Text="Harness detects interrupted sessions on the next launch and keeps up to 20 diagnostic reports. Reports contain exception types, HRESULTs, method names, app/runtime versions, and OS architecture only." TextWrapping="Wrap"/>
               <TextBlock Text="Prompts, model responses, credentials, environment variables, command lines, workspace paths, filenames, and source lines are never included." Classes="muted" TextWrapping="Wrap"/>

@@ -14,9 +14,6 @@ public sealed partial class MainWindow
     private CancellationTokenSource? _browserTurnCancellation;
     private string? _browserCodexTurnId;
 
-    private string BuildBrowserInstructions() => _applicationSettings.PersonalInstructions + "\n\n"
-        + (OperatingSystem.IsWindows() ? BrowserTools.Instructions : "The Harness reference browser is unavailable on this platform.");
-
     private async void OpenBrowser_OnClick(object? sender, RoutedEventArgs e)
     {
         if (_openingBrowser || _activeSession is null) return;

@@ -41,7 +41,10 @@ if ($null -ne $metadata.ExcludeCredentials) {
     $dlibMetadata.ExcludeCredentials = @($metadata.ExcludeCredentials)
 }
 $temporaryMetadata = Join-Path ([IO.Path]::GetTempPath()) "harness-artifact-signing-$([Guid]::NewGuid().ToString('N')).json"
-$dlibMetadata | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $temporaryMetadata -Encoding utf8
+# Windows PowerShell's `-Encoding utf8` writes a BOM. Artifact Signing's native
+# JSON reader rejects that BOM, so always emit an explicit BOM-less document.
+$metadataJson = $dlibMetadata | ConvertTo-Json -Depth 4
+[IO.File]::WriteAllText($temporaryMetadata, $metadataJson, [Text.UTF8Encoding]::new($false))
 
 dotnet restore $signingProject --nologo
 if ($LASTEXITCODE -ne 0) { throw 'Could not restore the Microsoft signing tools.' }

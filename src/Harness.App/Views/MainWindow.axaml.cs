@@ -231,6 +231,7 @@ public sealed partial class MainWindow : Window
             _applicationSettings = await _store.LoadApplicationSettingsAsync(_lifetime.Token);
             _suppressPermissionModeChange = true;
             ViewModel.ApplyApplicationSettings(_applicationSettings);
+            SetComputerUseAccess(_applicationSettings.ComputerUseEnabled);
             _lastPermissionMode = ViewModel.SelectedPermissionMode.Id;
             _suppressPermissionModeChange = false;
             var initialWorkspace = _applicationSettings.RestoreLastWorkspace
@@ -299,6 +300,8 @@ public sealed partial class MainWindow : Window
     {
         _isClosing = true;
         _browserWindow?.Close();
+        _computerUseAccess.Cancel();
+        _desktopWindow?.Close();
         _settingsWindow?.Close();
         _settingsWindow = null;
         _executionWindow?.Close();
@@ -364,6 +367,7 @@ public sealed partial class MainWindow : Window
     private void ViewModel_OnConversationRestored(object? sender, EventArgs e)
     {
         if (_browserWindow is not null && _browserWindow.SessionId != _activeSession?.Id) _browserWindow.Close();
+        if (_desktopWindow is not null && _desktopWindow.SessionId != _activeSession?.Id) _desktopWindow.Close();
         QueueSessionModelSettingsPersistence();
         var version = Interlocked.Increment(ref _conversationRestoreVersion);
         Dispatcher.UIThread.Post(() =>
@@ -791,6 +795,7 @@ public sealed partial class MainWindow : Window
         await _store.SaveApplicationSettingsAsync(_applicationSettings, _lifetime.Token);
         _suppressPermissionModeChange = true;
         ViewModel.ApplyApplicationSettings(_applicationSettings);
+        SetComputerUseAccess(_applicationSettings.ComputerUseEnabled);
         _lastPermissionMode = ViewModel.SelectedPermissionMode.Id;
         _suppressPermissionModeChange = false;
         _providerConfigurationRefreshPending = true;
@@ -2837,11 +2842,14 @@ public sealed partial class MainWindow : Window
                     ViewModel.WorkspacePath,
                     model.ModelName,
                     ViewModel.SelectedPermissionMode.Id,
-                    BuildBrowserInstructions(),
+                    BuildToolInstructions(),
+                    SelectedModelSupportsDesktop,
                     _lifetime.Token);
                 _providerConfigurationRefreshPending = false;
                 if (_activeSession is not null && _store is not null)
                     TrackPersistence(_store.AppendProviderEventAsync(_activeSession.Id, "harness/browserTools/v1", JsonSerializer.Serialize(new { threadId = _threadId })));
+                if (_activeSession is not null && _store is not null && SelectedModelSupportsDesktop)
+                    TrackPersistence(_store.AppendProviderEventAsync(_activeSession.Id, "harness/desktopTools/v4", JsonSerializer.Serialize(new { threadId = _threadId })));
                 if (_activeSession is not null && _store is not null && _activeSubscriptionIdentity is not null)
                     TrackPersistence(_store.AppendProviderEventAsync(
                         _activeSession.Id,
@@ -3093,7 +3101,11 @@ public sealed partial class MainWindow : Window
         {
             if (request.Method == "item/tool/call")
             {
-                await HandleBrowserToolAsync(client, request, cancellationToken);
+                if (request.Parameters.TryGetProperty("tool", out var tool)
+                    && tool.GetString() == Harness.Core.Desktop.DesktopTools.Name)
+                    await HandleDesktopToolAsync(client, request, cancellationToken);
+                else
+                    await HandleBrowserToolAsync(client, request, cancellationToken);
                 continue;
             }
             if (!string.Equals(ViewModel.SelectedModel?.ProviderId, SubscriptionProviderIds.OpenAiCodex, StringComparison.Ordinal)
@@ -3479,7 +3491,7 @@ public sealed partial class MainWindow : Window
                 ViewModel.WorkspacePath,
                 _activeSession.ModelId,
                 ViewModel.SelectedPermissionMode.Id,
-                BuildBrowserInstructions(),
+                BuildToolInstructions(),
                 _lifetime.Token);
             ViewModel.AddActivity("SESSION", "Provider thread resumed", "#65C7D0");
         }
@@ -3513,7 +3525,7 @@ public sealed partial class MainWindow : Window
                 ViewModel.WorkspacePath,
                 _activeSession.ModelId,
                 ViewModel.SelectedPermissionMode.Id,
-                BuildBrowserInstructions(),
+                BuildToolInstructions(),
                 _lifetime.Token);
             _providerConfigurationRefreshPending = false;
             ViewModel.AddActivity(

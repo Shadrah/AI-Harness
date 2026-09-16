@@ -10,9 +10,11 @@ using Harness.App;
 using Harness.App.Services;
 using Harness.App.ViewModels;
 using Harness.App.Views;
+using Harness.Core.Desktop;
 using Harness.Core.Models;
 using Harness.Providers.Api;
 using Harness.Providers.Claude;
+using Harness.Providers.Codex;
 using Harness.Workspace;
 using Microsoft.Data.Sqlite;
 
@@ -32,6 +34,39 @@ static void Check(bool condition, string message) { if (!condition) throw new In
 static JsonObject Obj(string json) => JsonNode.Parse(json)!.AsObject();
 static ApiConnection Connection(string provider) => new("api-fixture-" + provider, provider, provider, ApiProviderDefinition.All.Single(item => item.Id == provider).Endpoint);
 static string Events(params string[] events) => string.Join("\n\n", events.Select(item => "data: " + item)) + "\n\n";
+
+var desktopDefinitions = DesktopTools.CodexDefinitions(enabled: true);
+Check(desktopDefinitions.Length == (OperatingSystem.IsWindows() ? 1 : 0),
+    "Codex desktop tools were not gated to the supported Windows runtime.");
+Check(DesktopTools.CodexDefinitions(enabled: false).Length == 0,
+    "Codex desktop tools ignored the model capability gate.");
+if (OperatingSystem.IsWindows())
+{
+    var definitionJson = JsonSerializer.Serialize(desktopDefinitions);
+    Check(definitionJson.Contains("harness_desktop", StringComparison.Ordinal)
+          && definitionJson.Contains("observationId", StringComparison.Ordinal)
+          && definitionJson.Contains("drag", StringComparison.Ordinal),
+        "Codex desktop control lost its dynamic tool name, freshness token, or general action surface.");
+    using var desktopCompleted = JsonDocument.Parse("""
+    {"threadId":"thread-fixture","turnId":"turn-fixture","item":{"id":"desktop-fixture","type":"dynamicToolCall","tool":"harness_desktop","status":"completed","success":true,"contentItems":[{"type":"inputText","text":"observation"},{"type":"inputImage","imageUrl":"data:image/png;base64,SECRET_FRAME"}]}}
+    """);
+    var summarized = CodexAppServerClient.SummarizeBrowserNotification(
+        "item/completed", desktopCompleted.RootElement);
+    var summarizedJson = summarized.GetRawText();
+    Check(summarizedJson.Contains("Desktop observation delivered", StringComparison.Ordinal)
+          && !summarizedJson.Contains("SECRET_FRAME", StringComparison.Ordinal)
+          && !summarizedJson.Contains("base64", StringComparison.Ordinal),
+        "Desktop screenshots were retained in the UI/event-log notification.");
+
+    var discovery = new WindowsDesktopAutomation();
+    var discoveryTask = discovery.ListTargetsAsync(default);
+    Check(discoveryTask.IsCompleted || discoveryTask.Status is TaskStatus.WaitingForActivation
+          or TaskStatus.WaitingToRun or TaskStatus.Running or TaskStatus.WaitingForChildrenToComplete,
+        "Desktop target discovery blocked its caller instead of returning worker-backed work.");
+    var targets = await discoveryTask;
+    Check(targets.Count <= 750 && targets.All(target => target.ProcessId != Environment.ProcessId),
+        "Desktop discovery exceeded its UI bound or exposed Harness's own process as a target.");
+}
 
 using (var claudeInitialization = JsonDocument.Parse("""
 {
@@ -1193,7 +1228,17 @@ var uiThread = new Thread(() =>
               && settings.FindControl<CheckBox>("CodexAutomaticHandoffToggle") is not null
               && settings.FindControl<ItemsControl>("CodexUsageCards") is not null,
             "Multi-account subscription management, routing controls, or usage cards are missing from Providers settings.");
+        Check(settings.FindControl<CheckBox>("ComputerUseToggle") is not null,
+            "The persistent Computer Use setting is missing from Settings.");
         settings.Close();
+
+        var desktopWindow = new DesktopWindow("desktop-fixture", "Fixture workspace / Fixture task");
+        Check(desktopWindow.FindControl<TextBox>("SearchBox") is not null
+              && desktopWindow.FindControl<ListBox>("TargetList") is not null
+              && desktopWindow.FindControl<Button>("BrowseButton") is not null
+              && desktopWindow.FindControl<Button>("ConnectButton") is not null,
+            "The Computer Use monitor is missing global window discovery or optional starting-app controls.");
+        desktopWindow.Close();
 
         var handoff = new SubscriptionHandoffDialog(
             primaryIdentities[0],
