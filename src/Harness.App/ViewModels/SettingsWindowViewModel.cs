@@ -10,7 +10,6 @@ public sealed class SettingsWindowViewModel : ObservableObject
     private bool _showActivityTrace;
     private bool _showUsageInspector;
     private bool _showContextInspector;
-    private bool _showTurnDiffInspector;
     private string _personalInstructions;
     private string _status = "Ready";
     private string _githubStatus = "Checking GitHub connection…";
@@ -48,7 +47,6 @@ public sealed class SettingsWindowViewModel : ObservableObject
         _showActivityTrace = settings.ShowActivityTrace;
         _showUsageInspector = settings.ShowUsageInspector;
         _showContextInspector = settings.ShowContextInspector;
-        _showTurnDiffInspector = settings.ShowTurnDiffInspector;
         _personalInstructions = settings.PersonalInstructions;
         _gitAuthorName = settings.GitAuthorName;
         _gitAuthorEmail = settings.GitAuthorEmail;
@@ -73,7 +71,6 @@ public sealed class SettingsWindowViewModel : ObservableObject
     public bool ShowActivityTrace { get => _showActivityTrace; set => SetProperty(ref _showActivityTrace, value); }
     public bool ShowUsageInspector { get => _showUsageInspector; set => SetProperty(ref _showUsageInspector, value); }
     public bool ShowContextInspector { get => _showContextInspector; set => SetProperty(ref _showContextInspector, value); }
-    public bool ShowTurnDiffInspector { get => _showTurnDiffInspector; set => SetProperty(ref _showTurnDiffInspector, value); }
     public string PersonalInstructions { get => _personalInstructions; set => SetProperty(ref _personalInstructions, value); }
     public string Status { get => _status; set => SetProperty(ref _status, value); }
     public string GitHubStatus { get => _githubStatus; set => SetProperty(ref _githubStatus, value); }
@@ -332,7 +329,6 @@ public sealed class SettingsWindowViewModel : ObservableObject
             ShowActivityTrace: ShowActivityTrace,
             ShowUsageInspector: ShowUsageInspector,
             ShowContextInspector: ShowContextInspector,
-            ShowTurnDiffInspector: ShowTurnDiffInspector,
             PersonalInstructions: PersonalInstructions?.Trim() ?? "",
             LastWorkspacePath: WorkspacePath,
             GitAuthorName: GitAuthorName?.Trim() ?? "",

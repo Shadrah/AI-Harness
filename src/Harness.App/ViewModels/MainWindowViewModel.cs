@@ -28,7 +28,6 @@ public sealed class MainWindowViewModel : ObservableObject
     private readonly Dictionary<string, ChatMessageItem> _streamingAssistantMessages = [];
     private string _workspacePath;
     private readonly Dictionary<string, ExecutionItem> _executionItems = [];
-    private string _turnDiff = string.Empty;
     private bool _isInstallingRuntime;
     private bool _showRuntimeSetup;
     private bool _showAuthenticationAction;
@@ -48,7 +47,6 @@ public sealed class MainWindowViewModel : ObservableObject
     private bool _showActivityTrace = true;
     private bool _showUsageInspector = true;
     private bool _showContextInspector = true;
-    private bool _showTurnDiffInspector = true;
     private ExecutionItem? _selectedExecutionItem;
     private WorkspaceItem? _selectedWorkspace;
     private PermissionModeOption _selectedPermissionMode = PermissionModeOption.All[0];
@@ -285,7 +283,6 @@ public sealed class MainWindowViewModel : ObservableObject
     public bool ShowActivityTrace { get => _showActivityTrace; private set => SetProperty(ref _showActivityTrace, value); }
     public bool ShowUsageInspector { get => _showUsageInspector; private set => SetProperty(ref _showUsageInspector, value); }
     public bool ShowContextInspector { get => _showContextInspector; private set => SetProperty(ref _showContextInspector, value); }
-    public bool ShowTurnDiffInspector { get => _showTurnDiffInspector; private set => SetProperty(ref _showTurnDiffInspector, value); }
 
     public void ApplyApplicationSettings(HarnessApplicationSettings settings)
     {
@@ -294,7 +291,6 @@ public sealed class MainWindowViewModel : ObservableObject
         ShowActivityTrace = settings.ShowActivityTrace;
         ShowUsageInspector = settings.ShowUsageInspector;
         ShowContextInspector = settings.ShowContextInspector;
-        ShowTurnDiffInspector = settings.ShowTurnDiffInspector;
         SelectedPermissionMode = PermissionModeOption.Resolve(settings.PermissionMode);
         if (_reportedProviderModels.Count > 0) RebuildVisibleModels();
     }
@@ -511,8 +507,6 @@ public sealed class MainWindowViewModel : ObservableObject
     public string ContextCheckToolTip => _contextCountSupported
         ? "Ask the provider to count the exact pending request without generating a response"
         : "The selected runtime has not exposed a native input-token count contract to Harness";
-    public string TurnDiff => _turnDiff;
-    public bool HasTurnDiff => !string.IsNullOrWhiteSpace(_turnDiff);
     public string ModelSettingsStatus
     {
         get
@@ -736,7 +730,6 @@ public sealed class MainWindowViewModel : ObservableObject
         ExecutionItems.Clear();
         SelectedExecutionItem = null;
         RaisePropertyChanged(nameof(ExecutionStatus));
-        SetTurnDiff(string.Empty);
         _activeContextTokens = null;
         _cumulativeTokens = null;
         _contextWindowTokens = null;
@@ -916,7 +909,6 @@ public sealed class MainWindowViewModel : ObservableObject
         SelectedExecutionItem = null;
         RaisePropertyChanged(nameof(ExecutionStatus));
         ChangedFiles.Clear();
-        SetTurnDiff(string.Empty);
         ConversationAdvanced?.Invoke(this, EventArgs.Empty);
         return prompt;
     }
@@ -982,7 +974,6 @@ public sealed class MainWindowViewModel : ObservableObject
         ExecutionItems.Clear();
         SelectedExecutionItem = null;
         RaisePropertyChanged(nameof(ExecutionStatus));
-        SetTurnDiff(string.Empty);
         Activity.Clear();
         _activeProjectId = null;
         AddActivity("WORKSPACE", $"Opened {fullPath}", "#65C7D0");
@@ -1194,22 +1185,10 @@ public sealed class MainWindowViewModel : ObservableObject
         {
             CompleteExecutionItem(itemId, status, text);
         }
-        if (combined.Count > 0)
-        {
-            SetTurnDiff(string.Join(Environment.NewLine, combined));
-        }
-    }
-
-    public void SetTurnDiff(string diff)
-    {
-        _turnDiff = diff;
-        RaisePropertyChanged(nameof(TurnDiff));
-        RaisePropertyChanged(nameof(HasTurnDiff));
     }
 
     public void ApplyResolvedDiffs(IReadOnlyDictionary<string, string> diffs)
     {
-        var combined = new List<string>();
         foreach (var entry in diffs)
         {
             var existing = ChangedFiles.FirstOrDefault(file =>
@@ -1219,9 +1198,7 @@ public sealed class MainWindowViewModel : ObservableObject
                 var index = ChangedFiles.IndexOf(existing);
                 ChangedFiles[index] = existing with { Diff = entry.Value };
             }
-            if (!string.IsNullOrWhiteSpace(entry.Value)) combined.Add(entry.Value);
         }
-        if (combined.Count > 0) SetTurnDiff(string.Join(Environment.NewLine + Environment.NewLine, combined));
     }
 
     public void AddActivity(
@@ -1332,17 +1309,11 @@ public sealed class MainWindowViewModel : ObservableObject
         var lines = new List<string> { error is null ? "Workspace updated" : $"Task stopped: {error}" };
         if (ChangedFiles.Count > 0)
         {
-            lines.Add(string.Empty);
-            lines.Add("Changes");
-            foreach (var file in ChangedFiles.Take(24))
+            if (ChangedFiles.Count > 24)
             {
-                var parsed = UnifiedDiffParser.Parse(file.Diff);
-                var counts = parsed.AddedLines + parsed.RemovedLines > 0
-                    ? $" (+{parsed.AddedLines} −{parsed.RemovedLines})"
-                    : string.Empty;
-                lines.Add($"• {file.Path} · {file.Kind}{counts}");
+                lines.Add(string.Empty);
+                lines.Add($"Showing the first 24 of {ChangedFiles.Count} changed files to keep the chat responsive.");
             }
-            if (ChangedFiles.Count > 24) lines.Add($"• …and {ChangedFiles.Count - 24} more files");
         }
         if (commands.Length > 0 && failures.Length == 0)
         {
@@ -1354,7 +1325,10 @@ public sealed class MainWindowViewModel : ObservableObject
             lines.Add(string.Empty);
             lines.Add($"Attention: {failures.Length} execution event{(failures.Length == 1 ? string.Empty : "s")} did not complete successfully. Open Activity for details.");
         }
-        return ChatMessageItem.Report(string.Join(Environment.NewLine, lines), error is null ? "COMPLETED" : "FAILED");
+        return ChatMessageItem.Report(
+            string.Join(Environment.NewLine, lines),
+            error is null ? "COMPLETED" : "FAILED",
+            ChangedFiles.Take(24));
     }
 
     public void UpdateTokenUsage(
@@ -1593,8 +1567,10 @@ public sealed class MainWindowViewModel : ObservableObject
         ChangedFiles.Add(new FileChangeItem(
             "src/Harness.App/Views/MainWindow.axaml",
             "MODIFY",
-            "@@ preview diff @@"));
-        SetTurnDiff("--- a/MainWindow.axaml\n+++ b/MainWindow.axaml\n@@ preview diff @@");
+            "diff --git a/src/Harness.App/Views/MainWindow.axaml b/src/Harness.App/Views/MainWindow.axaml\n"
+            + "--- a/src/Harness.App/Views/MainWindow.axaml\n"
+            + "+++ b/src/Harness.App/Views/MainWindow.axaml\n"
+            + "@@ -10 +10 @@\n-old layout\n+refined layout"));
         CompleteTurn();
     }
 }
@@ -1753,6 +1729,39 @@ public sealed record UsageWindowItem(string Label, double RemainingPercent, stri
 }
 
 public sealed record FileChangeItem(string Path, string Kind, string Diff);
+
+public sealed record ReportFileChangeItem(
+    string Path,
+    string Kind,
+    string Diff,
+    int AddedLines,
+    int RemovedLines)
+{
+    public string FileName
+    {
+        get
+        {
+            var fileName = System.IO.Path.GetFileName(Path);
+            return string.IsNullOrWhiteSpace(fileName) ? Path : fileName;
+        }
+    }
+
+    public string DiffActionLabel => AddedLines + RemovedLines > 0
+        ? $"{Kind}  ·  DIFF  +{AddedLines}  −{RemovedLines}"
+        : $"{Kind}  ·  NO DIFF";
+    public bool HasDiff => !string.IsNullOrWhiteSpace(Diff);
+
+    public static ReportFileChangeItem FromFileChange(FileChangeItem change)
+    {
+        var parsed = UnifiedDiffParser.Parse(change.Diff);
+        return new ReportFileChangeItem(
+            change.Path,
+            change.Kind,
+            change.Diff,
+            parsed.AddedLines,
+            parsed.RemovedLines);
+    }
+}
 
 public sealed class ExecutionItem : ObservableObject
 {
@@ -2003,6 +2012,7 @@ public sealed record TurnAttachmentItem(
 
 public sealed class ChatMessageItem : ObservableObject, IDisposable
 {
+    private const string TurnReportMetadataSchema = "harness.turn-report.v1";
     private static readonly Regex MarkdownLinkPattern = new(
         @"!?(?:\[[^\]]*\])\((?<path><[^>]+>|[^)\r\n]+)\)",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -2025,7 +2035,8 @@ public sealed class ChatMessageItem : ObservableObject, IDisposable
         string background,
         string fontFamily,
         string status,
-        DateTimeOffset createdAt)
+        DateTimeOffset createdAt,
+        string? persistenceMetadataJson = null)
     {
         Id = id;
         Role = role;
@@ -2037,6 +2048,7 @@ public sealed class ChatMessageItem : ObservableObject, IDisposable
         _status = status;
         CreatedAt = createdAt;
         Time = createdAt.ToLocalTime().ToString("h:mm");
+        RestoreReportChanges(persistenceMetadataJson);
         RefreshImageAttachments();
     }
 
@@ -2049,6 +2061,17 @@ public sealed class ChatMessageItem : ObservableObject, IDisposable
     public string Time { get; }
     public DateTimeOffset CreatedAt { get; }
     public ObservableCollection<ChatImageAttachmentItem> Images { get; } = [];
+    public ObservableCollection<ReportFileChangeItem> ReportChanges { get; } = [];
+    public bool HasReportChanges => ReportChanges.Count > 0;
+    public static string? CreatePersistenceMetadataJson(IReadOnlyList<ReportFileChangeItem> changes) =>
+        changes.Count > 0
+        ? JsonSerializer.Serialize(new TurnReportMetadata(
+            TurnReportMetadataSchema,
+            changes.Select(change => new TurnReportFileMetadata(
+                change.Path,
+                change.Kind,
+                change.Diff)).ToArray()))
+        : null;
     public bool IsMonospace => FontFamily.Contains("Mono", StringComparison.OrdinalIgnoreCase)
         || FontFamily.Contains("Consolas", StringComparison.OrdinalIgnoreCase);
     public string Status
@@ -2066,9 +2089,19 @@ public sealed class ChatMessageItem : ObservableObject, IDisposable
         New("YOU", "Prompt", text, "#8993A3", "Transparent", "Inter", string.Empty);
     public static ChatMessageItem Assistant(string text) =>
         New("HARNESS", "Response", text, "#65C7D0", "Transparent", "Inter", "STREAMING");
-    public static ChatMessageItem Report(string text, string status)
+    public static ChatMessageItem Report(
+        string text,
+        string status,
+        IEnumerable<FileChangeItem>? changes = null)
     {
         var item = New("REPORT", "Turn report", text, "#65C7D0", "#151A21", "Inter", status);
+        if (changes is not null)
+        {
+            foreach (var change in changes)
+            {
+                item.ReportChanges.Add(ReportFileChangeItem.FromFileChange(change));
+            }
+        }
         return item;
     }
     public static ChatMessageItem Operation(
@@ -2095,7 +2128,8 @@ public sealed class ChatMessageItem : ObservableObject, IDisposable
             message.Role is "YOU" or "HARNESS" ? "Transparent" : "#151A21",
             message.Monospace ? "Cascadia Mono, JetBrains Mono, Consolas" : "Inter",
             message.Status,
-            message.CreatedAt);
+            message.CreatedAt,
+            message.ProviderEventJson);
 
     private static ChatMessageItem New(
         string role,
@@ -2115,6 +2149,29 @@ public sealed class ChatMessageItem : ObservableObject, IDisposable
             fontFamily,
             status,
             DateTimeOffset.UtcNow);
+
+    private void RestoreReportChanges(string? persistenceMetadataJson)
+    {
+        if (Role != "REPORT" || string.IsNullOrWhiteSpace(persistenceMetadataJson)) return;
+        try
+        {
+            var metadata = JsonSerializer.Deserialize<TurnReportMetadata>(persistenceMetadataJson);
+            if (metadata?.Schema != TurnReportMetadataSchema || metadata.Files is null) return;
+            foreach (var file in metadata.Files.Take(24))
+            {
+                if (string.IsNullOrWhiteSpace(file.Path)
+                    || string.IsNullOrWhiteSpace(file.Kind)
+                    || file.Diff is null) continue;
+                ReportChanges.Add(ReportFileChangeItem.FromFileChange(
+                    new FileChangeItem(file.Path, file.Kind, file.Diff)));
+            }
+        }
+        catch (JsonException)
+        {
+            // Older provider-event payloads and malformed imported metadata remain
+            // valid chat messages; only their optional report actions are omitted.
+        }
+    }
     public void Append(string delta) => Text += delta;
     public void ReplaceText(string text)
     {
@@ -2185,6 +2242,15 @@ public sealed class ChatMessageItem : ObservableObject, IDisposable
         foreach (var image in Images) image.Preview.Dispose();
         Images.Clear();
     }
+
+    private sealed record TurnReportMetadata(
+        string Schema,
+        IReadOnlyList<TurnReportFileMetadata> Files);
+
+    private sealed record TurnReportFileMetadata(
+        string Path,
+        string Kind,
+        string Diff);
 }
 
 public sealed class ChatImageAttachmentItem

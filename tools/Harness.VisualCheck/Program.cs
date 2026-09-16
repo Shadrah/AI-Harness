@@ -51,6 +51,38 @@ if (parsedDiff.AddedLines != 2
 {
     throw new InvalidOperationException("Unified diff line classification or numbering is incorrect.");
 }
+using (var reportProbe = ChatMessageItem.Report(
+    "Workspace updated",
+    "COMPLETED",
+    [new FileChangeItem("src/demo.txt", "UPDATE", "diff --git a/src/demo.txt b/src/demo.txt\n--- a/src/demo.txt\n+++ b/src/demo.txt\n@@ -1 +1 @@\n-old\n+new")]))
+{
+    if (!reportProbe.HasReportChanges
+        || reportProbe.ReportChanges.Single().AddedLines != 1
+        || reportProbe.ReportChanges.Single().RemovedLines != 1
+        || string.IsNullOrWhiteSpace(ChatMessageItem.CreatePersistenceMetadataJson(reportProbe.ReportChanges)))
+    {
+        throw new InvalidOperationException("Turn reports did not expose structured file changes.");
+    }
+
+    using var restoredReportProbe = ChatMessageItem.FromStored(new StoredMessage(
+        "report-probe",
+        "session-probe",
+        0,
+        reportProbe.Role,
+        reportProbe.Title,
+        reportProbe.Text,
+        reportProbe.Status,
+        reportProbe.Color,
+        reportProbe.IsMonospace,
+        reportProbe.CreatedAt,
+        ChatMessageItem.CreatePersistenceMetadataJson(reportProbe.ReportChanges)));
+    if (!restoredReportProbe.HasReportChanges
+        || restoredReportProbe.ReportChanges.Single().Path != "src/demo.txt"
+        || !restoredReportProbe.ReportChanges.Single().HasDiff)
+    {
+        throw new InvalidOperationException("Persisted turn-report file actions were not restored.");
+    }
+}
 var parsedHunks = UnifiedDiffParser.ParseHunks(
     "STAGED\n\n" +
     "diff --git a/demo.txt b/demo.txt\n--- a/demo.txt\n+++ b/demo.txt\n@@ -1 +1 @@\n-old\n+staged\n\n" +
@@ -937,7 +969,7 @@ if (commandPreview?.Status != "EXIT 0"
     || modelProbe.Messages.Count(item => item.Role == "REPORT") != 1
     || modelProbe.Messages.Single(item => item.Role == "REPORT").Text.Contains("dotnet build", StringComparison.OrdinalIgnoreCase)
     || modelProbe.ChangedFiles.Count != 1
-    || !modelProbe.HasTurnDiff)
+    || !modelProbe.Messages.Single(item => item.Role == "REPORT").HasReportChanges)
 {
     throw new InvalidOperationException("Execution events and turn changes are not projected correctly.");
 }

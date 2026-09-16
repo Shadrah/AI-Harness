@@ -2182,18 +2182,35 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private async void OpenDiff_OnClick(object? sender, RoutedEventArgs e)
+    private async void OpenReportDiff_OnClick(object? sender, RoutedEventArgs e)
     {
-        if (!ViewModel.HasTurnDiff)
-        {
-            return;
-        }
-
-        var viewer = new DiffWindow
-        {
-            DataContext = new DiffWindowViewModel("Current turn", ViewModel.TurnDiff)
-        };
+        if (sender is not Control { Tag: ReportFileChangeItem change } || !change.HasDiff) return;
+        var viewModel = await Task.Run(() => new DiffWindowViewModel(change.Path, change.Diff));
+        var viewer = new DiffWindow { DataContext = viewModel };
         await viewer.ShowDialog(this);
+    }
+
+    private async void OpenReportFile_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Control { Tag: string path }) return;
+        try
+        {
+            var resolvedPath = Path.IsPathFullyQualified(path)
+                ? Path.GetFullPath(path)
+                : Path.GetFullPath(Path.Combine(ViewModel.RepositoryRoot ?? ViewModel.WorkspacePath, path));
+            if (!File.Exists(resolvedPath))
+            {
+                ViewModel.AddActivity("FILE", $"File no longer exists · {resolvedPath}", "#E2A84A");
+                return;
+            }
+
+            await Task.Run(() => Process.Start(new ProcessStartInfo(resolvedPath) { UseShellExecute = true }));
+            ViewModel.AddActivity("FILE", $"Opened {Path.GetFileName(resolvedPath)}", "#65C7D0");
+        }
+        catch (Exception exception)
+        {
+            ViewModel.AddActivity("FILE", $"Could not open file · {CleanError(exception)}", "#E2A84A");
+        }
     }
 
     private async Task RefreshWorkingTreeAsync(
@@ -3330,10 +3347,8 @@ public sealed partial class MainWindow : Window
                 break;
 
             case "turn/diff/updated":
-                if (TryGetString(parameters, "diff", out var diff))
-                {
-                    ViewModel.SetTurnDiff(diff);
-                }
+                // Per-file change events and the final repository resolution feed
+                // the report actions. Avoid retaining a second aggregate copy.
                 break;
 
             case "thread/tokenUsage/updated":
@@ -3552,7 +3567,7 @@ public sealed partial class MainWindow : Window
         }
 
         var message = request.Message;
-        TrackPersistence(_store.UpsertMessageAsync(new StoredMessage(
+        var storedMessage = new StoredMessage(
             message.Id,
             request.SessionId,
             0,
@@ -3562,7 +3577,20 @@ public sealed partial class MainWindow : Window
             message.Status,
             message.Color,
             message.IsMonospace,
-            message.CreatedAt)));
+            message.CreatedAt);
+        var reportChanges = message.ReportChanges.ToArray();
+        TrackPersistence(PersistMessageAsync(_store, storedMessage, reportChanges));
+    }
+
+    private static async Task PersistMessageAsync(
+        HarnessStore store,
+        StoredMessage message,
+        IReadOnlyList<ReportFileChangeItem> reportChanges)
+    {
+        var metadata = reportChanges.Count == 0
+            ? null
+            : await Task.Run(() => ChatMessageItem.CreatePersistenceMetadataJson(reportChanges));
+        await store.UpsertMessageAsync(message with { ProviderEventJson = metadata });
     }
 
     private void ViewModel_OnActivityPersistenceRequested(

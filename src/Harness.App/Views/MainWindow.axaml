@@ -202,6 +202,51 @@
                                                          FontFamily="{Binding FontFamily}"
                                                          SelectionBrush="#65C7D0"
                                                          SelectionForegroundBrush="#11151B" />
+                          <ItemsControl ItemsSource="{Binding ReportChanges}"
+                                        IsVisible="{Binding HasReportChanges}">
+                            <ItemsControl.ItemsPanel>
+                              <ItemsPanelTemplate>
+                                <StackPanel Spacing="5" />
+                              </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                              <DataTemplate x:DataType="vm:ReportFileChangeItem">
+                                <Border Background="#11151B"
+                                        BorderBrush="#29313C"
+                                        BorderThickness="1"
+                                        CornerRadius="4"
+                                        Padding="8,5">
+                                  <Grid ColumnDefinitions="*,Auto,8,Auto">
+                                    <StackPanel Grid.Column="0" Spacing="1">
+                                      <TextBlock Text="{Binding FileName}"
+                                                 FontSize="11"
+                                                 FontWeight="SemiBold"
+                                                 Foreground="#D8DEE8" />
+                                      <TextBlock Text="{Binding Path}"
+                                                 Classes="muted mono"
+                                                 FontSize="9"
+                                                 TextTrimming="CharacterEllipsis" />
+                                    </StackPanel>
+                                    <Button Grid.Column="1"
+                                            Content="{Binding DiffActionLabel}"
+                                            Classes="ghost"
+                                            Padding="6,2"
+                                            Tag="{Binding}"
+                                            IsEnabled="{Binding HasDiff}"
+                                            Click="OpenReportDiff_OnClick"
+                                            ToolTip.Tip="View this file's changes inside Harness" />
+                                    <Button Grid.Column="3"
+                                            Content="OPEN  ↗"
+                                            Classes="ghost"
+                                            Padding="6,2"
+                                            Tag="{Binding Path}"
+                                            Click="OpenReportFile_OnClick"
+                                            ToolTip.Tip="Open this file" />
+                                  </Grid>
+                                </Border>
+                              </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                          </ItemsControl>
                           <ItemsControl ItemsSource="{Binding Images}">
                             <ItemsControl.ItemsPanel>
                               <ItemsPanelTemplate>
@@ -495,15 +540,6 @@
                 <Button Content="ADD CONTEXT FILES" HorizontalAlignment="Stretch" Click="ManageContext_OnClick" />
               </StackPanel>
 
-              <Border Height="1" Background="#29313C" />
-
-              <StackPanel Spacing="9" IsVisible="{Binding ShowTurnDiffInspector}">
-                <Grid ColumnDefinitions="*,Auto">
-                  <TextBlock Text="TURN DIFF" Classes="micro" />
-                  <TextBlock Grid.Column="1" Text="{Binding ChangedFiles.Count}" Classes="muted mono" FontSize="9" />
-                </Grid>
-                <Button Content="OPEN TURN DIFF" HorizontalAlignment="Stretch" IsEnabled="{Binding HasTurnDiff}" Click="OpenDiff_OnClick" />
-              </StackPanel>
             </StackPanel>
           </StackPanel>
         </ScrollViewer>

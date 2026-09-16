@@ -30,8 +30,7 @@
               <TextBlock Text="WORKBENCH SIGNALS" Classes="micro" Foreground="#65C7D0"/>
               <CheckBox Content="Show live usage" IsChecked="{Binding ShowUsageInspector}"/>
               <CheckBox Content="Show attached context" IsChecked="{Binding ShowContextInspector}"/>
-              <CheckBox Content="Show turn diff shortcut" IsChecked="{Binding ShowTurnDiffInspector}"/>
-              <TextBlock Text="Working tree remains available as a separate module because it is active development state." Classes="muted" TextWrapping="Wrap"/>
+              <TextBlock Text="Changed files open directly from turn reports. Working tree remains available as a separate module because it is active development state." Classes="muted" TextWrapping="Wrap"/>
             </StackPanel>
           </Border>
           <Border x:Name="PortableBackupPanel" Classes="panel" Padding="16">

@@ -69,7 +69,6 @@ public sealed record HarnessApplicationSettings(
     bool ShowActivityTrace = true,
     bool ShowUsageInspector = true,
     bool ShowContextInspector = true,
-    bool ShowTurnDiffInspector = true,
     string PersonalInstructions = "",
     string? LastWorkspacePath = null,
     string GitAuthorName = "",

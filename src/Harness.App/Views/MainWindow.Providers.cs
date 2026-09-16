@@ -349,7 +349,6 @@ public sealed partial class MainWindow
                         var afterDiffs = await ReadApiDiffsAsync(workspace, _lifetime.Token);
                         foreach (var pair in afterDiffs.Where(pair => !beforeDiffs.TryGetValue(pair.Key, out var original) || original != pair.Value))
                             ViewModel.ApplyFileChanges("api-diff-" + Guid.NewGuid().ToString("N"), JsonSerializer.SerializeToElement(new[] { new { path = pair.Key, kind = new { type = "working tree" }, diff = pair.Value } }), "COMPLETED");
-                        ViewModel.SetTurnDiff(string.Join(Environment.NewLine + Environment.NewLine, ViewModel.ChangedFiles.Select(file => file.Diff)));
                         if (ViewModel.ChangedFiles.Count > 0) ViewModel.AddActivity("DIFF", "Changed files show their current Git working-tree diff, which may include edits made before this turn.", "#E2A84A");
                         await RefreshWorkingTreeAsync();
                     }
