@@ -3,6 +3,7 @@ using System.Text.Json;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Platform;
+using Avalonia.Threading;
 using Harness.Core.Browser;
 using Microsoft.Web.WebView2.Core;
 
@@ -16,11 +17,13 @@ public sealed class BrowserHost : NativeControlHost
     private CoreWebView2Controller? _controller;
     private nint _handle;
     private bool _closed;
+    private bool _resizeQueued;
+    private System.Drawing.Size _browserSize;
     public Task Ready => _ready.Task;
     public string? ProfilePath { get; set; }
     public string Source => _controller?.CoreWebView2.Source ?? "about:blank";
     public event Action<string>? StatusChanged;
-    public BrowserHost() => SizeChanged += (_, _) => ResizeBrowser();
+    public BrowserHost() => SizeChanged += (_, _) => QueueResize();
 
     protected override IPlatformHandle CreateNativeControlCore(IPlatformHandle parent)
     {
@@ -77,7 +80,7 @@ public sealed class BrowserHost : NativeControlHost
             core.LaunchingExternalUriScheme += (_, e) => e.Cancel = true;
             core.SourceChanged += (_, _) => StatusChanged?.Invoke(core.Source);
             core.ProcessFailed += (_, _) => StatusChanged?.Invoke("Browser process stopped. Close and reopen the browser to recover.");
-            ResizeBrowser();
+            QueueResize();
             _ready.TrySetResult();
         }
         catch (Exception e) { _ready.TrySetException(e); }
@@ -159,11 +162,43 @@ public sealed class BrowserHost : NativeControlHost
             throw new IOException("The player could not complete that action. Inspect the player state; it may be unavailable, protected, buffering, or require manual interaction.");
     }
 
+    /// <summary>
+    /// Defer the native WebView resize until Avalonia's layout pass has completed so maximize,
+    /// restore, and snap use the final control bounds instead of the previous window size.
+    /// </summary>
+    public void RefreshBounds() => QueueResize();
+
+    private void QueueResize()
+    {
+        if (_closed || _resizeQueued) return;
+        _resizeQueued = true;
+        Dispatcher.UIThread.Post(() =>
+        {
+            _resizeQueued = false;
+            ResizeBrowser();
+        }, DispatcherPriority.Render);
+    }
+
     private void ResizeBrowser()
     {
         if (_controller is null || _handle == 0) return;
+        // Avalonia's attachment HWND can retain its pre-maximize client size even though this
+        // control has completed layout at the new size. Bounds is the authoritative layout
+        // surface; convert its DIPs to physical pixels before sizing the native child.
+        var scale = TopLevel.GetTopLevel(this)?.RenderScaling ?? 1d;
+        var layoutWidth = Math.Max(1, (int)Math.Round(Bounds.Width * scale));
+        var layoutHeight = Math.Max(1, (int)Math.Round(Bounds.Height * scale));
+        SetWindowPos(_handle, 0, 0, 0, layoutWidth, layoutHeight,
+            SetWindowPosFlags.NoMove | SetWindowPosFlags.NoZOrder | SetWindowPosFlags.NoActivate);
         if (GetClientRect(_handle, out var rect))
-            _controller.Bounds = new System.Drawing.Rectangle(0, 0, Math.Max(1, rect.Right), Math.Max(1, rect.Bottom));
+        {
+            var size = new System.Drawing.Size(Math.Max(1, rect.Right - rect.Left), Math.Max(1, rect.Bottom - rect.Top));
+            if (size != _browserSize)
+            {
+                _controller.Bounds = new System.Drawing.Rectangle(System.Drawing.Point.Empty, size);
+                _browserSize = size;
+            }
+        }
         _controller.NotifyParentWindowPositionChanged();
     }
 
@@ -204,4 +239,14 @@ public sealed class BrowserHost : NativeControlHost
     private static extern nint CreateWindowEx(int exStyle, string className, string windowName, int style, int x, int y, int width, int height, nint parent, nint menu, nint instance, nint param);
     [DllImport("user32.dll")] private static extern bool DestroyWindow(nint handle);
     [DllImport("user32.dll")] private static extern bool GetClientRect(nint handle, out NativeRect rect);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool SetWindowPos(nint handle, nint insertAfter, int x, int y, int width, int height, SetWindowPosFlags flags);
+
+    [Flags]
+    private enum SetWindowPosFlags : uint
+    {
+        NoMove = 0x0002,
+        NoZOrder = 0x0004,
+        NoActivate = 0x0010
+    }
 }

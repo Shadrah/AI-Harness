@@ -145,9 +145,35 @@ internal sealed class CheckApp : Application
             var state = await Execute(new { action = "navigate", url });
             Console.WriteLine("Native navigation complete.");
             Program.Assert(state.Text.Contains("Visible reference text") && !state.Text.Contains("DO_NOT_EXPOSE_SECRET") && !state.Text.Contains("HIDDEN_REFERENCE"), "DOM visibility / input-value filtering failed.");
+            Program.Assert(state.ImageDataUrl is { Length: > 200 }, "Vision-capable navigation did not return a visual observation.");
             using var parsed = JsonDocument.Parse(state.Text[(state.Text.IndexOf('\n') + 1)..]);
-            Program.Assert(parsed.RootElement.GetProperty("width").GetInt32() > 600, "Native browser was not sized correctly.");
+            var initialWidth = parsed.RootElement.GetProperty("width").GetInt32();
+            var initialHeight = parsed.RootElement.GetProperty("height").GetInt32();
+            Program.Assert(initialWidth > 600, "Native browser was not sized correctly.");
             var controls = parsed.RootElement.GetProperty("controls").EnumerateArray().ToArray();
+            window.WindowState = WindowState.Maximized;
+            await Task.Delay(500, stop.Token);
+            var browserHost = window.FindControl<BrowserHost>("Browser")!;
+            state = await Execute(new { action = "inspect", url });
+            using (var maximized = JsonDocument.Parse(state.Text[(state.Text.IndexOf('\n') + 1)..]))
+            {
+                var maximizedWidth = maximized.RootElement.GetProperty("width").GetInt32();
+                var maximizedHeight = maximized.RootElement.GetProperty("height").GetInt32();
+                Program.Assert(maximizedWidth >= initialWidth && maximizedHeight >= initialHeight
+                    && (maximizedWidth > initialWidth || maximizedHeight > initialHeight),
+                    $"Maximized browser retained stale bounds ({initialWidth}x{initialHeight} -> {maximizedWidth}x{maximizedHeight}); "
+                    + $"window={window.ClientSize.Width}x{window.ClientSize.Height}, host={browserHost.Bounds.Width}x{browserHost.Bounds.Height}.");
+            }
+            window.WindowState = WindowState.Normal;
+            await Task.Delay(350, stop.Token);
+            state = await Execute(new { action = "inspect", url });
+            using (var restored = JsonDocument.Parse(state.Text[(state.Text.IndexOf('\n') + 1)..]))
+            {
+                var restoredWidth = restored.RootElement.GetProperty("width").GetInt32();
+                var restoredHeight = restored.RootElement.GetProperty("height").GetInt32();
+                Program.Assert(Math.Abs(restoredWidth - initialWidth) <= 2 && Math.Abs(restoredHeight - initialHeight) <= 2,
+                    $"Restored browser retained maximized bounds ({initialWidth}x{initialHeight} expected, {restoredWidth}x{restoredHeight} observed).");
+            }
             var button = controls.Single(c => c.GetProperty("label").GetString() == "Fixture action");
             state = await Execute(new { action = "click", url, x = button.GetProperty("x").GetDouble(), y = button.GetProperty("y").GetDouble() });
             Program.Assert(state.Text.Contains("Clicked successfully"), "Real browser click did not take effect.");
@@ -173,7 +199,7 @@ internal sealed class CheckApp : Application
             window.AccessAllowed = false;
             try { await Execute(new { action = "inspect", url }); throw new Exception("Revoked access accepted."); } catch (OperationCanceledException) { }
             Program.Assert(ticks > 0, "UI dispatcher did not remain live during browser work.");
-            Console.WriteLine($"Native browser checks passed: navigation, bounded DOM, real click/type, video play/pause, PNG capture, vision gate, stale-page rejection, revocation. UI ticks={ticks}; largest gap={longestGap:F0} ms. Fixture: {profile}");
+            Console.WriteLine($"Native browser checks passed: navigation, maximize/resize, bounded DOM, real click/type, video play/pause, automatic visual observations, vision gate, stale-page rejection, revocation. UI ticks={ticks}; largest gap={longestGap:F0} ms. Fixture: {profile}");
         }
         finally { heartbeat.Stop(); stop.Cancel(); server.Stop(); await serving; }
     }

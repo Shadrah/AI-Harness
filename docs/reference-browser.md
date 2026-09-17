@@ -9,14 +9,16 @@ It starts only when opened or after approving an agent's browser request.
 
 1. Start a new chat, paste your direct reference/video URL and ask the agent to
    examine it. New Codex chats and tool-capable direct API models receive the
-   `harness_browser` tool. A model must have verified vision support to request
-   screenshots; text inspection remains available without vision.
+   `harness_browser` tool. Every successful browser action supplies the current
+   page frame to models with verified vision support; bounded text inspection
+   remains available to models without vision.
 2. Approve browser access when prompted, or open the browser and enable
    **Agent access**. This permits page text and screenshots to be sent to the
    currently selected provider for this chat.
 3. The agent can navigate, inspect visible text/controls, click, type into the
-   focused field, scroll, control an accessible HTML video, and capture a frame.
-   A screenshot is native image input, not a text path the model cannot see.
+   focused field, scroll, control an accessible HTML video, and refresh a frame.
+   Each visual observation is native image input, not a text path the model
+   cannot see.
 4. Watch the browser or follow concise entries in Activity. Turn off Agent
    access, close the browser, or stop the turn to revoke/cancel work. Switching
    chats closes the previous chat's browser. Access is not silently restored
@@ -98,10 +100,11 @@ loopback test page and an isolated `.artifacts/browser-check` profile):
 dotnet run --project tools/Harness.BrowserCheck -c Release -- --native
 ```
 
-This validates real rendering/input, a synthetic HTML video frame, image
-payloads for all four direct API protocols, stale-page checks, revocation and a
-dispatcher heartbeat. It makes no model requests. It does not validate a live
-YouTube URL or a paid end-to-end model turn.
+This validates real rendering/input, maximize/restore viewport sizing, a
+synthetic HTML video frame, automatic visual observations, image payloads for
+all four direct API protocols, stale-page checks, revocation and a dispatcher
+heartbeat. It makes no model requests. It does not validate a live YouTube URL
+or a paid end-to-end model turn.
 
 Implementation references:
 [Codex App Server](https://learn.chatgpt.com/docs/app-server),
